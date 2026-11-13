@@ -1,0 +1,46 @@
+:root {
+  --bg: #eef1f4;
+  --surface: #fbfcfd;
+  --surface-2: #eef2f6;
+  --text: #1c2430;
+  --muted: #5b6777;
+  --border: #d5dde6;
+  --accent: #2f6fed;
+  --danger: #c23b3b;
+  --warn: #9a6b12;
+  font-family: "Segoe UI", "Source Han Sans SC", "Noto Sans SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  min-height: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
