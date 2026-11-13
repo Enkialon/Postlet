@@ -1,0 +1,29 @@
+---
+description: 前端 Port 接口优先，Adapter 调用 RS 桥
+globs: "{src,apps,packages}/**/*.{ts,tsx,vue,svelte}"
+alwaysApply: false
+---
+
+# 前端适配器
+
+顺序强制：接口 → 实现类 → 注入 UI。
+
+```ts
+// 1. 先接口
+export interface ConversationPort {
+  listByContact(contactId: string): Promise<Conversation[]>;
+}
+
+// 2. 再实现：只在这里调 RS 桥
+export class TauriConversationAdapter implements ConversationPort {
+  async listByContact(contactId: string) {
+    return invoke<Conversation[]>('list_conversations_by_contact', { contactId });
+  }
+}
+
+// ❌ BAD — UI 直接 invoke
+await invoke('list_conversations_by_contact', { contactId });
+```
+
+- Feature / hooks / stores 只依赖 Port
+- 禁止前端再请求 Graph REST

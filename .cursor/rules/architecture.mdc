@@ -1,0 +1,15 @@
+---
+description: Tauri 2 Outlook 客户端总架构与硬约束
+alwaysApply: true
+---
+
+# 架构硬约束
+
+- 产品：联系人/会话优先的 Outlook 邮件客户端（Tauri 2）
+- Graph 只走 Rust `graph-rs-sdk`；禁止前端直连 Graph
+- Rust DDD：`domain` → `application` → `infrastructure`（出站）；不设 `interfaces/`
+- 入站在前端（Port → Adapter → RS 桥）；`commands/` 仅 IPC 胶水，非业务入站层
+- UI 不直接 `invoke` 散落业务
+- 不做多厂商邮件；文件夹不是主导航模型
+
+详见根目录 `AGENTS.md`。

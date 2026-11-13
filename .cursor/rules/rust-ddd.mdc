@@ -1,0 +1,26 @@
+---
+description: Rust DDD 分层与 graph-rs-sdk 边界
+globs: src-tauri/**/*.rs
+alwaysApply: false
+---
+
+# Rust DDD
+
+- `domain/`：实体、值对象、领域服务、仓储/端口；禁止 `graph-rs-sdk` / `tauri`
+- `application/`：用例编排，只依赖端口
+- `infrastructure/`：唯一允许调用 `graph-rs-sdk` 的出站实现
+- **不设 `interfaces/`**：入站在前端；`commands/` 只是 IPC 薄胶水
+
+```rust
+// ❌ BAD — command 里直接调 Graph
+#[tauri::command]
+async fn list_mail() { graph_client.mail()... }
+
+// ✅ GOOD — IPC 胶水 → 用例；Graph 在 infrastructure
+#[tauri::command]
+async fn list_conversations(svc: State<'_, ConversationService>) -> Result<Vec<ConversationDto>, AppError> {
+    Ok(svc.list_for_active_contact().await?.into_iter().map(Into::into).collect())
+}
+```
+
+领域以 `Contact` / `Conversation` / `Message` 为核心。
