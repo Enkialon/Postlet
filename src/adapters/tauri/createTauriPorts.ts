@@ -1,66 +1,157 @@
 import type { AppPorts } from '../../ports';
+import type {
+  ComposeDraft,
+  ContactListQuery,
+  ContactSyncProgress,
+  ConversationListItem,
+  ConversationListQuery,
+  ConversationMessagesQuery,
+  CreateManualGroupCommand,
+  CursorPage,
+  EnsureContactConversationCommand,
+  EnsureGroupConversationCommand,
+  GroupListQuery,
+  MailSyncProgress,
+  MarkMessagesReadCommand,
+  MergeGroupsCommand,
+  MoveThreadToGroupCommand,
+  RenameGroupCommand,
+  SaveComposeDraftCommand,
+  SendComposedMailCommand,
+  TriggerContactSyncCommand,
+  TriggerMailSyncCommand,
+  UpdateAccountDisplaySettingsCommand,
+  UpdateGroupSendMembersCommand,
+} from '../../domain/dto';
+import type {
+  Account,
+  Contact,
+  Group,
+  GroupParticipant,
+  MessageWithRecipients,
+} from '../../domain/entities';
+import type {
+  AccountId,
+  ContactId,
+  ConversationId,
+  EmailAddress,
+  GroupId,
+  MessageId,
+} from '../../domain/types';
+import { invoke, notImplemented } from './invoke';
 import { normalizeAppError } from './normalizeError';
 
 /**
- * Tauri Adapter 占位：IPC command 名称尚未定稿（见 frontend.md §10）。
- * 组合根在生产环境可切换至此；当前开发默认使用内存实现。
+ * Tauri Adapter：已注册 IPC → invoke；未实现能力显式 notImplemented。
+ *
+ * 注意：Tauri 2 命令**参数名**默认 camelCase（accountId）；
+ * 嵌套 DTO 字段仍按 serde snake_case（account_id）。
  */
 export function createTauriPorts(): AppPorts {
-  const notReady = async (): Promise<never> => {
-    throw normalizeAppError({
-      code: 'internal',
-      message: 'Tauri IPC 尚未接入，请使用内存 Adapter 开发',
-      retryable: false,
-    });
-  };
-
   return {
     account: {
-      listAccounts: notReady,
-      getAccount: notReady,
-      signIn: notReady,
-      signOut: notReady,
-      updateDisplaySettings: notReady,
-      loadDemoWorkspace: notReady,
+      listAccounts: () => invoke<Account[]>('list_accounts'),
+      getAccount: (accountId: AccountId) =>
+        invoke<Account>('get_account', { accountId }),
+      signIn: () => notImplemented('account.signIn（请用 loadDemoWorkspace）'),
+      signOut: (_accountId: AccountId) => notImplemented('account.signOut'),
+      updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>
+        invoke<Account>('update_display_settings', { cmd }),
+      loadDemoWorkspace: () => invoke<Account>('load_demo_workspace'),
     },
     sync: {
-      triggerMailSync: notReady,
-      triggerContactSync: notReady,
-      getMailSyncProgress: notReady,
-      getContactSyncProgress: notReady,
+      triggerMailSync: (_cmd: TriggerMailSyncCommand) =>
+        notImplemented('sync.triggerMailSync'),
+      triggerContactSync: (_cmd: TriggerContactSyncCommand) =>
+        notImplemented('sync.triggerContactSync'),
+      getMailSyncProgress: (accountId: AccountId) =>
+        invoke<MailSyncProgress>('get_mail_sync_progress', { accountId }),
+      getContactSyncProgress: (accountId: AccountId) =>
+        invoke<ContactSyncProgress>('get_contact_sync_progress', {
+          accountId,
+        }),
     },
     contact: {
-      listContacts: notReady,
-      getContact: notReady,
-      getContactByAddress: notReady,
+      listContacts: (query: ContactListQuery) =>
+        invoke<CursorPage<Contact>>('list_contacts', { query }),
+      getContact: (accountId: AccountId, contactId: ContactId) =>
+        invoke<Contact>('get_contact', { accountId, contactId }),
+      getContactByAddress: (accountId: AccountId, address: EmailAddress) =>
+        invoke<Contact | null>('get_contact_by_address', {
+          accountId,
+          address,
+        }),
     },
     conversation: {
-      listConversations: notReady,
-      getConversation: notReady,
-      listMessages: notReady,
-      ensureContactConversation: notReady,
-      ensureGroupConversation: notReady,
+      listConversations: (query: ConversationListQuery) =>
+        invoke<CursorPage<ConversationListItem>>('list_conversations', {
+          query,
+        }),
+      getConversation: (accountId: AccountId, conversationId: ConversationId) =>
+        invoke<ConversationListItem>('get_conversation', {
+          accountId,
+          conversationId,
+        }),
+      listMessages: (query: ConversationMessagesQuery) =>
+        invoke<CursorPage<MessageWithRecipients>>(
+          'list_conversation_messages',
+          { query },
+        ),
+      ensureContactConversation: (_cmd: EnsureContactConversationCommand) =>
+        notImplemented('conversation.ensureContactConversation'),
+      ensureGroupConversation: (_cmd: EnsureGroupConversationCommand) =>
+        notImplemented('conversation.ensureGroupConversation'),
     },
     message: {
-      getMessage: notReady,
-      ensureMessageBody: notReady,
-      markRead: notReady,
+      getMessage: (accountId: AccountId, messageId: MessageId) =>
+        invoke<MessageWithRecipients>('get_message', {
+          accountId,
+          messageId,
+        }),
+      ensureMessageBody: (accountId: AccountId, messageId: MessageId) =>
+        invoke<MessageWithRecipients>('ensure_message_body', {
+          accountId,
+          messageId,
+        }),
+      markRead: (cmd: MarkMessagesReadCommand) =>
+        invoke<void>('mark_messages_read', { cmd }),
     },
     compose: {
-      getDraft: notReady,
-      saveDraft: notReady,
-      clearDraft: notReady,
-      send: notReady,
+      getDraft: (accountId: AccountId, conversationId: ConversationId) =>
+        invoke<ComposeDraft | null>('compose_get_draft', {
+          accountId,
+          conversationId,
+        }),
+      saveDraft: (cmd: SaveComposeDraftCommand) =>
+        invoke<ComposeDraft>('compose_save_draft', { cmd }),
+      clearDraft: (accountId: AccountId, conversationId: ConversationId) =>
+        invoke<void>('compose_clear_draft', {
+          accountId,
+          conversationId,
+        }),
+      send: (cmd: SendComposedMailCommand) =>
+        invoke<MessageWithRecipients>('compose_send', { cmd }),
     },
     group: {
-      listGroups: notReady,
-      getGroup: notReady,
-      listParticipants: notReady,
-      createManualGroup: notReady,
-      renameGroup: notReady,
-      mergeGroups: notReady,
-      moveThreadToGroup: notReady,
-      updateSendMembers: notReady,
+      listGroups: (query: GroupListQuery) =>
+        invoke<CursorPage<Group>>('list_groups', { query }),
+      getGroup: (accountId: AccountId, groupId: GroupId) =>
+        invoke<Group>('get_group', { accountId, groupId }),
+      listParticipants: (accountId: AccountId, groupId: GroupId) =>
+        invoke<GroupParticipant[]>('list_group_participants', {
+          accountId,
+          groupId,
+        }),
+      createManualGroup: (_cmd: CreateManualGroupCommand) =>
+        notImplemented('group.createManualGroup'),
+      renameGroup: (_cmd: RenameGroupCommand) =>
+        notImplemented('group.renameGroup'),
+      mergeGroups: (_cmd: MergeGroupsCommand) =>
+        notImplemented('group.mergeGroups'),
+      moveThreadToGroup: (_cmd: MoveThreadToGroupCommand) =>
+        notImplemented('group.moveThreadToGroup'),
+      updateSendMembers: (_cmd: UpdateGroupSendMembersCommand) =>
+        notImplemented('group.updateSendMembers'),
     },
     platform: {
       openExternalUrl: async (url: string) => {

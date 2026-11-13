@@ -18,6 +18,13 @@ const preferences = reactive({
   panelWidths: loadWidths(),
 });
 
+const LIST_MIN = 220;
+const LIST_MAX = 520;
+
+function clampList(n: number): number {
+  return Math.min(LIST_MAX, Math.max(LIST_MIN, n));
+}
+
 function loadWidths(): PanelWidths {
   try {
     const raw = localStorage.getItem(WIDTH_KEY);
@@ -25,7 +32,8 @@ function loadWidths(): PanelWidths {
     const parsed = JSON.parse(raw) as PanelWidths;
     return {
       nav: typeof parsed.nav === 'number' ? parsed.nav : 160,
-      list: typeof parsed.list === 'number' ? parsed.list : 300,
+      list:
+        typeof parsed.list === 'number' ? clampList(parsed.list) : 300,
     };
   } catch {
     return { nav: 160, list: 300 };
@@ -41,7 +49,9 @@ export function usePreferences() {
 
   function setPanelWidths(widths: Partial<PanelWidths>): void {
     if (widths.nav != null) preferences.panelWidths.nav = widths.nav;
-    if (widths.list != null) preferences.panelWidths.list = widths.list;
+    if (widths.list != null) {
+      preferences.panelWidths.list = clampList(widths.list);
+    }
     localStorage.setItem(WIDTH_KEY, JSON.stringify(preferences.panelWidths));
   }
 

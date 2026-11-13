@@ -8,8 +8,15 @@ import Button from '../../shared/ui/Button.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
+import ListPaneResizeHandle from '../../shared/ui/ListPaneResizeHandle.vue';
+import { useListPaneWidth } from '../../shared/ui/useListPaneWidth';
 
 const ROW_SIZE = 64;
+const {
+  listStyle,
+  dragging: listDragging,
+  startDrag: startListDrag,
+} = useListPaneWidth();
 
 const {
   listState,
@@ -60,10 +67,13 @@ onMounted(() => {
 </script>
 <template>
   <section
-    class="grid h-full min-h-0 grid-cols-[minmax(260px,320px)_1fr] bg-surface-chat max-[760px]:grid-cols-1"
+    class="flex h-full min-h-0 bg-surface-chat max-[760px]:flex-col"
     aria-label="联系人"
   >
-    <aside class="flex min-h-0 flex-col border-r border-border-subtle bg-surface-sidebar">
+    <aside
+      class="flex min-h-0 shrink-0 flex-col border-r border-border-subtle bg-surface-sidebar max-[760px]:w-full! max-[760px]:border-r-0"
+      :style="listStyle"
+    >
       <header
         class="flex h-[52px] shrink-0 items-center border-b border-border-subtle px-3"
       >
@@ -166,7 +176,13 @@ onMounted(() => {
       </p>
     </aside>
 
-    <div class="bg-surface-chat p-6">
+    <ListPaneResizeHandle
+      class="max-[760px]:hidden"
+      :dragging="listDragging"
+      @start="startListDrag"
+    />
+
+    <div class="min-h-0 min-w-0 flex-1 bg-surface-chat p-6">
       <EmptyState v-if="!selected" title="选择联系人查看信息" />
       <template v-else>
         <div class="mb-5 flex items-center gap-4">

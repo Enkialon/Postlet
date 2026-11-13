@@ -1,19 +1,8 @@
 import type { AppError } from '../../domain/errors';
+import { normalizeAppError } from './normalizeAppError';
 
 export function asAppError(error: unknown): AppError {
-  if (
-    error &&
-    typeof error === 'object' &&
-    'code' in error &&
-    'message' in error &&
-    'retryable' in error
-  ) {
-    return error as AppError;
-  }
-  if (error instanceof Error) {
-    return { code: 'internal', message: error.message, retryable: true };
-  }
-  return { code: 'internal', message: '未知错误', retryable: true };
+  return normalizeAppError(error);
 }
 
 export function errorMessageForUi(error: AppError): string {
@@ -31,6 +20,7 @@ export function errorMessageForUi(error: AppError): string {
     case 'sync':
       return '同步出现问题';
     default:
-      return '出现错误，请稍后重试';
+      // 优先展示后端/IPC 原文，避免一律「请稍后重试」
+      return error.message || '出现错误，请稍后重试';
   }
 }

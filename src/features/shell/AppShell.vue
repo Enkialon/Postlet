@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
 import { navigationKey } from '../../app/provide';
-import { usePreferences } from '../../app/preferences';
 import { useAccounts } from '../accounts/useAccounts';
 import { useConversations } from '../conversations/useConversations';
 import { useMessages } from '../conversations/useMessages';
 import { useSyncStatus } from '../sync/useSyncStatus';
 import Avatar from '../../shared/ui/Avatar.vue';
+import ListPaneResizeHandle from '../../shared/ui/ListPaneResizeHandle.vue';
+import { useListPaneWidth } from '../../shared/ui/useListPaneWidth';
 import WelcomePage from '../accounts/WelcomePage.vue';
 import ConversationListPane from '../conversations/ConversationListPane.vue';
 import ReadingPane from '../conversations/ReadingPane.vue';
@@ -15,10 +16,14 @@ import GroupsPage from '../groups/GroupsPage.vue';
 import SettingsPage from '../settings/SettingsPage.vue';
 
 const nav = inject(navigationKey)!;
-const prefs = usePreferences();
 const accounts = useAccounts();
 const conversations = useConversations();
 const messages = useMessages();
+const {
+  listStyle: listPaneStyle,
+  dragging: listDragging,
+  startDrag: startListDrag,
+} = useListPaneWidth();
 
 useSyncStatus({
   onForegroundRefresh: () => {
@@ -57,9 +62,9 @@ const showReader = computed(() => {
   return !nav.narrowShowList.value && Boolean(nav.conversationId.value);
 });
 
-const listStyle = computed(() => ({
-  width: narrow.value ? '100%' : `${prefs.preferences.panelWidths.list}px`,
-}));
+const listStyle = computed(() =>
+  narrow.value ? { width: '100%' } : listPaneStyle.value,
+);
 
 const accountLabel = computed(
   () =>
@@ -190,6 +195,11 @@ function railBtn(active: boolean): string {
         >
           <ConversationListPane />
         </div>
+        <ListPaneResizeHandle
+          v-if="showList && showReader && !narrow"
+          :dragging="listDragging"
+          @start="startListDrag"
+        />
         <div
           v-show="showReader"
           class="min-h-0 min-w-0 flex-1 bg-surface-chat max-[760px]:w-full!"
