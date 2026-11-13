@@ -25,10 +25,12 @@ export function seedDemo(store: MemoryStore): void {
     mail_sync_status: 'idle',
     mail_sync_error: null,
     show_group_messages_in_contact_conversation: false,
+    include_in_all: true,
     created_at: t - 86_400_000,
     updated_at: t,
   };
   store.accounts.set(accountId, account);
+  store.markSignedIn(accountId);
 
   const contactAlice: Contact = {
     id: 'ct-alice',

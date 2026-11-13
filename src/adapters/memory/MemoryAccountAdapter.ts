@@ -8,9 +8,9 @@ export class MemoryAccountAdapter implements AccountPort {
   constructor(private readonly store: MemoryStore) {}
 
   async listAccounts(): Promise<Account[]> {
-    return [...this.store.accounts.values()].sort(
-      (a, b) => a.created_at - b.created_at,
-    );
+    return [...this.store.accounts.values()]
+      .filter((a) => this.store.signedInIds.has(a.id))
+      .sort((a, b) => a.created_at - b.created_at);
   }
 
   async getAccount(accountId: AccountId): Promise<Account> {
@@ -33,40 +33,20 @@ export class MemoryAccountAdapter implements AccountPort {
       mail_sync_status: 'idle',
       mail_sync_error: null,
       show_group_messages_in_contact_conversation: false,
+      include_in_all: true,
       created_at: t,
       updated_at: t,
     };
     this.store.accounts.set(id, account);
+    this.store.markSignedIn(id);
     this.store.folderStates.set(id, []);
     return account;
   }
 
   async signOut(accountId: AccountId): Promise<void> {
     this.store.requireAccount(accountId);
-    this.store.accounts.delete(accountId);
-    for (const key of [...this.store.contacts.keys()]) {
-      if (key.startsWith(`${accountId}:`)) this.store.contacts.delete(key);
-    }
-    for (const key of [...this.store.conversations.keys()]) {
-      if (key.startsWith(`${accountId}:`)) {
-        this.store.conversations.delete(key);
-        this.store.conversationMessages.delete(key);
-      }
-    }
-    for (const key of [...this.store.messages.keys()]) {
-      if (key.startsWith(`${accountId}:`)) {
-        this.store.messages.delete(key);
-        this.store.recipients.delete(key);
-        this.store.pendingBodies.delete(key);
-      }
-    }
-    for (const key of [...this.store.groups.keys()]) {
-      if (key.startsWith(`${accountId}:`)) {
-        this.store.groups.delete(key);
-        this.store.participants.delete(key);
-      }
-    }
-    this.store.folderStates.delete(accountId);
+    // 只结束会话；账户行与邮件保留，再登录可复用
+    this.store.markSignedOut(accountId);
   }
 
   async updateDisplaySettings(
@@ -75,6 +55,7 @@ export class MemoryAccountAdapter implements AccountPort {
     const account = this.store.requireAccount(cmd.account_id);
     account.show_group_messages_in_contact_conversation =
       cmd.show_group_messages_in_contact_conversation;
+    account.include_in_all = cmd.include_in_all;
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
     this.store.recomputeAllConversations(cmd.account_id);

@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, inject, onUnmounted, ref, watch } from 'vue';
+import {
+  computed,
+  inject,
+  nextTick,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { navigationKey } from '../../app/provide';
 import { useConversations } from './useConversations';
@@ -10,6 +17,10 @@ import {
   formatUnreadBadge,
   truncateText,
 } from '../../shared/formatting/format';
+import {
+  conversationListKey,
+  isScrollAtTop,
+} from './conversationListOrder';
 import Avatar from '../../shared/ui/Avatar.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
@@ -21,8 +32,17 @@ const ROW_SIZE = 72;
 
 const nav = inject(navigationKey)!;
 const { accountLabel, accounts } = useAccounts();
-const { listState, staleWarning, loadMore, loadInitial, openConversation } =
-  useConversations();
+const {
+  listState,
+  staleWarning,
+  loadMore,
+  loadInitial,
+  openConversation,
+  setListAtTop,
+  showNewActivityHint,
+  newActivityCount,
+  jumpToLatestOrder,
+} = useConversations();
 
 const showAccountHint = computed(() => accounts.value.length > 1);
 
@@ -30,6 +50,8 @@ const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
 const searchQuery = ref('');
 const kindOpen = ref(false);
 const kindWrapRef = ref<HTMLElement | null>(null);
+let boundScrollEl: HTMLElement | null = null;
+let lastAtTop = true;
 
 const kindOptions: { id: ConversationKindFilter; label: string }[] = [
   { id: 'all', label: '全部' },
@@ -105,6 +127,47 @@ const virtualizer = useVirtualizer(
 const virtualItems = computed(() => virtualizer.value.getVirtualItems());
 const totalSize = computed(() => virtualizer.value.getTotalSize());
 
+function onListScroll(): void {
+  const el = scrollViewport.value;
+  if (!el) return;
+  const next = isScrollAtTop(el.scrollTop, lastAtTop);
+  if (next !== lastAtTop) {
+    lastAtTop = next;
+    setListAtTop(next);
+  }
+}
+
+function bindScrollListener(el: HTMLElement | null): void {
+  if (boundScrollEl) {
+    boundScrollEl.removeEventListener('scroll', onListScroll);
+    boundScrollEl = null;
+  }
+  if (!el) return;
+  el.addEventListener('scroll', onListScroll, { passive: true });
+  boundScrollEl = el;
+  onListScroll();
+}
+
+watch(
+  scrollViewport,
+  (el) => {
+    bindScrollListener(el);
+  },
+  { flush: 'post' },
+);
+
+async function onJumpToLatest(): Promise<void> {
+  jumpToLatestOrder();
+  lastAtTop = true;
+  await nextTick();
+  const el = scrollViewport.value;
+  if (el) {
+    el.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    virtualizer.value.scrollToIndex(0, { align: 'start' });
+  }
+}
+
 watch(virtualItems, (rows) => {
   const last = rows[rows.length - 1];
   if (!last) return;
@@ -154,6 +217,10 @@ watch(kindOpen, (open) => {
 onUnmounted(() => {
   window.removeEventListener('pointerdown', onKindDocPointer, true);
   window.removeEventListener('keydown', onKindKey);
+  if (boundScrollEl) {
+    boundScrollEl.removeEventListener('scroll', onListScroll);
+    boundScrollEl = null;
+  }
 });
 
 function isActive(item: ConversationListItem): boolean {
@@ -161,6 +228,10 @@ function isActive(item: ConversationListItem): boolean {
     nav.conversationId.value === item.conversation.id &&
     nav.accountId.value === item.conversation.account_id
   );
+}
+
+function rowKey(item: ConversationListItem | undefined, fallback: string): string {
+  return item ? conversationListKey(item) : fallback;
 }
 
 function onSelect(item: ConversationListItem) {
@@ -274,8 +345,21 @@ function itemClass(active: boolean): string {
       description="试试其他关键词或切换种类"
     />
 
-    <OverlayScrollArea
+    <div
       v-else
+      class="relative m-0 flex min-h-0 flex-1 flex-col"
+    >
+      <button
+        v-if="showNewActivityHint && !searchQuery.trim()"
+        type="button"
+        class="absolute top-2 left-1/2 z-10 -translate-x-1/2 cursor-pointer rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1.5 text-[12px] text-text-primary shadow-panel outline-none transition-colors duration-150 hover:bg-surface-sidebar-hover focus-visible:border-brand/35"
+        aria-live="polite"
+        @click="onJumpToLatest"
+      >
+        ↑ {{ newActivityCount }} 个会话有新消息 · 返回顶部
+      </button>
+
+    <OverlayScrollArea
       ref="scrollAreaRef"
       class="m-0 min-h-0 flex-1"
       type="hover"
@@ -285,11 +369,7 @@ function itemClass(active: boolean): string {
       <div class="relative w-full" :style="{ height: `${totalSize}px` }">
         <div
           v-for="row in virtualItems"
-          :key="
-            filteredItems[row.index]
-              ? `${filteredItems[row.index]!.conversation.account_id}:${filteredItems[row.index]!.conversation.id}`
-              : String(row.key)
-          "
+          :key="rowKey(filteredItems[row.index], String(row.key))"
           role="option"
           :class="
             itemClass(
@@ -385,6 +465,7 @@ function itemClass(active: boolean): string {
         </div>
       </div>
     </OverlayScrollArea>
+    </div>
 
     <div v-if="listState.items.length && listState.error" class="px-4 py-3">
       <ErrorState :error="listState.error" @retry="loadMore" />

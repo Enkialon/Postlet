@@ -96,6 +96,8 @@ export interface UpsertAccountCommand {
 export interface UpdateAccountDisplaySettingsCommand {
   account_id: AccountId;
   show_group_messages_in_contact_conversation: boolean;
+  /** 是否纳入「全部账号」跨账号列表 */
+  include_in_all: boolean;
 }
 
 /** 批量标记已读 / 未读 */

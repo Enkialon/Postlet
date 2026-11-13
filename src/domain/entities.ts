@@ -41,6 +41,8 @@ export interface Account {
   mail_sync_error: string | null;
   /** 群组消息是否同时出现在联系人会话投影（默认否） */
   show_group_messages_in_contact_conversation: boolean;
+  /** 是否纳入「全部账号」列表查询（默认是；未退出也可关掉） */
+  include_in_all: boolean;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }

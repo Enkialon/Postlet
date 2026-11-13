@@ -17,6 +17,7 @@ import Avatar from '../../shared/ui/Avatar.vue';
 import ListPaneResizeHandle from '../../shared/ui/ListPaneResizeHandle.vue';
 import { useListPaneWidth } from '../../shared/ui/useListPaneWidth';
 import WelcomePage from '../accounts/WelcomePage.vue';
+import AddAccountDialog from '../accounts/AddAccountDialog.vue';
 import ConversationListPane from '../conversations/ConversationListPane.vue';
 import ReadingPane from '../conversations/ReadingPane.vue';
 import ContactsPage from '../contacts/ContactsPage.vue';
@@ -47,6 +48,7 @@ const width = ref(
 );
 const accountMenuOpen = ref(false);
 const accountMenuRef = ref<HTMLElement | null>(null);
+const addAccountOpen = ref(false);
 
 function onResize() {
   width.value = window.innerWidth;
@@ -128,6 +130,11 @@ function toggleAccountMenu(): void {
 function pickAccountFilter(filter: AccountFilter): void {
   accountMenuOpen.value = false;
   void accounts.setAccountFilter(filter);
+}
+
+function openAddAccount(): void {
+  accountMenuOpen.value = false;
+  addAccountOpen.value = true;
 }
 
 function railBtn(active: boolean): string {
@@ -235,6 +242,31 @@ function railBtn(active: boolean): string {
               >✓</span
             >
           </button>
+          <div
+            class="my-1 border-0 border-t border-border-subtle"
+            role="separator"
+          />
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full cursor-pointer items-center gap-2.5 border-0 bg-transparent px-3 py-2 text-left transition-colors duration-150 hover:bg-surface-sidebar-hover"
+            @click="openAddAccount"
+          >
+            <span
+              class="grid size-7 shrink-0 place-items-center rounded-full border border-dashed border-border-subtle text-text-secondary"
+              aria-hidden="true"
+            >
+              <svg class="size-3.5" viewBox="0 0 16 16">
+                <path
+                  fill="currentColor"
+                  d="M8 2.5a.75.75 0 0 1 .75.75v4h4a.75.75 0 0 1 0 1.5h-4v4a.75.75 0 0 1-1.5 0v-4h-4a.75.75 0 0 1 0-1.5h4v-4A.75.75 0 0 1 8 2.5Z"
+                />
+              </svg>
+            </span>
+            <span class="min-w-0 flex-1 text-[13px] font-medium text-text-primary"
+              >添加账号</span
+            >
+          </button>
         </div>
       </div>
 
@@ -334,5 +366,10 @@ function railBtn(active: boolean): string {
       <GroupsPage v-else-if="nav.page.value === 'groups'" />
       <SettingsPage v-else-if="nav.page.value === 'settings'" />
     </main>
+
+    <AddAccountDialog
+      :open="addAccountOpen"
+      @close="addAccountOpen = false"
+    />
   </div>
 </template>

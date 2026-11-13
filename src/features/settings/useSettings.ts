@@ -30,6 +30,7 @@ export function useSettings() {
       const updated = await ports.account.updateDisplaySettings({
         account_id: account.id,
         show_group_messages_in_contact_conversation: value,
+        include_in_all: account.include_in_all,
       });
       accounts.replaceCurrent(updated);
       conversations.invalidate();

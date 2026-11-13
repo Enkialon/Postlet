@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import Button from '../../shared/ui/Button.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import { useAccounts } from './useAccounts';
+import AddAccountDialog from './AddAccountDialog.vue';
 
-const { signingIn, error, signIn, loadDemoWorkspace } = useAccounts();
+const { signingIn, error, loadDemoWorkspace } = useAccounts();
+const addAccountOpen = ref(false);
 </script>
 
 <template>
@@ -18,33 +21,38 @@ const { signingIn, error, signIn, loadDemoWorkspace } = useAccounts();
         像微信一样看邮件往来
       </h1>
       <p class="m-0 text-[14px] leading-normal text-text-secondary">
-        以联系人与会话为中心。先用演示数据把业务跑通，再接 Outlook。
+        以联系人与会话为中心。登录 Outlook 账号开始，或先加载演示数据验收界面。
       </p>
       <div class="mt-1 flex flex-wrap gap-2">
         <Button
           variant="primary"
+          :disabled="signingIn"
+          aria-label="登录账号"
+          @click="addAccountOpen = true"
+        >
+          登录账号
+        </Button>
+        <Button
           :disabled="signingIn"
           aria-label="加载演示数据"
           @click="loadDemoWorkspace"
         >
           {{ signingIn ? '正在加载…' : '加载演示数据' }}
         </Button>
-        <Button
-          :disabled="signingIn"
-          aria-label="登录空账户"
-          @click="signIn"
-        >
-          登录空账户
-        </Button>
       </div>
       <p class="m-0 text-[13px] leading-normal text-text-tertiary">
-        演示模式不连邮箱，适合验收会话、联系人、群组与同步交互。
+        登录将打开系统浏览器完成 Microsoft 账号授权；演示模式不连邮箱。
       </p>
       <ErrorState
-        v-if="error"
+        v-if="error && !addAccountOpen"
         :error="error"
-        @retry="loadDemoWorkspace"
+        @retry="addAccountOpen = true"
       />
     </div>
+
+    <AddAccountDialog
+      :open="addAccountOpen"
+      @close="addAccountOpen = false"
+    />
   </section>
 </template>

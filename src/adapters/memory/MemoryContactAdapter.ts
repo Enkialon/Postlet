@@ -26,13 +26,13 @@ export class MemoryContactAdapter implements ContactPort {
 
   async listContacts(query: ContactListQuery): Promise<CursorPage<Contact>> {
     if (query.account_id) this.store.requireAccount(query.account_id);
-    const validAccounts = new Set(this.store.accounts.keys());
+    const allListIds = this.store.idsForAllLists();
     const search = query.search?.trim().toLowerCase() ?? null;
     let items = [...this.store.contacts.values()]
       .filter((c) =>
         query.account_id
           ? c.account_id === query.account_id
-          : validAccounts.has(c.account_id),
+          : allListIds.has(c.account_id),
       )
       .sort((a, b) =>
         (a.display_name || a.normalized_address).localeCompare(

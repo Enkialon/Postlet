@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:conversation-order": "npx --yes tsx src/features/conversations/conversationListOrder.selftest.ts"
   },
   "dependencies": {
     "@tanstack/vue-virtual": "^3.13.52",

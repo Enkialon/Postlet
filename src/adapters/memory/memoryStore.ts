@@ -39,6 +39,8 @@ function appError(
 /** 开发 / 验收用内存数据仓 */
 export class MemoryStore {
   accounts = new Map<AccountId, Account>();
+  /** 已登录会话；退出后账户行仍在，列表只认此集合 */
+  signedInIds = new Set<AccountId>();
   contacts = new Map<string, Contact>();
   conversations = new Map<string, Conversation>();
   conversationMessages = new Map<string, MessageId[]>();
@@ -277,6 +279,7 @@ export class MemoryStore {
 
   clearAll(): void {
     this.accounts.clear();
+    this.signedInIds.clear();
     this.contacts.clear();
     this.conversations.clear();
     this.conversationMessages.clear();
@@ -286,6 +289,23 @@ export class MemoryStore {
     this.participants.clear();
     this.folderStates.clear();
     this.pendingBodies.clear();
+  }
+
+  markSignedIn(accountId: AccountId): void {
+    this.signedInIds.add(accountId);
+  }
+
+  markSignedOut(accountId: AccountId): void {
+    this.signedInIds.delete(accountId);
+  }
+
+  /** 「全部账号」列表：已登录且 include_in_all */
+  idsForAllLists(): Set<AccountId> {
+    return new Set(
+      [...this.signedInIds].filter(
+        (id) => this.accounts.get(id)?.include_in_all !== false,
+      ),
+    );
   }
 
   normalizeEmail(address: string): EmailAddress {

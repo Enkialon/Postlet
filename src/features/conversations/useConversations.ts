@@ -1,4 +1,4 @@
-import { inject, reactive, ref, watch } from 'vue';
+import { computed, inject, reactive, ref, watch } from 'vue';
 import type { ConversationListItem } from '../../domain/dto';
 import type { ConversationKind } from '../../domain/types';
 import { portsKey, navigationKey } from '../../app/provide';
@@ -7,6 +7,12 @@ import {
   type PageState,
 } from '../../shared/state/pageState';
 import { asAppError } from '../../shared/errors/asAppError';
+import {
+  appendConversationPage,
+  applyConversationSnapshot,
+  conversationListKey,
+  itemsFromDisplayOrder,
+} from './conversationListOrder';
 
 const PAGE_SIZE = 50;
 
@@ -15,7 +21,84 @@ const listState = reactive<PageState<ConversationListItem>>(
 );
 const selected = ref<ConversationListItem | null>(null);
 const staleWarning = ref(false);
+
+/** 最新会话数据（稳定 key → 对象，字段原地更新） */
+const conversationByKey = reactive(new Map<string, ConversationListItem>());
+const canonicalOrder = ref<string[]>([]);
+const displayOrder = ref<string[]>([]);
+/** 用户是否在会话列表顶部（由列表组件上报） */
+const listAtTop = ref(true);
+const pendingActivityKeys = ref<string[]>([]);
+
+const newActivityCount = computed(() => pendingActivityKeys.value.length);
+const showNewActivityHint = computed(
+  () => !listAtTop.value && pendingActivityKeys.value.length > 0,
+);
+
 let watchBound = false;
+
+function syncListItemsFromDisplay(): void {
+  listState.items = itemsFromDisplayOrder(
+    conversationByKey,
+    displayOrder.value,
+  );
+}
+
+function resetOrderState(): void {
+  conversationByKey.clear();
+  canonicalOrder.value = [];
+  displayOrder.value = [];
+  pendingActivityKeys.value = [];
+  listAtTop.value = true;
+}
+
+function applyPageToState(
+  pageItems: ConversationListItem[],
+  options: { mode: 'replace' | 'append'; forceApplyOrder: boolean },
+): void {
+  if (options.mode === 'append') {
+    const next = appendConversationPage(
+      new Map(conversationByKey),
+      displayOrder.value,
+      canonicalOrder.value,
+      pageItems,
+    );
+    conversationByKey.clear();
+    for (const [k, v] of next.byKey) conversationByKey.set(k, v);
+    displayOrder.value = next.displayOrder;
+    canonicalOrder.value = next.canonicalOrder;
+    syncListItemsFromDisplay();
+    return;
+  }
+
+  const result = applyConversationSnapshot({
+    snapshot: pageItems,
+    previousByKey: new Map(conversationByKey),
+    previousCanonicalOrder: canonicalOrder.value,
+    previousDisplayOrder: displayOrder.value,
+    previousPendingActivityKeys: pendingActivityKeys.value,
+    atTop: listAtTop.value,
+    forceApplyOrder: options.forceApplyOrder,
+  });
+
+  conversationByKey.clear();
+  for (const [k, v] of result.byKey) conversationByKey.set(k, v);
+  canonicalOrder.value = result.canonicalOrder;
+  displayOrder.value = result.displayOrder;
+  pendingActivityKeys.value = result.pendingActivityKeys;
+  syncListItemsFromDisplay();
+}
+
+function applyCanonicalOrderNow(): void {
+  displayOrder.value = [...canonicalOrder.value];
+  // 回顶应用排序时丢掉仅存在于 loadMore 的多余项
+  const keep = new Set(canonicalOrder.value);
+  for (const key of [...conversationByKey.keys()]) {
+    if (!keep.has(key)) conversationByKey.delete(key);
+  }
+  pendingActivityKeys.value = [];
+  syncListItemsFromDisplay();
+}
 
 export function useConversations() {
   const ports = inject(portsKey)!;
@@ -58,12 +141,15 @@ export function useConversations() {
           message: '分页契约错误：has_more 但无游标',
           retryable: false,
         };
-        listState.items = page.items;
+        applyPageToState(page.items, {
+          mode: 'replace',
+          forceApplyOrder: true,
+        });
         listState.hasMore = false;
         listState.nextCursor = null;
         return;
       }
-      listState.items = page.items;
+      applyPageToState(page.items, { mode: 'replace', forceApplyOrder: true });
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
       await restoreSelection();
@@ -96,7 +182,7 @@ export function useConversations() {
       ) {
         return;
       }
-      listState.items = [...listState.items, ...page.items];
+      applyPageToState(page.items, { mode: 'append', forceApplyOrder: false });
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
       if (page.has_more && !page.next_cursor) {
@@ -134,7 +220,10 @@ export function useConversations() {
       ) {
         return;
       }
-      listState.items = page.items;
+      applyPageToState(page.items, {
+        mode: 'replace',
+        forceApplyOrder: false,
+      });
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
       listState.error = null;
@@ -156,12 +245,18 @@ export function useConversations() {
       selected.value = null;
       return;
     }
-    const found = listState.items.find(
+    const key = `${accountId}:${id}`;
+    const found = conversationByKey.get(key);
+    if (found) {
+      selected.value = found;
+      return;
+    }
+    const inList = listState.items.find(
       (i) =>
         i.conversation.id === id && i.conversation.account_id === accountId,
     );
-    if (found) {
-      selected.value = found;
+    if (inList) {
+      selected.value = inList;
       return;
     }
     try {
@@ -179,10 +274,27 @@ export function useConversations() {
     nav.setAccount(accountId);
     nav.selectConversation(conversationId);
     try {
-      selected.value = await ports.conversation.getConversation(
+      const item = await ports.conversation.getConversation(
         accountId,
         conversationId,
       );
+      const key = conversationListKey(item);
+      const merged = conversationByKey.get(key);
+      if (merged) {
+        Object.assign(merged.conversation, item.conversation);
+        merged.contact_display_name = item.contact_display_name;
+        merged.group_name = item.group_name;
+        if (item.last_message_preview) {
+          if (merged.last_message_preview) {
+            Object.assign(merged.last_message_preview, item.last_message_preview);
+          } else {
+            merged.last_message_preview = { ...item.last_message_preview };
+          }
+        }
+        selected.value = merged;
+      } else {
+        selected.value = item;
+      }
     } catch (e) {
       selected.value = null;
       listState.error = asAppError(e);
@@ -191,6 +303,28 @@ export function useConversations() {
 
   function invalidate(): void {
     void loadInitial();
+  }
+
+  function setListAtTop(next: boolean): void {
+    const wasTop = listAtTop.value;
+    listAtTop.value = next;
+    if (!wasTop && next && pendingActivityKeys.value.length > 0) {
+      applyCanonicalOrderNow();
+    } else if (!wasTop && next) {
+      // 回顶且无待处理活动：仍对齐 canonical，避免长期偏离
+      if (
+        displayOrder.value.length !== canonicalOrder.value.length ||
+        displayOrder.value.some((k, i) => k !== canonicalOrder.value[i])
+      ) {
+        applyCanonicalOrderNow();
+      }
+    }
+  }
+
+  /** 点击「返回顶部」提示：应用最新排序（滚动由列表组件负责） */
+  function jumpToLatestOrder(): void {
+    listAtTop.value = true;
+    applyCanonicalOrderNow();
   }
 
   if (!watchBound) {
@@ -204,6 +338,7 @@ export function useConversations() {
       () => {
         selected.value = null;
         Object.assign(listState, createEmptyPageState<ConversationListItem>());
+        resetOrderState();
         void loadInitial();
       },
     );
@@ -218,5 +353,12 @@ export function useConversations() {
     refreshSoft,
     openConversation,
     invalidate,
+    listAtTop,
+    setListAtTop,
+    newActivityCount,
+    showNewActivityHint,
+    jumpToLatestOrder,
+    canonicalOrder,
+    displayOrder,
   };
 }

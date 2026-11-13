@@ -51,11 +51,11 @@ export class MemoryGroupAdapter implements GroupPort {
 
   async listGroups(query: GroupListQuery): Promise<CursorPage<Group>> {
     if (query.account_id) this.store.requireAccount(query.account_id);
-    const validAccounts = new Set(this.store.accounts.keys());
+    const allListIds = this.store.idsForAllLists();
     let items = [...this.store.groups.values()].filter((g) =>
       query.account_id
         ? g.account_id === query.account_id
-        : validAccounts.has(g.account_id),
+        : allListIds.has(g.account_id),
     );
     if (!query.include_merged) {
       items = items.filter((g) => g.merged_into_id === null);
