@@ -5,14 +5,20 @@ pub mod commands;
 pub mod domain;
 pub mod infrastructure;
 
+use application::dto::ComposeDraft;
+use application::use_cases::compose_use_case;
 use infrastructure::paths::AppPaths;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use tauri::Manager;
 
-/// 进程级应用状态（本地 SQLite + 目录布局）。
+/// 进程级应用状态（本地 SQLite + 目录布局 + 写信草稿）
 pub struct AppState {
     pub db: SqlitePool,
     pub paths: AppPaths,
+    /// 会话级写信草稿（本阶段进程内，不落库）
+    pub compose_drafts: Mutex<HashMap<String, ComposeDraft>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,7 +30,11 @@ pub fn run() {
             let db =
                 tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
-            app.manage(AppState { db, paths });
+            app.manage(AppState {
+                db,
+                paths,
+                compose_drafts: Mutex::new(compose_use_case::empty_draft_map()),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -46,6 +56,10 @@ pub fn run() {
             commands::list_group_participants,
             commands::get_mail_sync_progress,
             commands::get_contact_sync_progress,
+            commands::compose_get_draft,
+            commands::compose_save_draft,
+            commands::compose_clear_draft,
+            commands::compose_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

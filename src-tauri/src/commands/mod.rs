@@ -1,14 +1,15 @@
 //! Tauri IPC 薄胶水：参数 → 用例 → DTO；不含 Graph / 业务规则。
 
 use crate::application::dto::{
-    ContactListQuery, ContactSyncProgress, ConversationListItem, ConversationListQuery,
-    ConversationMessagesQuery, CursorPage, GroupListQuery, MailSyncProgress,
-    MarkMessagesReadCommand, UpdateAccountDisplaySettingsCommand,
+    ComposeDraft, ContactListQuery, ContactSyncProgress, ConversationListItem,
+    ConversationListQuery, ConversationMessagesQuery, CursorPage, GroupListQuery,
+    MailSyncProgress, MarkMessagesReadCommand, SaveComposeDraftCommand, SendComposedMailCommand,
+    UpdateAccountDisplaySettingsCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
-    account_use_case, contact_use_case, conversation_use_case, group_use_case, message_use_case,
-    sync_use_case,
+    account_use_case, compose_use_case, contact_use_case, conversation_use_case, group_use_case,
+    message_use_case, sync_use_case,
 };
 use crate::domain::entities::{Account, Contact, Group, GroupParticipant, MessageWithRecipients};
 use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
@@ -191,4 +192,46 @@ pub async fn get_contact_sync_progress(
     account_id: String,
 ) -> Result<ContactSyncProgress, AppError> {
     sync_use_case::get_contact_sync_progress(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
+pub async fn compose_get_draft(
+    state: State<'_, AppState>,
+    account_id: String,
+    conversation_id: String,
+) -> Result<Option<ComposeDraft>, AppError> {
+    compose_use_case::get_draft(
+        &state,
+        &AccountId::new(account_id),
+        &ConversationId::new(conversation_id),
+    )
+}
+
+#[tauri::command]
+pub async fn compose_save_draft(
+    state: State<'_, AppState>,
+    cmd: SaveComposeDraftCommand,
+) -> Result<ComposeDraft, AppError> {
+    compose_use_case::save_draft(&state, cmd).await
+}
+
+#[tauri::command]
+pub async fn compose_clear_draft(
+    state: State<'_, AppState>,
+    account_id: String,
+    conversation_id: String,
+) -> Result<(), AppError> {
+    compose_use_case::clear_draft(
+        &state,
+        &AccountId::new(account_id),
+        &ConversationId::new(conversation_id),
+    )
+}
+
+#[tauri::command]
+pub async fn compose_send(
+    state: State<'_, AppState>,
+    cmd: SendComposedMailCommand,
+) -> Result<MessageWithRecipients, AppError> {
+    compose_use_case::send(&state, cmd).await
 }

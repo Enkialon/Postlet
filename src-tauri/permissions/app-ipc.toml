@@ -1,0 +1,27 @@
+[[permission]]
+identifier = "allow-ipc"
+description = "允许前端调用 Postlet 应用 IPC（读路径 + 演示种子 + 本地写信）"
+commands.allow = [
+  "list_accounts",
+  "get_account",
+  "load_demo_workspace",
+  "update_display_settings",
+  "list_contacts",
+  "get_contact",
+  "get_contact_by_address",
+  "list_conversations",
+  "get_conversation",
+  "list_conversation_messages",
+  "get_message",
+  "ensure_message_body",
+  "mark_messages_read",
+  "list_groups",
+  "get_group",
+  "list_group_participants",
+  "get_mail_sync_progress",
+  "get_contact_sync_progress",
+  "compose_get_draft",
+  "compose_save_draft",
+  "compose_clear_draft",
+  "compose_send",
+]

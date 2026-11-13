@@ -1,11 +1,13 @@
 //! 查询、命令、读模型 DTO
 
 mod commands;
+mod compose_dto;
 mod conversation_dto;
 mod page;
 mod sync_dto;
 
 pub use commands::*;
+pub use compose_dto::*;
 pub use conversation_dto::*;
 pub use page::CursorPage;
 pub use sync_dto::*;

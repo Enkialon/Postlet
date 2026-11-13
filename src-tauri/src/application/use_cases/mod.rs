@@ -2,6 +2,7 @@
 
 pub mod account_use_case;
 pub mod aggregate_worker_use_case;
+pub mod compose_use_case;
 pub mod contact_use_case;
 pub mod conversation_use_case;
 pub mod group_use_case;
