@@ -74,7 +74,8 @@ export function useMessages() {
         return;
       }
       for (const item of page.items) upsertCache(accountId, item);
-      messageState.items = page.items;
+      // Port 返回新→旧；聊天列表要旧→新，打开后滚到底部看最新
+      messageState.items = [...page.items].reverse();
       messageState.nextCursor = page.next_cursor;
       messageState.hasMore = page.has_more;
       if (page.has_more && !page.next_cursor) {
@@ -93,7 +94,11 @@ export function useMessages() {
     }
   }
 
-  async function loadMore(): Promise<void> {
+  /**
+   * 向上加载更早邮件，插入列表顶部。
+   * @returns 实际前置条数（供 UI 保持滚动锚点）
+   */
+  async function loadMore(): Promise<number> {
     const accountId = nav.accountId.value;
     const conversationId = nav.conversationId.value;
     if (
@@ -102,7 +107,7 @@ export function useMessages() {
       !messageState.hasMore ||
       messageState.loading !== 'idle'
     ) {
-      return;
+      return 0;
     }
     const version = messageState.requestVersion;
     const session = nav.sessionVersion.value;
@@ -119,21 +124,22 @@ export function useMessages() {
         version !== messageState.requestVersion ||
         session !== nav.sessionVersion.value
       ) {
-        return;
+        return 0;
       }
-      const byId = new Map(
-        messageState.items.map((i) => [i.message.id, i] as const),
-      );
-      for (const item of page.items) {
-        upsertCache(accountId, item);
-        byId.set(item.message.id, item);
-      }
-      messageState.items = [...byId.values()];
+      for (const item of page.items) upsertCache(accountId, item);
+      const existing = new Set(messageState.items.map((i) => i.message.id));
+      // page 仍是新→旧；翻成旧→新后插到顶部
+      const older = [...page.items]
+        .reverse()
+        .filter((i) => !existing.has(i.message.id));
+      messageState.items = [...older, ...messageState.items];
       messageState.nextCursor = page.next_cursor;
       messageState.hasMore = page.has_more;
+      return older.length;
     } catch (e) {
-      if (version !== messageState.requestVersion) return;
+      if (version !== messageState.requestVersion) return 0;
       messageState.error = asAppError(e);
+      return 0;
     } finally {
       if (version === messageState.requestVersion) messageState.loading = 'idle';
     }
@@ -209,17 +215,12 @@ export function useMessages() {
     await markQueue.value;
   }
 
-  async function expandMessage(messageId: MessageId): Promise<void> {
-    const next = new Set(expandedIds.value);
-    const wasExpanded = next.has(messageId);
-    if (wasExpanded) {
-      next.delete(messageId);
-      expandedIds.value = next;
-      return;
-    }
-    next.add(messageId);
-    expandedIds.value = next;
-    // 新展开周期：清除抑制
+  /**
+   * 在右侧阅读区打开一封邮件：拉取正文，并在可读后自动标已读。
+   * 不再在消息气泡下方展开。
+   */
+  async function openMessage(messageId: MessageId): Promise<void> {
+    expandedIds.value = new Set([messageId]);
     const suppressed = new Set(suppressAutoRead.value);
     suppressed.delete(messageId);
     suppressAutoRead.value = suppressed;
@@ -236,6 +237,11 @@ export function useMessages() {
     ) {
       await markRead([messageId], true);
     }
+  }
+
+  /** @deprecated 兼容旧名；等同 openMessage */
+  async function expandMessage(messageId: MessageId): Promise<void> {
+    await openMessage(messageId);
   }
 
   if (!watchBound) {
@@ -259,6 +265,7 @@ export function useMessages() {
     bodyErrors,
     loadInitial,
     loadMore,
+    openMessage,
     expandMessage,
     ensureBody,
     markRead,

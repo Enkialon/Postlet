@@ -1,85 +1,57 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, inject, type Component } from 'vue';
+import { Letter as LetterImpl } from 'vue-letter';
 import type { BodyContentType } from '../../domain/types';
 import { portsKey } from '../../app/provide';
-import {
-  isSafeExternalHttpUrl,
-  sanitizeMailHtml,
-  wrapSandboxedMailDocument,
-} from './sanitizeHtml';
 
-const props = defineProps<{
-  content: string;
-  contentType: BodyContentType;
-}>();
+/** vue-letter 的 d.ts 把可选 props 标成了 required，运行时仍有默认值 */
+const Letter = LetterImpl as Component;
 
-const ports = inject(portsKey)!;
-const iframeRef = ref<HTMLIFrameElement | null>(null);
-
-const textContent = computed(() => props.content);
-const htmlSrcdoc = computed(() =>
-  wrapSandboxedMailDocument(sanitizeMailHtml(props.content)),
+const props = withDefaults(
+  defineProps<{
+    content: string;
+    contentType: BodyContentType;
+    title?: string;
+  }>(),
+  {
+    title: '邮件正文',
+  },
 );
 
-async function onIframeClick(event: MouseEvent) {
+const ports = inject(portsKey)!;
+
+const html = computed(() =>
+  props.contentType === 'html' ? props.content : '',
+);
+const text = computed(() =>
+  props.contentType === 'text' ? props.content : '',
+);
+
+async function onClickCapture(event: MouseEvent): Promise<void> {
   const target = event.target as HTMLElement | null;
-  if (!target) return;
-  const anchor = target.closest('a');
+  const anchor = target?.closest?.('a');
   if (!anchor) return;
+  const href = anchor.getAttribute('href') || '';
+  if (!href || href.toLowerCase().startsWith('mailto:')) return;
+  if (!/^https?:\/\//i.test(href)) {
+    event.preventDefault();
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
-  const href = anchor.getAttribute('href') || '';
-  if (href.toLowerCase().startsWith('mailto:')) return;
-  if (!isSafeExternalHttpUrl(href)) return;
   await ports.platform.openExternalUrl(href);
 }
-
-function bindIframe() {
-  const doc = iframeRef.value?.contentDocument;
-  if (!doc) return;
-  doc.removeEventListener('click', onIframeClick);
-  doc.addEventListener('click', onIframeClick);
-}
-
-watch(htmlSrcdoc, () => {
-  requestAnimationFrame(bindIframe);
-});
-
-onMounted(() => requestAnimationFrame(bindIframe));
-onUnmounted(() => {
-  iframeRef.value?.contentDocument?.removeEventListener('click', onIframeClick);
-});
 </script>
 
 <template>
-  <div class="mail-body" v-no-i18n>
-    <pre v-if="contentType === 'text'" class="mail-body__text">{{
-      textContent
-    }}</pre>
-    <iframe
-      v-else
-      ref="iframeRef"
-      class="mail-body__html"
-      title="邮件正文"
-      sandbox="allow-same-origin allow-popups"
-      :srcdoc="htmlSrcdoc"
+  <div class="min-h-40 w-full" v-no-i18n @click.capture="onClickCapture">
+    <Letter
+      class-name="mail-letter__inner"
+      :html="html"
+      :text="text"
+      :use-iframe="false"
+      :iframe-title="title"
+      :allowed-schemas="['http', 'https', 'mailto']"
     />
   </div>
 </template>
-
-<style scoped>
-.mail-body__text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: inherit;
-  font-size: 0.95rem;
-  line-height: 1.5;
-}
-.mail-body__html {
-  width: 100%;
-  min-height: 160px;
-  border: 0;
-  background: transparent;
-}
-</style>

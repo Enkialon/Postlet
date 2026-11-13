@@ -1,209 +1,173 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
 import {
   displayNameOrAddress,
   formatTimestampOrUnknown,
 } from '../../shared/formatting/format';
-import Button from '../../shared/ui/Button.vue';
-import MailBodyView from '../../shared/mail-content/MailBodyView.vue';
+import Avatar from '../../shared/ui/Avatar.vue';
+import ContextMenu, {
+  type ContextMenuItem,
+} from '../../shared/ui/ContextMenu.vue';
 
 const props = defineProps<{
   item: MessageWithRecipients;
-  expanded: boolean;
-  bodyLoading: boolean;
-  bodyError: string | null;
+  selected?: boolean;
+  allowMoveThread?: boolean;
 }>();
 
 const emit = defineEmits<{
-  toggle: [];
-  retryBody: [];
+  select: [];
   markUnread: [];
   moveThread: [threadId: string];
 }>();
 
-function recipientsLine(): string {
-  return props.item.recipients
-    .filter((r) => r.role === 'to' || r.role === 'cc')
-    .map((r) => displayNameOrAddress(r.display_name, r.normalized_address))
-    .join(', ');
+const menuOpen = ref(false);
+const menuX = ref(0);
+const menuY = ref(0);
+
+const menuItems = computed<ContextMenuItem[]>(() => {
+  const items: ContextMenuItem[] = [
+    { id: 'open', label: '查看邮件' },
+    {
+      id: 'markUnread',
+      label: '标记未读',
+      disabled: !props.item.message.is_read,
+    },
+  ];
+  if (props.allowMoveThread && props.item.message.thread_id) {
+    items.push({ id: 'moveThread', label: '迁移到其他群组' });
+  }
+  return items;
+});
+
+function fromLabel(): string {
+  return (
+    displayNameOrAddress(
+      props.item.message.from_name,
+      props.item.message.from_address,
+    ) || '未知'
+  );
+}
+
+function openMenu(e: MouseEvent): void {
+  e.preventDefault();
+  menuX.value = e.clientX;
+  menuY.value = e.clientY;
+  menuOpen.value = true;
+}
+
+function onMenuSelect(id: string): void {
+  menuOpen.value = false;
+  if (id === 'open') {
+    emit('select');
+    return;
+  }
+  if (id === 'markUnread') {
+    emit('markUnread');
+    return;
+  }
+  if (id === 'moveThread' && props.item.message.thread_id) {
+    emit('moveThread', props.item.message.thread_id);
+  }
 }
 </script>
 
 <template>
   <article
-    class="card"
-    :class="{ 'card--unread': !item.message.is_read, 'card--open': expanded }"
+    class="flex max-w-[820px] items-start gap-3"
+    :class="item.message.is_outbound ? 'ml-auto flex-row justify-end' : ''"
+    @contextmenu="openMenu"
   >
-    <header class="card__head" @click="emit('toggle')">
-      <div class="card__meta">
-        <strong class="card__from" v-no-i18n>
-          {{
-            displayNameOrAddress(
-              item.message.from_name,
-              item.message.from_address,
-            )
-          }}
-        </strong>
+    <Avatar
+      v-if="!item.message.is_outbound"
+      :name="fromLabel()"
+      :size="36"
+    />
+
+    <div
+      class="grid max-w-[min(560px,78vw)] min-w-0 gap-1.5"
+      :class="item.message.is_outbound ? 'justify-items-end' : ''"
+    >
+      <div
+        class="flex items-center gap-2 px-0.5 text-[12px] text-text-tertiary"
+        :class="item.message.is_outbound ? 'justify-end' : ''"
+      >
         <span
-          v-if="!item.message.is_read"
-          class="card__unread-mark"
-          aria-label="未读"
-          >●</span
+          v-if="!item.message.is_outbound"
+          class="text-[13px] font-medium text-text-secondary"
+          v-no-i18n
         >
-        <time class="card__time">
+          {{ fromLabel() }}
+        </span>
+        <time>
           {{
             formatTimestampOrUnknown(
               item.message.received_at ?? item.message.sent_at,
             )
           }}
         </time>
-      </div>
-      <h3 class="card__subject" v-no-i18n>{{ item.message.subject }}</h3>
-      <p v-if="!expanded" class="card__preview" v-no-i18n>
-        {{ item.message.body_preview }}
-      </p>
-      <p v-if="item.message.has_attachments" class="card__attach">含附件</p>
-      <p
-        v-if="item.message.sync_status === 'pending_local'"
-        class="card__pending"
-      >
-        等待同步
-      </p>
-    </header>
-
-    <div v-if="expanded" class="card__body">
-      <dl class="card__details">
-        <div>
-          <dt>收件人</dt>
-          <dd v-no-i18n>{{ recipientsLine() || '—' }}</dd>
-        </div>
-        <div v-if="item.message.parent_folder_name">
-          <dt>文件夹</dt>
-          <dd v-no-i18n>{{ item.message.parent_folder_name }}</dd>
-        </div>
-      </dl>
-
-      <div v-if="bodyLoading" class="card__loading" aria-live="polite">
-        正在加载正文…
-      </div>
-      <div v-else-if="bodyError" class="card__error">
-        <p>{{ bodyError }}</p>
-        <Button v-if="bodyError !== '邮件已不可用'" @click="emit('retryBody')">
-          重试
-        </Button>
-      </div>
-      <p
-        v-else-if="item.message.body_content === ''"
-        class="card__empty-body"
-      >
-        此邮件正文为空
-      </p>
-      <MailBodyView
-        v-else-if="item.message.body_content != null"
-        :content="item.message.body_content"
-        :content-type="item.message.body_content_type"
-      />
-
-      <div class="card__actions">
-        <Button variant="ghost" @click="emit('markUnread')">标记未读</Button>
-        <Button
-          v-if="item.message.thread_id"
-          variant="ghost"
-          @click="emit('moveThread', item.message.thread_id)"
+        <span
+          v-if="!item.message.is_read"
+          class="font-medium text-unread"
+          aria-label="未读"
+          >未读</span
         >
-          迁移线程
-        </Button>
       </div>
+
+      <button
+        type="button"
+        class="relative max-w-full cursor-pointer rounded-lg border px-3.5 py-2.5 text-left text-text-primary transition-colors duration-150"
+        :class="[
+          item.message.is_outbound
+            ? 'border-border-bubble-out bg-bubble-outgoing'
+            : 'border-border-bubble bg-bubble-incoming',
+          selected ? 'ring-1 ring-brand/35' : '',
+        ]"
+        :aria-pressed="selected"
+        @click="emit('select')"
+        @contextmenu="openMenu"
+      >
+        <strong
+          class="mb-1 block text-[14px] font-semibold text-text-primary"
+          v-no-i18n
+          >{{ item.message.subject }}</strong
+        >
+        <p
+          class="m-0 line-clamp-3 text-[14px] leading-[1.55] break-words whitespace-pre-wrap text-text-primary"
+          v-no-i18n
+        >
+          {{ item.message.body_preview }}
+        </p>
+        <p
+          v-if="item.message.has_attachments"
+          class="mt-2 mb-0 text-[12px] text-text-tertiary"
+        >
+          含附件
+        </p>
+        <p
+          v-if="item.message.sync_status === 'pending_local'"
+          class="mt-2 mb-0 text-[12px] text-text-tertiary"
+        >
+          等待同步
+        </p>
+      </button>
     </div>
+
+    <Avatar
+      v-if="item.message.is_outbound"
+      name="我"
+      kind="self"
+      :size="36"
+    />
+
+    <ContextMenu
+      :open="menuOpen"
+      :x="menuX"
+      :y="menuY"
+      :items="menuItems"
+      @close="menuOpen = false"
+      @select="onMenuSelect"
+    />
   </article>
 </template>
-
-<style scoped>
-.card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow: hidden;
-}
-.card--unread {
-  border-left: 3px solid var(--accent);
-}
-.card__head {
-  padding: 0.85rem 1rem;
-  cursor: pointer;
-}
-.card__meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-.card__from {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card__unread-mark {
-  color: var(--accent);
-  font-size: 0.65rem;
-}
-.card__time {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-.card__subject {
-  margin: 0;
-  font-size: 0.98rem;
-  font-weight: 600;
-}
-.card__preview {
-  margin: 0.35rem 0 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-.card__attach,
-.card__pending {
-  margin: 0.35rem 0 0;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-.card__body {
-  padding: 0 1rem 1rem;
-  border-top: 1px solid var(--border);
-}
-.card__details {
-  display: grid;
-  gap: 0.35rem;
-  margin: 0.75rem 0;
-  font-size: 0.85rem;
-}
-.card__details div {
-  display: grid;
-  grid-template-columns: 4.5rem 1fr;
-  gap: 0.5rem;
-}
-.card__details dt {
-  color: var(--muted);
-}
-.card__details dd {
-  margin: 0;
-}
-.card__loading,
-.card__empty-body {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-.card__error {
-  display: grid;
-  gap: 0.5rem;
-  justify-items: start;
-  color: var(--danger);
-}
-.card__actions {
-  display: flex;
-  gap: 0.35rem;
-  margin-top: 0.75rem;
-}
-</style>
