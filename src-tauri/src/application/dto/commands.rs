@@ -18,6 +18,8 @@ pub struct UpsertAccountCommand {
 pub struct UpdateAccountDisplaySettingsCommand {
     pub account_id: AccountId,
     pub show_group_messages_in_contact_conversation: bool,
+    /// 是否纳入「全部账号」跨账号列表
+    pub include_in_all: bool,
 }
 
 /// 批量标记已读 / 未读

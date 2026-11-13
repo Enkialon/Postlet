@@ -12,9 +12,9 @@ use crate::application::error::AppError;
 use crate::domain::entities::Account;
 use crate::domain::value_objects::{AccountId, SyncStatus, TimestampMs};
 
-/// 列出本地保存的 Outlook 账户，供启动恢复和账户切换使用。
+/// 列出当前已登录的 Outlook 账户，供启动恢复和账户切换使用。
 ///
-/// 只查询本地资料，不发起登录或远端同步。
+/// 已退出（仅清凭证）的账户行仍在库中，但不出现在此列表；不发起登录或远端同步。
 pub async fn list_accounts(db: &SqlitePool) -> Result<Vec<Account>, AppError> {
     let mut conn = db.acquire().await?;
     accounts::list(&mut conn).await.map_err(Into::into)
@@ -73,6 +73,7 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             mail_sync_error: existing.mail_sync_error,
             show_group_messages_in_contact_conversation: existing
                 .show_group_messages_in_contact_conversation,
+            include_in_all: existing.include_in_all,
             created_at: existing.created_at,
             updated_at: now,
         }
@@ -90,6 +91,7 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
             show_group_messages_in_contact_conversation: false,
+            include_in_all: true,
             created_at: now,
             updated_at: now,
         }
@@ -105,7 +107,10 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
     Ok(saved)
 }
 
-/// 退出指定账户：删除本地凭证；保留账户行与本地邮件。
+/// 退出指定账户：删除本地凭证并标记未登录；保留账户行与本地邮件。
+///
+/// 再登录同一微软账户会复用原 `AccountId` 与本地数据，再拉取离线期间邮件。
+/// 列表在 `account_id` 为空时只 `IN` 已登录且 `include_in_all` 的账号。
 pub async fn sign_out(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -116,6 +121,9 @@ pub async fn sign_out(
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
     graph_auth::sign_out(&paths.credentials_dir, account_id).await?;
+    accounts::set_signed_in(&mut conn, account_id, false)
+        .await
+        .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -129,6 +137,7 @@ pub async fn update_display_settings(
         &mut tx,
         &cmd.account_id,
         cmd.show_group_messages_in_contact_conversation,
+        cmd.include_in_all,
     )
     .await
     .map_err(AppError::from)?;

@@ -48,7 +48,7 @@ pub async fn get_by_home_account_id(
 }
 
 pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError> {
-    sqlx::query("SELECT * FROM accounts ORDER BY id")
+    sqlx::query("SELECT * FROM accounts WHERE is_signed_in = 1 ORDER BY id")
         .fetch_all(&mut *conn)
         .await?
         .iter()
@@ -57,18 +57,20 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError
         .map_err(Into::into)
 }
 
-/// 当前库内有效账号 ID（仍在 `accounts` 表中）。
+/// 「全部账号」列表用的账号 ID：已登录且 `include_in_all`。
 ///
-/// 退出登录后若保留邮件行、去掉账户行，会话/联系人/群组「全部」列表用此集合做 `IN`，
-/// 避免把已失效账号的残留数据扫出来。
+/// 退出只清凭证并把 `is_signed_in=0`；未退出也可关掉 `include_in_all` 而不进跨账号扫描。
+/// 指定单账号过滤时不走此集合（见 [`resolve_list_account_ids`]）。
 pub async fn list_ids(conn: &mut SqliteConnection) -> Result<Vec<AccountId>, PortError> {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM accounts ORDER BY id")
-        .fetch_all(&mut *conn)
-        .await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE is_signed_in = 1 AND include_in_all = 1 ORDER BY id",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(ids.into_iter().map(AccountId::new).collect())
 }
 
-/// 列表过滤：指定账号则单元素；否则取有效账号列表。
+/// 列表过滤：指定账号则单元素（不受 `include_in_all` 影响）；否则取「全部」集合。
 pub async fn resolve_list_account_ids(
     conn: &mut SqliteConnection,
     account_id: Option<&AccountId>,
@@ -80,15 +82,16 @@ pub async fn resolve_list_account_ids(
 }
 
 /// 向 QueryBuilder 追加 `account_id IN (...)`。
-pub fn push_account_id_in(qb: &mut QueryBuilder<'_, Sqlite>, account_ids: &[AccountId]) {
+pub fn push_account_id_in<'qb>(
+    qb: &mut QueryBuilder<'qb, Sqlite>,
+    account_ids: &[AccountId],
+) {
     qb.push("account_id IN (");
-    {
-        let mut separated = qb.separated(", ");
-        for id in account_ids {
-            separated.push_bind(id.as_str());
-        }
+    let mut separated = qb.separated(", ");
+    for id in account_ids {
+        separated.push_bind(id.as_str().to_owned());
     }
-    qb.push(")");
+    separated.push_unseparated(")");
 }
 
 /// 登录路径：插入新账户，或只更新身份字段（不覆盖显示开关与同步元数据）。
@@ -110,14 +113,16 @@ pub async fn upsert_identity(
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
             contact_delta_link, mail_synced_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, show_group_messages_in_contact_conversation, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
+            include_in_all, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
             aliases_json=excluded.aliases_json,
             tenant_id=excluded.tenant_id,
             home_account_id=excluded.home_account_id,
+            is_signed_in=1,
             updated_at=excluded.updated_at",
     )
     .bind(account.id.as_str())
@@ -154,8 +159,9 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
             contact_delta_link, mail_synced_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, show_group_messages_in_contact_conversation, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
+            include_in_all, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
@@ -168,6 +174,8 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
             mail_sync_status=excluded.mail_sync_status,
             mail_sync_error=excluded.mail_sync_error,
             show_group_messages_in_contact_conversation=excluded.show_group_messages_in_contact_conversation,
+            is_signed_in=1,
+            include_in_all=excluded.include_in_all,
             updated_at=excluded.updated_at",
     )
     .bind(account.id.as_str())
@@ -182,10 +190,37 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
     .bind(account.show_group_messages_in_contact_conversation)
+    .bind(account.include_in_all)
     .bind(account.created_at)
     .bind(account.updated_at)
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+/// 标记账号是否处于已登录会话（退出=0，登录=1）；不删账户行与邮件。
+pub async fn set_signed_in(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    signed_in: bool,
+) -> Result<(), PortError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let result = sqlx::query(
+        "UPDATE accounts SET is_signed_in = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(signed_in)
+    .bind(now)
+    .bind(account_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(PortError::Conflict {
+            message: format!("账户不存在: {account_id}"),
+        });
+    }
     Ok(())
 }
 
@@ -243,15 +278,17 @@ pub async fn update_display_settings(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     show_group_messages_in_contact_conversation: bool,
+    include_in_all: bool,
 ) -> Result<(), PortError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let result = sqlx::query(
-        "UPDATE accounts SET show_group_messages_in_contact_conversation = ?, updated_at = ? WHERE id = ?",
+        "UPDATE accounts SET show_group_messages_in_contact_conversation = ?, include_in_all = ?, updated_at = ? WHERE id = ?",
     )
     .bind(show_group_messages_in_contact_conversation)
+    .bind(include_in_all)
     .bind(now)
     .bind(account_id.as_str())
     .execute(&mut *conn)
@@ -269,27 +306,6 @@ pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), P
         .bind(id.as_str())
         .execute(&mut *conn)
         .await?;
-    Ok(())
-}
-
-/// 退出登录：删除账户行，但保留会话/联系人/群组等业务数据（关闭外键后删除，避免 CASCADE）。
-///
-/// 再登录同一邮箱会复用原 `AccountId`，残留数据重新可见；「全部」列表靠 [`list_ids`] + `IN` 隐藏已退出账号。
-pub async fn delete_keeping_mail_data(
-    conn: &mut SqliteConnection,
-    id: &AccountId,
-) -> Result<(), PortError> {
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *conn)
-        .await?;
-    let result = sqlx::query("DELETE FROM accounts WHERE id = ?")
-        .bind(id.as_str())
-        .execute(&mut *conn)
-        .await;
-    let _ = sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *conn)
-        .await;
-    result?;
     Ok(())
 }
 

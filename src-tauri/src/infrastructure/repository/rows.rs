@@ -82,6 +82,7 @@ pub(super) fn account(row: &SqliteRow) -> Result<Account, sqlx::Error> {
         mail_sync_error: row.try_get("mail_sync_error")?,
         show_group_messages_in_contact_conversation: row
             .try_get("show_group_messages_in_contact_conversation")?,
+        include_in_all: row.try_get("include_in_all")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })

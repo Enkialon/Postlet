@@ -33,6 +33,7 @@ pub async fn seed_demo_workspace(conn: &mut SqliteConnection) -> Result<Account,
         mail_sync_status: SyncStatus::Idle,
         mail_sync_error: None,
         show_group_messages_in_contact_conversation: false,
+        include_in_all: true,
         created_at: t - 86_400_000,
         updated_at: t,
     };

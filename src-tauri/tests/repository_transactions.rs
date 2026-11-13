@@ -1,13 +1,13 @@
 //! 用真实内存 SQLite（migrate）验证模块调用、账户隔离及跨仓储事务。
 
 use postlet_lib::application::use_cases::{account_use_case, contact_use_case, conversation_use_case};
-use postlet_lib::application::dto::{ConversationListQuery, ConversationMessagesQuery};
+use postlet_lib::application::dto::{ContactListQuery, ConversationListQuery, ConversationMessagesQuery, GroupListQuery};
 use postlet_lib::domain::entities::{Contact, Group};
 use postlet_lib::domain::value_objects::{
     AccountId, ContactId, ConversationId, EmailAddress, GroupId, GroupSource, PageDirection,
 };
 use postlet_lib::infrastructure::db;
-use postlet_lib::infrastructure::repository::{contacts, groups};
+use postlet_lib::infrastructure::repository::{accounts, contacts, conversations, groups};
 use sqlx::SqlitePool;
 
 async fn database() -> SqlitePool {
@@ -197,4 +197,126 @@ async fn load_demo_workspace_supports_conversation_reads() {
     .unwrap();
     assert_eq!(messages.items.len(), 30);
     assert!(messages.has_more);
+}
+
+#[tokio::test]
+async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
+    let db = database().await;
+    let account = account_use_case::load_demo_workspace(&db).await.unwrap();
+    let mut conn = db.acquire().await.unwrap();
+
+    let before = conversations::list(
+        &mut conn,
+        &ConversationListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            kind: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!before.items.is_empty());
+
+    accounts::set_signed_in(&mut conn, &account.id, false)
+        .await
+        .unwrap();
+    assert!(accounts::list_ids(&mut conn).await.unwrap().is_empty());
+    assert!(
+        accounts::get(&mut conn, &account.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "退出后账户行仍在，便于再登录关联"
+    );
+
+    let convs = conversations::list(
+        &mut conn,
+        &ConversationListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            kind: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(convs.items.is_empty());
+
+    let cts = contacts::list(
+        &mut conn,
+        &ContactListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            search: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(cts.items.is_empty());
+
+    let gs = groups::list(
+        &mut conn,
+        &GroupListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            include_merged: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(gs.items.is_empty());
+
+    accounts::set_signed_in(&mut conn, &account.id, true)
+        .await
+        .unwrap();
+    let again = conversations::list(
+        &mut conn,
+        &ConversationListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            kind: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.items.len(), before.items.len());
+
+    // 已登录但关掉 include_in_all：不进「全部」，单账号过滤仍可见
+    accounts::update_display_settings(
+        &mut conn,
+        &account.id,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(accounts::list_ids(&mut conn).await.unwrap().is_empty());
+    let hidden_in_all = conversations::list(
+        &mut conn,
+        &ConversationListQuery {
+            account_id: None,
+            cursor: None,
+            limit: 20,
+            kind: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(hidden_in_all.items.is_empty());
+    let single = conversations::list(
+        &mut conn,
+        &ConversationListQuery {
+            account_id: Some(account.id.clone()),
+            cursor: None,
+            limit: 20,
+            kind: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(single.items.len(), before.items.len());
 }
