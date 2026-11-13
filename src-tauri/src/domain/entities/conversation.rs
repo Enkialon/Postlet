@@ -6,7 +6,7 @@ use crate::domain::value_objects::{
 };
 
 /// 会话列表缓存；归属真相在 group_thread + conversation_messages
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Conversation {
     pub id: ConversationId,
     pub account_id: AccountId,
@@ -27,7 +27,7 @@ pub struct Conversation {
 }
 
 /// 消息 ↔ 会话多对多附着
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversationMessageLink {
     pub account_id: AccountId,
     pub conversation_id: ConversationId,

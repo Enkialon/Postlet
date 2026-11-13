@@ -1,0 +1,194 @@
+//! Tauri IPC 薄胶水：参数 → 用例 → DTO；不含 Graph / 业务规则。
+
+use crate::application::dto::{
+    ContactListQuery, ContactSyncProgress, ConversationListItem, ConversationListQuery,
+    ConversationMessagesQuery, CursorPage, GroupListQuery, MailSyncProgress,
+    MarkMessagesReadCommand, UpdateAccountDisplaySettingsCommand,
+};
+use crate::application::error::AppError;
+use crate::application::use_cases::{
+    account_use_case, contact_use_case, conversation_use_case, group_use_case, message_use_case,
+    sync_use_case,
+};
+use crate::domain::entities::{Account, Contact, Group, GroupParticipant, MessageWithRecipients};
+use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
+use crate::AppState;
+use tauri::State;
+
+#[tauri::command]
+pub async fn list_accounts(state: State<'_, AppState>) -> Result<Vec<Account>, AppError> {
+    account_use_case::list_accounts(&state.db).await
+}
+
+#[tauri::command]
+pub async fn get_account(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Account, AppError> {
+    account_use_case::get_account(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
+pub async fn load_demo_workspace(state: State<'_, AppState>) -> Result<Account, AppError> {
+    account_use_case::load_demo_workspace(&state.db).await
+}
+
+#[tauri::command]
+pub async fn update_display_settings(
+    state: State<'_, AppState>,
+    cmd: UpdateAccountDisplaySettingsCommand,
+) -> Result<Account, AppError> {
+    account_use_case::update_display_settings(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn list_contacts(
+    state: State<'_, AppState>,
+    query: ContactListQuery,
+) -> Result<CursorPage<Contact>, AppError> {
+    contact_use_case::list_contacts(&state.db, query).await
+}
+
+#[tauri::command]
+pub async fn get_contact(
+    state: State<'_, AppState>,
+    account_id: String,
+    contact_id: String,
+) -> Result<Contact, AppError> {
+    contact_use_case::get_contact(
+        &state.db,
+        &AccountId::new(account_id),
+        &ContactId::new(contact_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_contact_by_address(
+    state: State<'_, AppState>,
+    account_id: String,
+    address: String,
+) -> Result<Option<Contact>, AppError> {
+    let email = crate::domain::value_objects::EmailAddress::parse(&address).ok_or_else(|| {
+        AppError::validation("无效邮箱地址")
+    })?;
+    contact_use_case::get_contact_by_address(&state.db, &AccountId::new(account_id), &email).await
+}
+
+#[tauri::command]
+pub async fn list_conversations(
+    state: State<'_, AppState>,
+    query: ConversationListQuery,
+) -> Result<CursorPage<ConversationListItem>, AppError> {
+    conversation_use_case::list_conversations(&state.db, query).await
+}
+
+#[tauri::command]
+pub async fn get_conversation(
+    state: State<'_, AppState>,
+    account_id: String,
+    conversation_id: String,
+) -> Result<ConversationListItem, AppError> {
+    conversation_use_case::get_conversation(
+        &state.db,
+        &AccountId::new(account_id),
+        &ConversationId::new(conversation_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_conversation_messages(
+    state: State<'_, AppState>,
+    query: ConversationMessagesQuery,
+) -> Result<CursorPage<MessageWithRecipients>, AppError> {
+    conversation_use_case::list_messages(&state.db, query).await
+}
+
+#[tauri::command]
+pub async fn get_message(
+    state: State<'_, AppState>,
+    account_id: String,
+    message_id: String,
+) -> Result<MessageWithRecipients, AppError> {
+    message_use_case::get_message(
+        &state.db,
+        &AccountId::new(account_id),
+        &MessageId::new(message_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn ensure_message_body(
+    state: State<'_, AppState>,
+    account_id: String,
+    message_id: String,
+) -> Result<MessageWithRecipients, AppError> {
+    message_use_case::ensure_message_body(
+        &state.db,
+        &AccountId::new(account_id),
+        &MessageId::new(message_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn mark_messages_read(
+    state: State<'_, AppState>,
+    cmd: MarkMessagesReadCommand,
+) -> Result<(), AppError> {
+    message_use_case::mark_read(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn list_groups(
+    state: State<'_, AppState>,
+    query: GroupListQuery,
+) -> Result<CursorPage<Group>, AppError> {
+    group_use_case::list_groups(&state.db, query).await
+}
+
+#[tauri::command]
+pub async fn get_group(
+    state: State<'_, AppState>,
+    account_id: String,
+    group_id: String,
+) -> Result<Group, AppError> {
+    group_use_case::get_group(
+        &state.db,
+        &AccountId::new(account_id),
+        &GroupId::new(group_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_group_participants(
+    state: State<'_, AppState>,
+    account_id: String,
+    group_id: String,
+) -> Result<Vec<GroupParticipant>, AppError> {
+    group_use_case::list_participants(
+        &state.db,
+        &AccountId::new(account_id),
+        &GroupId::new(group_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_mail_sync_progress(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<MailSyncProgress, AppError> {
+    sync_use_case::get_mail_sync_progress(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
+pub async fn get_contact_sync_progress(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<ContactSyncProgress, AppError> {
+    sync_use_case::get_contact_sync_progress(&state.db, &AccountId::new(account_id)).await
+}

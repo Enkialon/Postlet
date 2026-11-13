@@ -1,9 +1,10 @@
-//! 领域 ID newtype（透明字符串语义；序列化由 Application/IPC DTO 负责）
+//! 领域 ID newtype（透明字符串语义；序列化与前端 string ID 对齐）
 
 macro_rules! string_id {
     ($(#[$meta:meta])* $name:ident, $doc:expr) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+        #[serde(transparent)]
         $(#[$meta])*
         pub struct $name(String);
 

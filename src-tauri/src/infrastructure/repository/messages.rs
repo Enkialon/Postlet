@@ -19,9 +19,16 @@ pub async fn get(
         return Ok(None);
     };
     let message = super::rows::message(&row)?;
-    let recipients = sqlx::query("SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq")
-        .bind(account_id.as_str()).bind(id.as_str()).fetch_all(&mut *conn).await?
-        .iter().map(super::rows::messagerecipient).collect::<Result<Vec<_>, _>>()?;
+    let recipients = sqlx::query(
+        "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
+    )
+    .bind(account_id.as_str())
+    .bind(id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::messagerecipient)
+    .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
@@ -33,20 +40,122 @@ pub async fn get_by_graph_id(
     account_id: &AccountId,
     graph_id: &GraphImmutableId,
 ) -> Result<Option<MessageWithRecipients>, PortError> {
-    let _ = (conn, account_id, graph_id);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::get_by_graph_id".into(),
-    })
+    let row = sqlx::query("SELECT * FROM messages WHERE account_id = ? AND graph_id = ?")
+        .bind(account_id.as_str())
+        .bind(graph_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let message = super::rows::message(&row)?;
+    let id = message.id.clone();
+    let recipients = sqlx::query(
+        "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
+    )
+    .bind(account_id.as_str())
+    .bind(id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::messagerecipient)
+    .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(MessageWithRecipients {
+        message,
+        recipients,
+    }))
 }
 
 pub async fn upsert_with_recipients(
     conn: &mut SqliteConnection,
-    message: &MessageWithRecipients,
+    bundle: &MessageWithRecipients,
 ) -> Result<(), PortError> {
-    let _ = (conn, message);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::upsert_with_recipients".into(),
-    })
+    let m = &bundle.message;
+    sqlx::query(
+        "INSERT INTO messages (
+            id, account_id, graph_id, thread_id, graph_change_key, internet_message_id,
+            conversation_index, subject, body_preview, body_content_type, body_content,
+            from_address, from_name, received_at, sent_at, created_at_graph,
+            is_read, is_draft, is_outbound, has_attachments, importance,
+            folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, id) DO UPDATE SET
+            graph_id=excluded.graph_id,
+            thread_id=excluded.thread_id,
+            graph_change_key=excluded.graph_change_key,
+            internet_message_id=excluded.internet_message_id,
+            conversation_index=excluded.conversation_index,
+            subject=excluded.subject,
+            body_preview=excluded.body_preview,
+            body_content_type=excluded.body_content_type,
+            body_content=excluded.body_content,
+            from_address=excluded.from_address,
+            from_name=excluded.from_name,
+            received_at=excluded.received_at,
+            sent_at=excluded.sent_at,
+            created_at_graph=excluded.created_at_graph,
+            is_read=excluded.is_read,
+            is_draft=excluded.is_draft,
+            is_outbound=excluded.is_outbound,
+            has_attachments=excluded.has_attachments,
+            importance=excluded.importance,
+            folder_id=excluded.folder_id,
+            parent_folder_name=excluded.parent_folder_name,
+            sync_status=excluded.sync_status,
+            local_updated_at=excluded.local_updated_at,
+            remote_updated_at=excluded.remote_updated_at",
+    )
+    .bind(m.id.as_str())
+    .bind(m.account_id.as_str())
+    .bind(m.graph_id.as_ref().map(|g| g.as_str()))
+    .bind(m.thread_id.as_ref().map(|t| t.as_str()))
+    .bind(&m.graph_change_key)
+    .bind(&m.internet_message_id)
+    .bind(&m.conversation_index)
+    .bind(&m.subject)
+    .bind(&m.body_preview)
+    .bind(m.body_content_type.as_str())
+    .bind(&m.body_content)
+    .bind(m.from_address.as_ref().map(|a| a.as_str()))
+    .bind(&m.from_name)
+    .bind(m.received_at)
+    .bind(m.sent_at)
+    .bind(m.created_at_graph)
+    .bind(m.is_read)
+    .bind(m.is_draft)
+    .bind(m.is_outbound)
+    .bind(m.has_attachments)
+    .bind(m.importance.as_str())
+    .bind(m.folder_id.as_ref().map(|f| f.as_str()))
+    .bind(&m.parent_folder_name)
+    .bind(m.sync_status.as_str())
+    .bind(m.local_updated_at)
+    .bind(m.remote_updated_at)
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("DELETE FROM message_recipients WHERE account_id = ? AND message_id = ?")
+        .bind(m.account_id.as_str())
+        .bind(m.id.as_str())
+        .execute(&mut *conn)
+        .await?;
+
+    for r in &bundle.recipients {
+        sqlx::query(
+            "INSERT INTO message_recipients (
+                account_id, message_id, role, seq, normalized_address, display_name
+            ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(r.account_id.as_str())
+        .bind(r.message_id.as_str())
+        .bind(r.role.as_str())
+        .bind(r.seq)
+        .bind(r.normalized_address.as_str())
+        .bind(&r.display_name)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn mark_read(
@@ -55,10 +164,28 @@ pub async fn mark_read(
     message_ids: &[MessageId],
     is_read: bool,
 ) -> Result<Vec<MessageId>, PortError> {
-    let _ = (conn, account_id, message_ids, is_read);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::mark_read".into(),
-    })
+    let mut changed = Vec::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    for id in message_ids {
+        let result = sqlx::query(
+            "UPDATE messages SET is_read = ?, local_updated_at = ?
+             WHERE account_id = ? AND id = ? AND is_read != ?",
+        )
+        .bind(is_read)
+        .bind(now)
+        .bind(account_id.as_str())
+        .bind(id.as_str())
+        .bind(is_read)
+        .execute(&mut *conn)
+        .await?;
+        if result.rows_affected() > 0 {
+            changed.push(id.clone());
+        }
+    }
+    Ok(changed)
 }
 
 pub async fn mark_deleted_remote(
@@ -66,10 +193,22 @@ pub async fn mark_deleted_remote(
     account_id: &AccountId,
     message_ids: &[MessageId],
 ) -> Result<(), PortError> {
-    let _ = (conn, account_id, message_ids);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::mark_deleted_remote".into(),
-    })
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    for id in message_ids {
+        sqlx::query(
+            "UPDATE messages SET sync_status = 'deleted_remote', local_updated_at = ?
+             WHERE account_id = ? AND id = ?",
+        )
+        .bind(now)
+        .bind(account_id.as_str())
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn delete_physical(
@@ -77,10 +216,14 @@ pub async fn delete_physical(
     account_id: &AccountId,
     message_ids: &[MessageId],
 ) -> Result<(), PortError> {
-    let _ = (conn, account_id, message_ids);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::delete_physical".into(),
-    })
+    for id in message_ids {
+        sqlx::query("DELETE FROM messages WHERE account_id = ? AND id = ?")
+            .bind(account_id.as_str())
+            .bind(id.as_str())
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 pub async fn list_by_thread(
@@ -88,8 +231,16 @@ pub async fn list_by_thread(
     account_id: &AccountId,
     thread_id: &ThreadId,
 ) -> Result<Vec<Message>, PortError> {
-    let _ = (conn, account_id, thread_id);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::messages::list_by_thread".into(),
-    })
+    sqlx::query(
+        "SELECT * FROM messages WHERE account_id = ? AND thread_id = ? AND sync_status != 'deleted_remote'
+         ORDER BY received_at DESC, id DESC",
+    )
+    .bind(account_id.as_str())
+    .bind(thread_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::message)
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(Into::into)
 }

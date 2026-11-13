@@ -5,7 +5,7 @@ use crate::domain::value_objects::{
 };
 
 /// 业务群组（自动 / 手动）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Group {
     pub id: GroupId,
     pub account_id: AccountId,
@@ -22,7 +22,7 @@ pub struct Group {
 }
 
 /// 线程 → 群组主归属（账户内每个 thread 最多一行）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GroupThread {
     pub account_id: AccountId,
     pub group_id: GroupId,
@@ -31,7 +31,7 @@ pub struct GroupThread {
 }
 
 /// 群组成员投影（观测 + 发信）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GroupParticipant {
     pub account_id: AccountId,
     pub group_id: GroupId,

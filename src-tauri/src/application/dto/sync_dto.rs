@@ -4,7 +4,7 @@ use crate::domain::entities::MailFolderSyncState;
 use crate::domain::value_objects::{AccountId, FolderId, SyncStatus, TimestampMs};
 
 /// 邮件同步进度读模型
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailSyncProgress {
     pub account_id: AccountId,
     pub mail_sync_status: SyncStatus,
@@ -14,7 +14,7 @@ pub struct MailSyncProgress {
 }
 
 /// 联系人同步进度读模型
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContactSyncProgress {
     pub account_id: AccountId,
     pub contact_synced_at: Option<TimestampMs>,
@@ -22,7 +22,7 @@ pub struct ContactSyncProgress {
 }
 
 /// 触发邮件同步
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerMailSyncCommand {
     pub account_id: AccountId,
     /// 空则使用当前跟踪文件夹集合
@@ -30,7 +30,7 @@ pub struct TriggerMailSyncCommand {
 }
 
 /// 触发联系人同步
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerContactSyncCommand {
     pub account_id: AccountId,
 }

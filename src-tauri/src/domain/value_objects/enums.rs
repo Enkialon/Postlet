@@ -4,44 +4,82 @@
 pub type TimestampMs = i64;
 
 /// 账户级 / 文件夹级同步状态机
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SyncStatus {
-    /// 空闲
     Idle,
-    /// 进行中
     Running,
-    /// 失败
     Error,
 }
 
+impl SyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// 单封邮件相对远端的同步状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MessageSyncStatus {
-    /// 已与远端对齐
     Synced,
-    /// 仅本地变更，待推送
     PendingLocal,
-    /// 远端已删（软删）；不参与列表/未读
     DeletedRemote,
 }
 
+impl MessageSyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Synced => "synced",
+            Self::PendingLocal => "pending_local",
+            Self::DeletedRemote => "deleted_remote",
+        }
+    }
+}
+
 /// 邮件正文类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BodyContentType {
     Text,
     Html,
 }
 
+impl BodyContentType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Html => "html",
+        }
+    }
+}
+
 /// 重要度
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Importance {
     Low,
     Normal,
     High,
 }
 
+impl Importance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+        }
+    }
+}
+
 /// 收件人角色（对应 message_recipients.role）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RecipientRole {
     To,
     Cc,
@@ -49,50 +87,73 @@ pub enum RecipientRole {
     ReplyTo,
 }
 
+impl RecipientRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::To => "to",
+            Self::Cc => "cc",
+            Self::Bcc => "bcc",
+            Self::ReplyTo => "reply_to",
+        }
+    }
+}
+
 /// 群组诞生方式（不是线程归组的第二套规则）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GroupSource {
-    /// 聚合自动创建
     Auto,
-    /// 用户空手创建
     Manual,
 }
 
+impl GroupSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 /// 会话种类
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConversationKind {
-    /// 联系人一对一投影
     Contact,
-    /// 群组会话
     Group,
 }
 
+impl ConversationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Contact => "contact",
+            Self::Group => "group",
+        }
+    }
+}
+
 /// 会话聚合任务状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AggregateJobStatus {
-    /// 首次待处理
     Pending,
-    /// 持有租约处理中
     Processing,
-    /// 已完成
     Completed,
-    /// 失败后待重试
     Retry,
-    /// 有限重试耗尽或永久错误，等待人工处理或新数据
     Failed,
 }
 
 /// 会话内消息分页方向
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PageDirection {
-    /// 更旧（时间倒序「加载更多」）
     Older,
-    /// 更新
     Newer,
 }
 
 /// 聚合结果终态 / 中间态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AggregationOutcome {
     Completed,
     Partial,

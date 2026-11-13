@@ -3,7 +3,7 @@
 use crate::domain::value_objects::{AccountId, FolderId, SyncStatus, TimestampMs};
 
 /// 按账户 + 文件夹保存的邮件增量游标（非文件夹导航模型）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailFolderSyncState {
     pub account_id: AccountId,
     pub folder_id: FolderId,

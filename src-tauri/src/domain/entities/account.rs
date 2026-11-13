@@ -5,7 +5,7 @@ use crate::domain::value_objects::{
 };
 
 /// Outlook 账户（租户根）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Account {
     pub id: AccountId,
     /// 主邮箱（规范化）

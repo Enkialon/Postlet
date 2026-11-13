@@ -3,7 +3,7 @@
 use crate::domain::value_objects::{AccountId, ContactId, EmailAddress, TimestampMs};
 
 /// 通讯录本地缓存
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Contact {
     pub id: ContactId,
     pub account_id: AccountId,

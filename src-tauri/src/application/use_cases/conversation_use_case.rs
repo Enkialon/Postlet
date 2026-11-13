@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 
 use crate::application::dto::{
     ConversationListItem, ConversationListQuery, ConversationMessagesQuery, CursorPage,
-    EnsureContactConversationCommand,
+    EnsureContactConversationCommand, EnsureGroupConversationCommand,
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{Conversation, MessageWithRecipients};
@@ -23,30 +23,19 @@ pub async fn list_conversations(
         .map_err(Into::into)
 }
 
-/// 在指定账户内获取会话详情；不存在时返回未找到错误。
-///
-/// 当前仅返回会话实体，最新邮件预览、联系人名称和群组名称尚未补全。
+/// 在指定账户内获取会话详情（含列表预览字段）；不存在时返回未找到错误。
 pub async fn get_conversation(
     db: &SqlitePool,
     account_id: &AccountId,
     conversation_id: &ConversationId,
 ) -> Result<ConversationListItem, AppError> {
     let mut conn = db.acquire().await?;
-    // 读模型补全由仓储实现，当前保持已有实体返回行为
-    let conversation = conversations::get(&mut conn, account_id, conversation_id)
+    conversations::get_list_item(&mut conn, account_id, conversation_id)
         .await?
-        .ok_or_else(|| AppError::not_found(format!("会话不存在: {conversation_id}")))?;
-    Ok(ConversationListItem {
-        conversation,
-        last_message_preview: None,
-        contact_display_name: None,
-        group_name: None,
-    })
+        .ok_or_else(|| AppError::not_found(format!("会话不存在: {conversation_id}")))
 }
 
 /// 按游标及方向分页读取会话附着的邮件和收件人，不按文件夹组织邮件。
-///
-/// 当前仓储查询尚未实现，调用会返回未实现错误。
 pub async fn list_messages(
     db: &SqlitePool,
     query: ConversationMessagesQuery,
@@ -59,7 +48,7 @@ pub async fn list_messages(
 
 /// 按账户及规范化地址取得或创建联系人会话，必要时创建占位联系人。
 ///
-/// 联系人与会话写入应共用事务；当前为骨架，返回未实现错误。
+/// 当前为骨架，返回未实现错误。
 pub async fn ensure_contact_conversation(
     db: &SqlitePool,
     cmd: EnsureContactConversationCommand,
@@ -67,5 +56,18 @@ pub async fn ensure_contact_conversation(
     let _ = (db, cmd);
     Err(AppError::not_implemented(
         "conversation_use_case::ensure_contact_conversation",
+    ))
+}
+
+/// 确保存在群组会话（解析到存活根群组）。
+///
+/// 当前为骨架，返回未实现错误。
+pub async fn ensure_group_conversation(
+    db: &SqlitePool,
+    cmd: EnsureGroupConversationCommand,
+) -> Result<Conversation, AppError> {
+    let _ = (db, cmd);
+    Err(AppError::not_implemented(
+        "conversation_use_case::ensure_group_conversation",
     ))
 }

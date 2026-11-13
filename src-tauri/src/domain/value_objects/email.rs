@@ -3,7 +3,8 @@
 use std::fmt;
 
 /// 规范化邮箱：trim + lowercase
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct EmailAddress(String);
 
 impl EmailAddress {

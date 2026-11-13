@@ -6,7 +6,7 @@ use crate::domain::value_objects::{
 };
 
 /// 邮件真相（Graph 同步落库）；会话归属不改写本实体
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: MessageId,
     pub account_id: AccountId,
@@ -43,7 +43,7 @@ pub struct Message {
 }
 
 /// 收件人拆行
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MessageRecipient {
     pub account_id: AccountId,
     pub message_id: MessageId,
@@ -55,7 +55,7 @@ pub struct MessageRecipient {
 }
 
 /// 邮件 + 收件人读写聚合
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MessageWithRecipients {
     pub message: Message,
     pub recipients: Vec<MessageRecipient>,

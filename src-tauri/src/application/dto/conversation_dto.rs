@@ -7,7 +7,7 @@ use crate::domain::value_objects::{
 };
 
 /// 会话列表查询
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversationListQuery {
     pub account_id: AccountId,
     pub cursor: Option<String>,
@@ -17,7 +17,7 @@ pub struct ConversationListQuery {
 }
 
 /// 会话内消息查询
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversationMessagesQuery {
     pub account_id: AccountId,
     pub conversation_id: ConversationId,
@@ -28,7 +28,7 @@ pub struct ConversationMessagesQuery {
 }
 
 /// 列表用消息摘要
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MessagePreview {
     pub id: MessageId,
     pub subject: String,
@@ -44,7 +44,7 @@ pub struct MessagePreview {
 }
 
 /// 会话列表项（含预览派生）
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversationListItem {
     pub conversation: Conversation,
     /// 列表预览；软删消息不出现
