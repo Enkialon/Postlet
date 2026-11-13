@@ -18,6 +18,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  close: [];
   retryBody: [];
 }>();
 
@@ -86,13 +87,23 @@ const folderLabel = computed(
     aria-label="邮件阅读"
   >
     <OverlayScrollArea class="min-h-0 flex-1" type="hover">
-      <div class="bg-surface-elevated px-6 py-5">
-        <h1
-          class="mt-0 mb-4 text-[20px] leading-snug font-semibold text-text-primary"
-          v-no-i18n
-        >
-          {{ item.message.subject || '（无主题）' }}
-        </h1>
+      <div class="bg-surface-elevated px-5 pt-1.5 pb-5">
+        <div class="mb-2.5 flex items-start gap-2">
+          <h1
+            class="mt-0 mb-0 min-w-0 flex-1 text-[16px] leading-snug font-semibold text-text-primary"
+            v-no-i18n
+          >
+            {{ item.message.subject || '（无主题）' }}
+          </h1>
+          <Button
+            variant="ghost"
+            class="!px-2 shrink-0"
+            aria-label="关闭"
+            @click="emit('close')"
+          >
+            ✕
+          </Button>
+        </div>
 
         <div class="flex items-start gap-3">
           <Avatar

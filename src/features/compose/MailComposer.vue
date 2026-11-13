@@ -3,6 +3,8 @@ import { computed, inject, nextTick, onMounted, ref, watch } from 'vue';
 import { navigationKey } from '../../app/provide';
 import type { MessageWithRecipients } from '../../domain/entities';
 import Button from '../../shared/ui/Button.vue';
+import PaneResizeHandle from '../../shared/ui/PaneResizeHandle.vue';
+import { useComposePaneHeight } from '../../shared/ui/useComposePaneHeight';
 import { useMailEditor } from './useMailEditor';
 import { useComposeDraft } from './useComposeDraft';
 import MailEditorCore from './MailEditorCore.vue';
@@ -22,12 +24,18 @@ const emit = defineEmits<{
 const nav = inject(navigationKey)!;
 
 const mode = ref<'compact' | 'full'>('compact');
+const rootEl = ref<HTMLElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const showCc = ref(false);
 const showBcc = ref(false);
 const dragOver = ref(false);
 const ccFieldRef = ref<InstanceType<typeof RecipientChipsInput> | null>(null);
 const bccFieldRef = ref<InstanceType<typeof RecipientChipsInput> | null>(null);
+const {
+  compactStyle,
+  dragging: heightDragging,
+  startDrag: startHeightDrag,
+} = useComposePaneHeight(rootEl);
 
 const mailEditor = useMailEditor({ placeholder: '写邮件…' });
 const {
@@ -228,17 +236,27 @@ defineExpose({
 
 <template>
   <div
+    ref="rootEl"
     class="flex flex-col bg-surface-elevated"
     :class="
       mode === 'full'
         ? 'absolute inset-0 z-[5]'
-        : 'shrink-0 border-t border-border-subtle'
+        : 'relative shrink-0 border-t border-border-subtle'
     "
+    :style="mode === 'compact' ? compactStyle : undefined"
     :aria-label="mode === 'full' ? '完整写信' : '快捷写信'"
     @dragover.prevent="dragOver = true"
     @dragleave="dragOver = false"
     @drop="onDrop"
   >
+    <PaneResizeHandle
+      v-if="mode === 'compact'"
+      class="absolute inset-x-0 top-0"
+      orientation="horizontal"
+      :dragging="heightDragging"
+      label="调整写信高度"
+      @start="startHeightDrag"
+    />
     <template v-if="mode === 'full'">
       <div class="shrink-0 space-y-2 border-b border-border-subtle px-4 py-3">
         <div class="grid grid-cols-[3rem_1fr] items-start gap-2 text-[13px]">
@@ -328,7 +346,7 @@ defineExpose({
       :class="
         mode === 'full'
           ? 'flex-1 overflow-auto px-4 py-3'
-          : 'max-h-[400px] min-h-[104px] overflow-auto px-3 pt-2'
+          : 'compose-editor--compact min-h-0 flex-1 overflow-auto px-3 pt-2'
       "
       :data-drag-over="dragOver ? '1' : undefined"
     >

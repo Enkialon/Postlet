@@ -14,6 +14,8 @@ import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import Dialog from '../../shared/ui/Dialog.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
+import PaneResizeHandle from '../../shared/ui/PaneResizeHandle.vue';
+import { useReadingAsideWidth } from '../../shared/ui/useReadingAsideWidth';
 import MessageCard from './MessageCard.vue';
 import MailReadingPane from './MailReadingPane.vue';
 import MailComposer from '../compose/MailComposer.vue';
@@ -48,6 +50,16 @@ const scrollViewport = computed(
 );
 const composerRef = ref<InstanceType<typeof MailComposer> | null>(null);
 const composeFull = ref(false);
+const threadPaneRef = ref<HTMLElement | null>(null);
+/** Outlook 式右侧邮件属性；有值时侧栏显示邮件详情而非会话详情 */
+const mailDetail = ref<MessageWithRecipients | null>(null);
+const {
+  asideStyle,
+  dragging: asideDragging,
+  startDrag: startAsideDrag,
+} = useReadingAsideWidth(threadPaneRef, () =>
+  mailDetail.value ? 'mail' : 'detail',
+);
 /** 切换会话后只自动贴底一次，避免加载更多时又被拽到底 */
 const pendingStickBottom = ref(Boolean(nav.conversationId.value));
 let loadingOlder = false;
@@ -144,8 +156,6 @@ const detailParticipants = ref<GroupParticipant[]>([]);
 const detailLastMessage = ref<MessageWithRecipients | null>(null);
 const detailError = ref<string | null>(null);
 const detailLoading = ref(false);
-/** Outlook 式右侧邮件属性；有值时侧栏显示邮件详情而非会话详情 */
-const mailDetail = ref<MessageWithRecipients | null>(null);
 
 const showingMailDetail = computed(
   () => nav.detailOpen.value && mailDetail.value != null,
@@ -384,7 +394,10 @@ watch(
         </Button>
       </header>
 
-      <div class="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref="threadPaneRef"
+        class="relative flex min-h-0 flex-1 flex-col"
+      >
         <ErrorState
           v-if="messageState.error && messageState.items.length === 0"
           :error="messageState.error"
@@ -454,19 +467,32 @@ watch(
           @click="closeDetailPanel"
         />
 
-        <aside
+        <div
           v-if="!composeFull && nav.detailOpen.value && (mailDetail || selected)"
-          class="absolute inset-y-0 right-0 z-[4] flex w-[min(300px,100%)] flex-col overflow-auto border-l border-border-subtle bg-surface-elevated p-4"
-          :class="
-            showingMailDetail ? 'w-[min(640px,100%)] overflow-hidden p-0' : ''
-          "
-          :aria-label="showingMailDetail ? '邮件阅读' : '会话详情'"
+          class="absolute inset-y-0 right-0 z-[4] flex"
+          :style="asideStyle"
         >
+          <PaneResizeHandle
+            orientation="vertical"
+            :dragging="asideDragging"
+            :label="showingMailDetail ? '调整邮件阅读宽度' : '调整会话详情宽度'"
+            @start="startAsideDrag"
+          />
+          <aside
+            class="flex min-h-0 min-w-0 flex-1 flex-col border-l border-border-subtle bg-surface-elevated"
+            :class="
+              showingMailDetail
+                ? 'overflow-hidden p-0'
+                : 'overflow-auto p-4'
+            "
+            :aria-label="showingMailDetail ? '邮件阅读' : '会话详情'"
+          >
           <MailReadingPane
             v-if="mailDetail"
             :item="mailDetail"
             :body-loading="mailBodyLoading"
             :body-error="mailBodyError"
+            @close="closeDetailPanel"
             @retry-body="ensureBody(mailDetail.message.id)"
           />
 
@@ -593,7 +619,8 @@ watch(
               <Button variant="ghost" @click="closeDetailPanel">关闭</Button>
             </div>
           </template>
-        </aside>
+          </aside>
+        </div>
 
         <MailComposer
           ref="composerRef"

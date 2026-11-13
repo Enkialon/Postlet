@@ -165,6 +165,12 @@
   min-height: 2.5rem;
   outline: none;
 }
+
+/* 快捷写信：编辑区撑满父级（父级高度随阅读区 % 缩放） */
+.compose-editor--compact .mail-editor-host,
+.compose-editor--compact .mail-editor-host .ProseMirror {
+  min-height: 100%;
+}
 .mail-editor-host .ProseMirror p {
   margin: 0 0 0.5em;
 }
