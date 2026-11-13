@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useGroups } from './useGroups';
+import Avatar from '../../shared/ui/Avatar.vue';
 import Button from '../../shared/ui/Button.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import Dialog from '../../shared/ui/Dialog.vue';
+import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 import type { Group } from '../../domain/entities';
+
+const ROW_SIZE = 60;
 
 const {
   listState,
@@ -23,6 +28,35 @@ const {
   mergeInto,
   loadAllRootGroups,
 } = useGroups();
+
+const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
+const scrollViewport = computed(
+  () => scrollAreaRef.value?.viewport ?? null,
+);
+
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: listState.items.length,
+    getScrollElement: () => scrollViewport.value,
+    estimateSize: () => ROW_SIZE,
+    overscan: 10,
+  })),
+);
+
+const virtualItems = computed(() => virtualizer.value.getVirtualItems());
+const totalSize = computed(() => virtualizer.value.getTotalSize());
+
+watch(virtualItems, (rows) => {
+  const last = rows[rows.length - 1];
+  if (!last) return;
+  if (
+    last.index >= listState.items.length - 8 &&
+    listState.hasMore &&
+    listState.loading === 'idle'
+  ) {
+    void loadMore();
+  }
+});
 
 const createOpen = ref(false);
 const renameOpen = ref(false);
@@ -102,12 +136,16 @@ async function confirmMerge() {
   if (ok) mergeOpen.value = false;
 }
 </script>
-
 <template>
-  <section class="groups" aria-label="群组">
-    <aside class="groups__list">
-      <header class="groups__toolbar">
-        <h2>群组</h2>
+  <section
+    class="grid h-full min-h-0 grid-cols-[minmax(260px,320px)_1fr] bg-surface-chat max-[760px]:grid-cols-1"
+    aria-label="群组"
+  >
+    <aside class="flex min-h-0 flex-col border-r border-border-subtle bg-surface-sidebar">
+      <header
+        class="flex items-center justify-between border-b border-border-subtle px-3.5 py-3.5"
+      >
+        <h2 class="m-0 text-base font-semibold text-text-primary">群组</h2>
         <Button variant="primary" @click="openCreate">创建</Button>
       </header>
 
@@ -120,32 +158,69 @@ async function confirmMerge() {
         v-else-if="listState.loading === 'idle' && listState.items.length === 0"
         title="没有群组"
       />
-      <ul v-else class="items">
-        <li
-          v-for="g in listState.items"
-          :key="g.id"
-          class="item"
-          :class="{ 'item--active': selected?.id === g.id }"
-          tabindex="0"
-          @click="openGroup(g.id)"
-          @keydown.enter="openGroup(g.id)"
-        >
-          <strong v-no-i18n>{{ g.name || '未命名群组' }}</strong>
-        </li>
-      </ul>
-      <div v-if="listState.hasMore" class="more">
-        <Button @click="loadMore">加载更多</Button>
-      </div>
+      <OverlayScrollArea
+        v-else
+        ref="scrollAreaRef"
+        class="m-0 min-h-0 flex-1"
+        type="hover"
+      >
+        <div class="relative w-full" :style="{ height: `${totalSize}px` }">
+          <div
+            v-for="row in virtualItems"
+            :key="String(row.key)"
+            class="absolute top-0 left-0 box-border flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 transition-colors duration-150 hover:bg-surface-sidebar-hover"
+            :class="
+              selected?.id === listState.items[row.index]?.id
+                ? 'bg-surface-sidebar-selected'
+                : ''
+            "
+            tabindex="0"
+            :style="{
+              height: `${row.size}px`,
+              transform: `translateY(${row.start}px)`,
+            }"
+            @click="
+              listState.items[row.index] &&
+                openGroup(listState.items[row.index]!.id)
+            "
+            @keydown.enter="
+              listState.items[row.index] &&
+                openGroup(listState.items[row.index]!.id)
+            "
+          >
+            <template v-if="listState.items[row.index]">
+              <Avatar
+                :name="listState.items[row.index]!.name || '群'"
+                kind="group"
+                :size="40"
+              />
+              <strong
+                class="overflow-hidden text-[14px] font-semibold text-ellipsis whitespace-nowrap text-text-primary"
+                v-no-i18n
+                >{{ listState.items[row.index]!.name || '未命名群组' }}</strong
+              >
+            </template>
+          </div>
+        </div>
+      </OverlayScrollArea>
+      <p
+        v-if="listState.loading === 'more'"
+        class="m-0 p-2.5 text-[13px] text-text-secondary"
+      >
+        加载中…
+      </p>
     </aside>
 
-    <div class="groups__detail">
+    <div class="overflow-auto bg-surface-chat px-6 py-5">
       <EmptyState v-if="!selected" title="选择群组查看详情" />
       <template v-else>
-        <h2 v-no-i18n>{{ selected.name || '未命名群组' }}</h2>
-        <p class="meta">
+        <h2 class="mb-1 mt-0 text-base font-semibold text-text-primary" v-no-i18n>
+          {{ selected.name || '未命名群组' }}
+        </h2>
+        <p class="text-[13px] text-text-secondary">
           来源：{{ selected.source === 'manual' ? '手动' : '自动' }}
         </p>
-        <div class="actions">
+        <div class="my-3 flex flex-wrap gap-2">
           <Button variant="primary" @click="openGroupConversation()">
             打开会话
           </Button>
@@ -153,21 +228,27 @@ async function confirmMerge() {
           <Button @click="openMembers">发信成员</Button>
           <Button @click="openMerge">合并到…</Button>
         </div>
-        <p v-if="actionError" class="err">{{ actionError }}</p>
+        <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
 
-        <h3>成员</h3>
-        <ul class="participants">
-          <li v-for="p in participants" :key="p.normalized_address">
-            <span v-no-i18n>{{
+        <h3 class="text-[14px] font-medium text-text-primary">成员</h3>
+        <ul class="my-2 grid list-none gap-0 p-0">
+          <li
+            v-for="p in participants"
+            :key="p.normalized_address"
+            class="flex justify-between gap-3 border-b border-border-subtle py-2"
+          >
+            <span class="text-[14px] text-text-primary" v-no-i18n>{{
               p.display_name || p.normalized_address
             }}</span>
-            <span class="tags">
+            <span class="flex flex-wrap gap-1.5 text-[12px] text-text-tertiary">
               <span v-if="p.is_observed">往来成员</span>
               <span v-if="p.is_send_member">发信成员配置</span>
             </span>
           </li>
         </ul>
-        <p class="hint">发信成员配置为将来发信保留，V1 不提供发送入口。</p>
+        <p class="text-[13px] text-text-secondary">
+          发信成员配置为将来发信保留，V1 不提供发送入口。
+        </p>
       </template>
     </div>
 
@@ -178,15 +259,15 @@ async function confirmMerge() {
       @close="createOpen = false"
       @confirm="confirmCreate"
     >
-      <label class="field">
+      <label class="mt-2.5 grid gap-1.5 text-[13px] [&_input]:rounded-md [&_input]:border [&_input]:border-border-subtle [&_input]:bg-surface-input [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-[14px] [&_textarea]:rounded-md [&_textarea]:border [&_textarea]:border-border-subtle [&_textarea]:bg-surface-input [&_textarea]:px-2.5 [&_textarea]:py-2 [&_textarea]:text-[14px] [&_select]:rounded-md [&_select]:border [&_select]:border-border-subtle [&_select]:bg-surface-input [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-[14px]">
         名称
         <input v-model="createName" />
       </label>
-      <label class="field">
+      <label class="mt-2.5 grid gap-1.5 text-[13px] [&_input]:rounded-md [&_input]:border [&_input]:border-border-subtle [&_input]:bg-surface-input [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-[14px] [&_textarea]:rounded-md [&_textarea]:border [&_textarea]:border-border-subtle [&_textarea]:bg-surface-input [&_textarea]:px-2.5 [&_textarea]:py-2 [&_textarea]:text-[14px] [&_select]:rounded-md [&_select]:border [&_select]:border-border-subtle [&_select]:bg-surface-input [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-[14px]">
         成员地址（可选，逗号或换行分隔）
         <textarea v-model="createMembers" rows="4" />
       </label>
-      <p v-if="actionError" class="err">{{ actionError }}</p>
+      <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
     </Dialog>
 
     <Dialog
@@ -196,11 +277,11 @@ async function confirmMerge() {
       @close="renameOpen = false"
       @confirm="confirmRename"
     >
-      <label class="field">
+      <label class="mt-2.5 grid gap-1.5 text-[13px] [&_input]:rounded-md [&_input]:border [&_input]:border-border-subtle [&_input]:bg-surface-input [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-[14px] [&_textarea]:rounded-md [&_textarea]:border [&_textarea]:border-border-subtle [&_textarea]:bg-surface-input [&_textarea]:px-2.5 [&_textarea]:py-2 [&_textarea]:text-[14px] [&_select]:rounded-md [&_select]:border [&_select]:border-border-subtle [&_select]:bg-surface-input [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-[14px]">
         名称
         <input v-model="renameName" />
       </label>
-      <p v-if="actionError" class="err">{{ actionError }}</p>
+      <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
     </Dialog>
 
     <Dialog
@@ -210,11 +291,11 @@ async function confirmMerge() {
       @close="membersOpen = false"
       @confirm="confirmMembers"
     >
-      <label class="field">
+      <label class="mt-2.5 grid gap-1.5 text-[13px] [&_input]:rounded-md [&_input]:border [&_input]:border-border-subtle [&_input]:bg-surface-input [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-[14px] [&_textarea]:rounded-md [&_textarea]:border [&_textarea]:border-border-subtle [&_textarea]:bg-surface-input [&_textarea]:px-2.5 [&_textarea]:py-2 [&_textarea]:text-[14px] [&_select]:rounded-md [&_select]:border [&_select]:border-border-subtle [&_select]:bg-surface-input [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-[14px]">
         完整发信成员集合
         <textarea v-model="membersText" rows="6" />
       </label>
-      <p v-if="actionError" class="err">{{ actionError }}</p>
+      <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
     </Dialog>
 
     <Dialog
@@ -228,7 +309,7 @@ async function confirmMerge() {
       <p>
         将源群组「{{ selected?.name }}」并入目标群组。此操作不可在前端撤销。
       </p>
-      <label class="field">
+      <label class="mt-2.5 grid gap-1.5 text-[13px] [&_input]:rounded-md [&_input]:border [&_input]:border-border-subtle [&_input]:bg-surface-input [&_input]:px-2.5 [&_input]:py-2 [&_input]:text-[14px] [&_textarea]:rounded-md [&_textarea]:border [&_textarea]:border-border-subtle [&_textarea]:bg-surface-input [&_textarea]:px-2.5 [&_textarea]:py-2 [&_textarea]:text-[14px] [&_select]:rounded-md [&_select]:border [&_select]:border-border-subtle [&_select]:bg-surface-input [&_select]:px-2.5 [&_select]:py-2 [&_select]:text-[14px]">
         目标根群组
         <select v-model="mergeTargetId">
           <option
@@ -241,116 +322,7 @@ async function confirmMerge() {
           </option>
         </select>
       </label>
-      <p v-if="actionError" class="err">{{ actionError }}</p>
+      <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
     </Dialog>
   </section>
 </template>
-
-<style scoped>
-.groups {
-  height: 100%;
-  display: grid;
-  grid-template-columns: minmax(240px, 320px) 1fr;
-  min-height: 0;
-}
-.groups__list {
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.groups__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem;
-  border-bottom: 1px solid var(--border);
-}
-.groups__toolbar h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-.items {
-  list-style: none;
-  margin: 0;
-  padding: 0.35rem;
-  overflow: auto;
-  flex: 1;
-}
-.item {
-  padding: 0.65rem;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.item--active,
-.item:hover {
-  background: var(--surface-2);
-}
-.groups__detail {
-  padding: 1.25rem;
-  overflow: auto;
-}
-.groups__detail h2 {
-  margin: 0 0 0.35rem;
-}
-.meta,
-.hint {
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0.75rem 0;
-}
-.participants {
-  list-style: none;
-  margin: 0.5rem 0;
-  padding: 0;
-  display: grid;
-  gap: 0.45rem;
-}
-.participants li {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.45rem 0;
-  border-bottom: 1px solid var(--border);
-}
-.tags {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-.field {
-  display: grid;
-  gap: 0.35rem;
-  margin-top: 0.65rem;
-}
-.field input,
-.field textarea,
-.field select {
-  font: inherit;
-  padding: 0.4rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-}
-.err {
-  color: var(--danger);
-  font-size: 0.85rem;
-}
-.more {
-  padding: 0.65rem;
-}
-
-@media (max-width: 760px) {
-  .groups {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

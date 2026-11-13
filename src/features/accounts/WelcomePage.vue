@@ -7,14 +7,20 @@ const { signingIn, error, signIn, loadDemoWorkspace } = useAccounts();
 </script>
 
 <template>
-  <section class="welcome">
-    <div class="welcome__panel">
-      <p class="welcome__brand">Postlet</p>
-      <h1>欢迎使用 Postlet</h1>
-      <p class="welcome__desc">
-        以联系人与会话为中心的 Outlook 邮件客户端。
+  <section class="grid min-h-full place-items-center bg-surface-chat p-8">
+    <div
+      class="grid w-[min(420px,100%)] justify-items-start gap-3 rounded-lg border border-border-subtle bg-surface-elevated p-6"
+    >
+      <p class="m-0 text-[28px] font-semibold tracking-tight text-brand">
+        Postlet
       </p>
-      <div class="welcome__actions">
+      <h1 class="m-0 text-base font-semibold text-text-primary">
+        像微信一样看邮件往来
+      </h1>
+      <p class="m-0 text-[14px] leading-normal text-text-secondary">
+        以联系人与会话为中心。先用演示数据把业务跑通，再接 Outlook。
+      </p>
+      <div class="mt-1 flex flex-wrap gap-2">
         <Button
           variant="primary"
           :disabled="signingIn"
@@ -31,8 +37,8 @@ const { signingIn, error, signIn, loadDemoWorkspace } = useAccounts();
           登录空账户
         </Button>
       </div>
-      <p class="welcome__hint">
-        当前未接 Outlook：演示数据可走完会话 / 联系人 / 群组业务；空账户用于空态验收。
+      <p class="m-0 text-[13px] leading-normal text-text-tertiary">
+        演示模式不连邮箱，适合验收会话、联系人、群组与同步交互。
       </p>
       <ErrorState
         v-if="error"
@@ -42,50 +48,3 @@ const { signingIn, error, signIn, loadDemoWorkspace } = useAccounts();
     </div>
   </section>
 </template>
-
-<style scoped>
-.welcome {
-  min-height: 100%;
-  display: grid;
-  place-items: center;
-  padding: 2rem;
-  background:
-    radial-gradient(ellipse at 20% 10%, #dce8f5 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 90%, #e8efe6 0%, transparent 45%),
-    var(--bg);
-}
-.welcome__panel {
-  width: min(420px, 100%);
-  display: grid;
-  gap: 0.85rem;
-  justify-items: start;
-}
-.welcome__brand {
-  margin: 0;
-  font-family: "Segoe UI Semibold", "Source Han Sans SC", sans-serif;
-  font-size: 2rem;
-  letter-spacing: -0.03em;
-  color: var(--accent);
-}
-h1 {
-  margin: 0;
-  font-size: 1.35rem;
-  font-weight: 600;
-}
-.welcome__desc {
-  margin: 0 0 0.5rem;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.welcome__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.welcome__hint {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
-  line-height: 1.45;
-}
-</style>
