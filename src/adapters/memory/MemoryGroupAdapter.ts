@@ -50,9 +50,9 @@ export class MemoryGroupAdapter implements GroupPort {
   constructor(private readonly store: MemoryStore) {}
 
   async listGroups(query: GroupListQuery): Promise<CursorPage<Group>> {
-    this.store.requireAccount(query.account_id);
-    let items = [...this.store.groups.values()].filter(
-      (g) => g.account_id === query.account_id,
+    if (query.account_id) this.store.requireAccount(query.account_id);
+    let items = [...this.store.groups.values()].filter((g) =>
+      query.account_id ? g.account_id === query.account_id : true,
     );
     if (!query.include_merged) {
       items = items.filter((g) => g.merged_into_id === null);

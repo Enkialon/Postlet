@@ -85,20 +85,20 @@ pub struct EnsureGroupConversationCommand {
     pub group_id: GroupId,
 }
 
-/// 联系人列表查询
+/// 联系人列表查询；`account_id` 为空时跨账号
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContactListQuery {
-    pub account_id: AccountId,
+    pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
     /// 显示名 / 地址前缀
     pub search: Option<String>,
 }
 
-/// 群组列表查询
+/// 群组列表查询；`account_id` 为空时跨账号
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GroupListQuery {
-    pub account_id: AccountId,
+    pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
     /// 默认 false：只返回根群组（merged_into_id 为空）

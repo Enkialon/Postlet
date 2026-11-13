@@ -5,6 +5,7 @@ import { navigationKey, portsKey } from '../../app/provide';
 import { useConversations } from './useConversations';
 import { useMessages } from './useMessages';
 import { useGroups } from '../groups/useGroups';
+import { useAccounts } from '../accounts/useAccounts';
 import {
   displayNameOrAddress,
   formatTimestamp,
@@ -43,6 +44,7 @@ const {
   loadInitial,
 } = useMessages();
 const groups = useGroups();
+const { accounts, accountLabel } = useAccounts();
 
 const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
 const scrollViewport = computed(
@@ -173,6 +175,12 @@ const title = computed(() => {
       item.conversation.normalized_address,
     ) || '会话'
   );
+});
+
+const ownerAccountLabel = computed(() => {
+  if (accounts.value.length < 2) return null;
+  const id = selected.value?.conversation.account_id;
+  return id ? accountLabel(id) : null;
 });
 
 const showEmptyHint = computed(
@@ -378,13 +386,22 @@ watch(
         >
           返回
         </Button>
-        <h2
-          class="m-0 min-w-0 flex-1 overflow-hidden text-left text-base font-semibold text-ellipsis whitespace-nowrap text-text-primary"
-          v-no-i18n
-          :title="title"
-        >
-          {{ title }}
-        </h2>
+        <div class="min-w-0 flex-1">
+          <h2
+            class="m-0 overflow-hidden text-left text-base font-semibold text-ellipsis whitespace-nowrap text-text-primary"
+            v-no-i18n
+            :title="title"
+          >
+            {{ title }}
+          </h2>
+          <p
+            v-if="ownerAccountLabel"
+            class="m-0 overflow-hidden text-[11px] text-ellipsis whitespace-nowrap text-text-tertiary"
+            v-no-i18n
+          >
+            {{ ownerAccountLabel }}
+          </p>
+        </div>
         <Button
           variant="ghost"
           aria-label="会话详情"

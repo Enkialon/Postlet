@@ -159,7 +159,7 @@ async fn load_demo_workspace_supports_conversation_reads() {
     let page = conversation_use_case::list_conversations(
         &db,
         ConversationListQuery {
-            account_id: account.id.clone(),
+            account_id: Some(account.id.clone()),
             cursor: None,
             limit: 50,
             kind: None,

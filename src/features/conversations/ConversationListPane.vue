@@ -3,6 +3,7 @@ import { computed, inject, onUnmounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { navigationKey } from '../../app/provide';
 import { useConversations } from './useConversations';
+import { useAccounts } from '../accounts/useAccounts';
 import {
   displayNameOrAddress,
   formatChatTime,
@@ -14,12 +15,16 @@ import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 import type { ConversationKindFilter } from '../../app/navigation';
+import type { ConversationListItem } from '../../domain/dto';
 
 const ROW_SIZE = 72;
 
 const nav = inject(navigationKey)!;
+const { accountLabel, accounts } = useAccounts();
 const { listState, staleWarning, loadMore, loadInitial, openConversation } =
   useConversations();
+
+const showAccountHint = computed(() => accounts.value.length > 1);
 
 const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
 const searchQuery = ref('');
@@ -151,12 +156,19 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKindKey);
 });
 
-function onSelect(id: string) {
-  void openConversation(id);
+function isActive(item: ConversationListItem): boolean {
+  return (
+    nav.conversationId.value === item.conversation.id &&
+    nav.accountId.value === item.conversation.account_id
+  );
 }
 
-function onKeySelect(e: KeyboardEvent, id: string) {
-  if (e.key === 'Enter') onSelect(id);
+function onSelect(item: ConversationListItem) {
+  void openConversation(item.conversation.account_id, item.conversation.id);
+}
+
+function onKeySelect(e: KeyboardEvent, item: ConversationListItem) {
+  if (e.key === 'Enter') onSelect(item);
 }
 
 function itemClass(active: boolean): string {
@@ -273,17 +285,20 @@ function itemClass(active: boolean): string {
       <div class="relative w-full" :style="{ height: `${totalSize}px` }">
         <div
           v-for="row in virtualItems"
-          :key="String(row.key)"
+          :key="
+            filteredItems[row.index]
+              ? `${filteredItems[row.index]!.conversation.account_id}:${filteredItems[row.index]!.conversation.id}`
+              : String(row.key)
+          "
           role="option"
           :class="
             itemClass(
-              nav.conversationId.value ===
-                filteredItems[row.index]?.conversation.id,
+              !!filteredItems[row.index] &&
+                isActive(filteredItems[row.index]!),
             )
           "
           :aria-selected="
-            nav.conversationId.value ===
-            filteredItems[row.index]?.conversation.id
+            !!filteredItems[row.index] && isActive(filteredItems[row.index]!)
           "
           tabindex="0"
           :title="
@@ -294,12 +309,11 @@ function itemClass(active: boolean): string {
             transform: `translateY(${row.start}px)`,
           }"
           @click="
-            filteredItems[row.index] &&
-              onSelect(filteredItems[row.index]!.conversation.id)
+            filteredItems[row.index] && onSelect(filteredItems[row.index]!)
           "
           @keydown="
             filteredItems[row.index] &&
-              onKeySelect($event, filteredItems[row.index]!.conversation.id)
+              onKeySelect($event, filteredItems[row.index]!)
           "
         >
           <template v-if="filteredItems[row.index]">
@@ -340,7 +354,17 @@ function itemClass(active: boolean): string {
                   class="m-0 min-w-0 flex-1 overflow-hidden text-[12px] leading-normal text-ellipsis whitespace-nowrap text-text-secondary"
                   v-no-i18n
                 >
-                  {{ previewOf(filteredItems[row.index]!) }}
+                  <span
+                    v-if="showAccountHint"
+                    class="text-text-tertiary"
+                    v-no-i18n
+                    >{{
+                      accountLabel(
+                        filteredItems[row.index]!.conversation.account_id,
+                      )
+                    }}
+                    · </span
+                  >{{ previewOf(filteredItems[row.index]!) }}
                 </p>
                 <span
                   v-if="

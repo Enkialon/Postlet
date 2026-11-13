@@ -84,26 +84,45 @@ pub async fn list(
             message: "分页大小须为 1..500".into(),
         });
     }
-    // 按最近消息时间倒序；空会话排后；同时间用 id 稳定排序。游标格式："{last_message_at}:{id}"
-    let (cursor_at, cursor_id) = parse_conv_cursor(query.cursor.as_deref())?;
+    // 按最近消息时间倒序；空会话排后；同时间用 account_id+id 稳定排序。
+    // 游标："{last_message_at}:{account_id}:{id}"（兼容旧 "{at}:{id}"）
+    let (cursor_at, mut cursor_account, cursor_id) =
+        parse_conv_cursor(query.cursor.as_deref())?;
+    let account_filter = query.account_id.as_ref().map(|a| a.as_str());
+    // 旧游标无 account 时，单账号查询用过滤账号补齐
+    if cursor_account.is_none() {
+        cursor_account = account_filter.map(|s| s.to_owned());
+    }
     let rows = sqlx::query(
         "SELECT * FROM conversations
-         WHERE account_id = ?
+         WHERE (? IS NULL OR account_id = ?)
            AND (? IS NULL OR kind = ?)
            AND (
              ? IS NULL
              OR (COALESCE(last_message_at, -1) < ?)
-             OR (COALESCE(last_message_at, -1) = ? AND id > ?)
+             OR (
+               COALESCE(last_message_at, -1) = ?
+               AND account_id > ?
+             )
+             OR (
+               COALESCE(last_message_at, -1) = ?
+               AND account_id = ?
+               AND id > ?
+             )
            )
-         ORDER BY (last_message_at IS NULL), last_message_at DESC, id ASC
+         ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC
          LIMIT ?",
     )
-    .bind(query.account_id.as_str())
+    .bind(account_filter)
+    .bind(account_filter)
     .bind(kind)
     .bind(kind)
     .bind(cursor_id.as_deref())
     .bind(cursor_at.unwrap_or(i64::MAX))
     .bind(cursor_at.unwrap_or(-1))
+    .bind(cursor_account.as_deref().unwrap_or(""))
+    .bind(cursor_at.unwrap_or(-1))
+    .bind(cursor_account.as_deref().unwrap_or(""))
     .bind(cursor_id.as_deref())
     .bind(i64::from(query.limit) + 1)
     .fetch_all(&mut *conn)
@@ -118,8 +137,9 @@ pub async fn list(
     let next_cursor = if has_more {
         conversations.last().map(|c| {
             format!(
-                "{}:{}",
+                "{}:{}:{}",
                 c.last_message_at.unwrap_or(-1),
+                c.account_id.as_str(),
                 c.id.as_str()
             )
         })
@@ -137,17 +157,31 @@ pub async fn list(
     })
 }
 
-fn parse_conv_cursor(cursor: Option<&str>) -> Result<(Option<i64>, Option<String>), PortError> {
+fn parse_conv_cursor(
+    cursor: Option<&str>,
+) -> Result<(Option<i64>, Option<String>, Option<String>), PortError> {
     let Some(raw) = cursor else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
-    let (at, id) = raw.split_once(':').ok_or_else(|| PortError::Conflict {
-        message: "无效会话游标".into(),
-    })?;
-    let at: i64 = at.parse().map_err(|_| PortError::Conflict {
-        message: "无效会话游标时间".into(),
-    })?;
-    Ok((Some(at), Some(id.to_owned())))
+    let parts: Vec<&str> = raw.splitn(3, ':').collect();
+    match parts.as_slice() {
+        [at, account_id, id] => {
+            let at: i64 = at.parse().map_err(|_| PortError::Conflict {
+                message: "无效会话游标时间".into(),
+            })?;
+            Ok((Some(at), Some((*account_id).to_owned()), Some((*id).to_owned())))
+        }
+        // 兼容旧游标 "{at}:{id}"
+        [at, id] => {
+            let at: i64 = at.parse().map_err(|_| PortError::Conflict {
+                message: "无效会话游标时间".into(),
+            })?;
+            Ok((Some(at), None, Some((*id).to_owned())))
+        }
+        _ => Err(PortError::Conflict {
+            message: "无效会话游标".into(),
+        }),
+    }
 }
 
 async fn enrich_item(

@@ -10,10 +10,17 @@ export type AppPage =
 
 export type ConversationKindFilter = 'all' | 'contact' | 'group';
 
+/** `all` = 列表不按账号过滤；具体 id = 只查该账号 */
+export type AccountFilter = AccountId | 'all';
+
 const LAST_ACCOUNT_KEY = 'postlet.lastAccountId';
+const ACCOUNT_FILTER_KEY = 'postlet.accountFilter';
 
 /** 仅保存可恢复本地 ID，不含正文 / Token */
 export interface NavigationState {
+  /** 列表过滤：全部或单一账号 */
+  accountFilter: AccountFilter;
+  /** 当前读写上下文账号（会话/联系人归属；回复与发信跟这个走） */
   accountId: AccountId | null;
   page: AppPage;
   conversationId: ConversationId | null;
@@ -26,6 +33,7 @@ export interface NavigationState {
 }
 
 const state = reactive<NavigationState>({
+  accountFilter: 'all',
   accountId: null,
   page: 'welcome',
   conversationId: null,
@@ -37,6 +45,7 @@ const state = reactive<NavigationState>({
 });
 
 export function useNavigation() {
+  const accountFilter = computed(() => state.accountFilter);
   const accountId = computed(() => state.accountId);
   const page = computed(() => state.page);
   const conversationId = computed(() => state.conversationId);
@@ -46,9 +55,23 @@ export function useNavigation() {
   const narrowShowList = computed(() => state.narrowShowList);
   const detailOpen = computed(() => state.detailOpen);
 
+  /** 列表查询用的 account_id：全部 → null */
+  const listAccountId = computed((): AccountId | null =>
+    state.accountFilter === 'all' ? null : state.accountFilter,
+  );
+
   function bumpSession(): number {
     state.sessionVersion += 1;
     return state.sessionVersion;
+  }
+
+  function setAccountFilter(filter: AccountFilter): void {
+    state.accountFilter = filter;
+    localStorage.setItem(ACCOUNT_FILTER_KEY, filter);
+    if (filter !== 'all') {
+      state.accountId = filter;
+      localStorage.setItem(LAST_ACCOUNT_KEY, filter);
+    }
   }
 
   function setAccount(id: AccountId | null): void {
@@ -59,6 +82,13 @@ export function useNavigation() {
 
   function readLastAccountId(): AccountId | null {
     return localStorage.getItem(LAST_ACCOUNT_KEY);
+  }
+
+  function readAccountFilter(): AccountFilter {
+    const raw = localStorage.getItem(ACCOUNT_FILTER_KEY);
+    if (raw === 'all') return 'all';
+    if (raw && raw !== 'all') return raw;
+    return 'all';
   }
 
   function goWelcome(): void {
@@ -107,7 +137,9 @@ export function useNavigation() {
 
   return {
     state,
+    accountFilter,
     accountId,
+    listAccountId,
     page,
     conversationId,
     messageId,
@@ -116,8 +148,10 @@ export function useNavigation() {
     narrowShowList,
     detailOpen,
     bumpSession,
+    setAccountFilter,
     setAccount,
     readLastAccountId,
+    readAccountFilter,
     goWelcome,
     goPage,
     selectConversation,

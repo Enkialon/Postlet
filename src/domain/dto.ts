@@ -21,9 +21,9 @@ export interface CursorPage<T> {
   has_more: boolean;
 }
 
-/** 会话列表查询 */
+/** 会话列表查询；account_id 为空时跨账号 */
 export interface ConversationListQuery {
-  account_id: AccountId;
+  account_id: AccountId | null;
   cursor: string | null;
   limit: number;
   /** 可选：仅 contact / 仅 group */
@@ -40,18 +40,18 @@ export interface ConversationMessagesQuery {
   direction: PageDirection;
 }
 
-/** 联系人列表查询 */
+/** 联系人列表查询；account_id 为空时跨账号 */
 export interface ContactListQuery {
-  account_id: AccountId;
+  account_id: AccountId | null;
   cursor: string | null;
   limit: number;
   /** 显示名 / 地址前缀 */
   search: string | null;
 }
 
-/** 群组列表查询 */
+/** 群组列表查询；account_id 为空时跨账号 */
 export interface GroupListQuery {
-  account_id: AccountId;
+  account_id: AccountId | null;
   cursor: string | null;
   limit: number;
   /** 默认 false：只返回根群组（merged_into_id 为空） */

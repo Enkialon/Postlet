@@ -17,27 +17,31 @@ const opening = ref(false);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let watchBound = false;
 
+function contactKey(c: Contact): string {
+  return `${c.account_id}:${c.id}`;
+}
+
 export function useContacts() {
   const ports = inject(portsKey)!;
   const nav = inject(navigationKey)!;
 
   async function loadInitial(search: string | null): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId) return;
+    const filter = nav.accountFilter.value;
     const version = ++listState.requestVersion;
     const session = nav.sessionVersion.value;
     listState.loading = 'initial';
     listState.error = null;
     try {
       const page = await ports.contact.listContacts({
-        account_id: accountId,
+        account_id: nav.listAccountId.value,
         cursor: null,
         limit: PAGE_SIZE,
         search,
       });
       if (
         version !== listState.requestVersion ||
-        session !== nav.sessionVersion.value
+        session !== nav.sessionVersion.value ||
+        filter !== nav.accountFilter.value
       ) {
         return;
       }
@@ -53,22 +57,27 @@ export function useContacts() {
   }
 
   async function loadMore(): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId || !listState.hasMore || listState.loading !== 'idle') return;
+    if (!listState.hasMore || listState.loading !== 'idle') return;
+    const filter = nav.accountFilter.value;
     const version = listState.requestVersion;
     const search = searchInput.value.trim() || null;
     listState.loading = 'more';
     try {
       const page = await ports.contact.listContacts({
-        account_id: accountId,
+        account_id: nav.listAccountId.value,
         cursor: listState.nextCursor,
         limit: PAGE_SIZE,
         search,
       });
-      if (version !== listState.requestVersion) return;
-      const byId = new Map(listState.items.map((c) => [c.id, c]));
-      for (const c of page.items) byId.set(c.id, c);
-      listState.items = [...byId.values()];
+      if (
+        version !== listState.requestVersion ||
+        filter !== nav.accountFilter.value
+      ) {
+        return;
+      }
+      const byKey = new Map(listState.items.map((c) => [contactKey(c), c]));
+      for (const c of page.items) byKey.set(contactKey(c), c);
+      listState.items = [...byKey.values()];
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
     } catch (e) {
@@ -89,16 +98,17 @@ export function useContacts() {
 
   async function selectContact(contact: Contact): Promise<void> {
     selected.value = contact;
+    nav.setAccount(contact.account_id);
   }
 
   async function openConversation(): Promise<void> {
-    const accountId = nav.accountId.value;
     const contact = selected.value;
-    if (!accountId || !contact || opening.value) return;
+    if (!contact || opening.value) return;
     opening.value = true;
     try {
+      nav.setAccount(contact.account_id);
       const conversation = await ports.conversation.ensureContactConversation({
-        account_id: accountId,
+        account_id: contact.account_id,
         normalized_address: contact.normalized_address,
         display_name: contact.display_name || null,
       });
@@ -114,12 +124,12 @@ export function useContacts() {
   if (!watchBound) {
     watchBound = true;
     watch(
-      () => [nav.accountId.value, nav.sessionVersion.value],
+      () => [nav.accountFilter.value, nav.sessionVersion.value],
       () => {
         selected.value = null;
         searchInput.value = '';
         Object.assign(listState, createEmptyPageState<Contact>());
-        if (nav.accountId.value) void loadInitial(null);
+        void loadInitial(null);
       },
     );
   }

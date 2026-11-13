@@ -27,9 +27,12 @@ export function useConversations() {
     return k;
   }
 
+  function listQueryAccountId() {
+    return nav.listAccountId.value;
+  }
+
   async function loadInitial(): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId) return;
+    const filter = nav.accountFilter.value;
     const version = ++listState.requestVersion;
     const session = nav.sessionVersion.value;
     listState.loading = 'initial';
@@ -37,7 +40,7 @@ export function useConversations() {
     staleWarning.value = false;
     try {
       const page = await ports.conversation.listConversations({
-        account_id: accountId,
+        account_id: listQueryAccountId(),
         cursor: null,
         limit: PAGE_SIZE,
         kind: kindParam(),
@@ -45,7 +48,7 @@ export function useConversations() {
       if (
         version !== listState.requestVersion ||
         session !== nav.sessionVersion.value ||
-        accountId !== nav.accountId.value
+        filter !== nav.accountFilter.value
       ) {
         return;
       }
@@ -63,7 +66,7 @@ export function useConversations() {
       listState.items = page.items;
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
-      restoreSelection(accountId);
+      await restoreSelection();
     } catch (e) {
       if (version !== listState.requestVersion) return;
       listState.error = asAppError(e);
@@ -73,28 +76,27 @@ export function useConversations() {
   }
 
   async function loadMore(): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId || !listState.hasMore || listState.loading !== 'idle') return;
-    if (listState.hasMore && !listState.nextCursor) return;
-    const version = listState.requestVersion;
+    if (!listState.hasMore || !listState.nextCursor) return;
+    if (listState.loading !== 'idle') return;
+    const filter = nav.accountFilter.value;
+    const version = ++listState.requestVersion;
     const session = nav.sessionVersion.value;
     listState.loading = 'more';
     try {
       const page = await ports.conversation.listConversations({
-        account_id: accountId,
+        account_id: listQueryAccountId(),
         cursor: listState.nextCursor,
         limit: PAGE_SIZE,
         kind: kindParam(),
       });
       if (
         version !== listState.requestVersion ||
-        session !== nav.sessionVersion.value
+        session !== nav.sessionVersion.value ||
+        filter !== nav.accountFilter.value
       ) {
         return;
       }
-      const byId = new Map(listState.items.map((i) => [i.conversation.id, i]));
-      for (const item of page.items) byId.set(item.conversation.id, item);
-      listState.items = [...byId.values()];
+      listState.items = [...listState.items, ...page.items];
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
       if (page.has_more && !page.next_cursor) {
@@ -114,21 +116,21 @@ export function useConversations() {
   }
 
   async function refreshSoft(): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId) return;
+    const filter = nav.accountFilter.value;
     const version = ++listState.requestVersion;
     const session = nav.sessionVersion.value;
     listState.loading = 'refresh';
     try {
       const page = await ports.conversation.listConversations({
-        account_id: accountId,
+        account_id: listQueryAccountId(),
         cursor: null,
         limit: PAGE_SIZE,
         kind: kindParam(),
       });
       if (
         version !== listState.requestVersion ||
-        session !== nav.sessionVersion.value
+        session !== nav.sessionVersion.value ||
+        filter !== nav.accountFilter.value
       ) {
         return;
       }
@@ -137,7 +139,7 @@ export function useConversations() {
       listState.hasMore = page.has_more;
       listState.error = null;
       staleWarning.value = false;
-      restoreSelection(accountId);
+      await restoreSelection();
     } catch (e) {
       if (version !== listState.requestVersion) return;
       staleWarning.value = true;
@@ -147,13 +149,17 @@ export function useConversations() {
     }
   }
 
-  async function restoreSelection(accountId: string): Promise<void> {
+  async function restoreSelection(): Promise<void> {
     const id = nav.conversationId.value;
-    if (!id) {
+    const accountId = nav.accountId.value;
+    if (!id || !accountId) {
       selected.value = null;
       return;
     }
-    const found = listState.items.find((i) => i.conversation.id === id);
+    const found = listState.items.find(
+      (i) =>
+        i.conversation.id === id && i.conversation.account_id === accountId,
+    );
     if (found) {
       selected.value = found;
       return;
@@ -166,12 +172,17 @@ export function useConversations() {
     }
   }
 
-  async function openConversation(id: string): Promise<void> {
-    const accountId = nav.accountId.value;
-    if (!accountId) return;
-    nav.selectConversation(id);
+  async function openConversation(
+    accountId: string,
+    conversationId: string,
+  ): Promise<void> {
+    nav.setAccount(accountId);
+    nav.selectConversation(conversationId);
     try {
-      selected.value = await ports.conversation.getConversation(accountId, id);
+      selected.value = await ports.conversation.getConversation(
+        accountId,
+        conversationId,
+      );
     } catch (e) {
       selected.value = null;
       listState.error = asAppError(e);
@@ -186,14 +197,14 @@ export function useConversations() {
     watchBound = true;
     watch(
       () => [
-        nav.accountId.value,
+        nav.accountFilter.value,
         nav.conversationKind.value,
         nav.sessionVersion.value,
       ],
       () => {
         selected.value = null;
         Object.assign(listState, createEmptyPageState<ConversationListItem>());
-        if (nav.accountId.value) void loadInitial();
+        void loadInitial();
       },
     );
   }

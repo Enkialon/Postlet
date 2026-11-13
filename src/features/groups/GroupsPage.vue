@@ -191,11 +191,11 @@ async function confirmMerge() {
             }"
             @click="
               listState.items[row.index] &&
-                openGroup(listState.items[row.index]!.id)
+                openGroup(listState.items[row.index]!)
             "
             @keydown.enter="
               listState.items[row.index] &&
-                openGroup(listState.items[row.index]!.id)
+                openGroup(listState.items[row.index]!)
             "
           >
             <template v-if="listState.items[row.index]">

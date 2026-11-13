@@ -34,9 +34,11 @@ export class MemoryConversationAdapter implements ConversationPort {
   async listConversations(
     query: ConversationListQuery,
   ): Promise<CursorPage<ConversationListItem>> {
-    this.store.requireAccount(query.account_id);
+    if (query.account_id) this.store.requireAccount(query.account_id);
     let items = [...this.store.conversations.values()]
-      .filter((c) => c.account_id === query.account_id)
+      .filter((c) =>
+        query.account_id ? c.account_id === query.account_id : true,
+      )
       .filter((c) => (query.kind ? c.kind === query.kind : true))
       .sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0))
       .map((c) => this.store.toListItem(c));

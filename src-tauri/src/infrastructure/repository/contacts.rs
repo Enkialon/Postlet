@@ -47,8 +47,36 @@ pub async fn list(
             message: "分页大小须为 1..500".into(),
         });
     }
-    let rows = sqlx::query("SELECT * FROM contacts WHERE account_id = ? AND (? IS NULL OR id > ?) AND (? IS NULL OR instr(lower(display_name), lower(?)) = 1 OR instr(normalized_address, lower(?)) = 1) ORDER BY id LIMIT ?")
-        .bind(query.account_id.as_str()).bind(query.cursor.as_deref()).bind(query.cursor.as_deref()).bind(query.search.as_deref()).bind(query.search.as_deref()).bind(query.search.as_deref()).bind(i64::from(query.limit) + 1).fetch_all(&mut *conn).await?;
+    let account_filter = query.account_id.as_ref().map(|a| a.as_str());
+    let (cursor_account, cursor_id) = parse_entity_cursor(query.cursor.as_deref())?;
+    let rows = sqlx::query(
+        "SELECT * FROM contacts
+         WHERE (? IS NULL OR account_id = ?)
+           AND (
+             ? IS NULL
+             OR account_id > ?
+             OR (account_id = ? AND id > ?)
+           )
+           AND (
+             ? IS NULL
+             OR instr(lower(display_name), lower(?)) = 1
+             OR instr(normalized_address, lower(?)) = 1
+           )
+         ORDER BY account_id ASC, id ASC
+         LIMIT ?",
+    )
+    .bind(account_filter)
+    .bind(account_filter)
+    .bind(cursor_id.as_deref())
+    .bind(cursor_account.as_deref().unwrap_or(""))
+    .bind(cursor_account.as_deref().unwrap_or(""))
+    .bind(cursor_id.as_deref())
+    .bind(query.search.as_deref())
+    .bind(query.search.as_deref())
+    .bind(query.search.as_deref())
+    .bind(i64::from(query.limit) + 1)
+    .fetch_all(&mut *conn)
+    .await?;
     let has_more = rows.len() > query.limit as usize;
     let items = rows
         .iter()
@@ -56,7 +84,9 @@ pub async fn list(
         .map(super::rows::contact)
         .collect::<Result<Vec<_>, _>>()?;
     let next_cursor = if has_more {
-        items.last().map(|x| x.id.as_str().to_owned())
+        items
+            .last()
+            .map(|x| format!("{}:{}", x.account_id.as_str(), x.id.as_str()))
     } else {
         None
     };
@@ -84,4 +114,18 @@ pub async fn delete(
     Err(PortError::Storage {
         message: "尚未实现: repository::contacts::delete".into(),
     })
+}
+
+/// 游标 `account_id:id`；兼容旧纯 `id`
+fn parse_entity_cursor(
+    cursor: Option<&str>,
+) -> Result<(Option<String>, Option<String>), PortError> {
+    let Some(raw) = cursor else {
+        return Ok((None, None));
+    };
+    if let Some((account_id, id)) = raw.split_once(':') {
+        Ok((Some(account_id.to_owned()), Some(id.to_owned())))
+    } else {
+        Ok((None, Some(raw.to_owned())))
+    }
 }

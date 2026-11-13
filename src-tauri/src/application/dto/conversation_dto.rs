@@ -6,10 +6,10 @@ use crate::domain::value_objects::{
     PageDirection, TimestampMs,
 };
 
-/// 会话列表查询
+/// 会话列表查询；`account_id` 为空时跨账号
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConversationListQuery {
-    pub account_id: AccountId,
+    pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
     /// 可选：仅 contact / 仅 group

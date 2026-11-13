@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
+import {
+  computed,
+  inject,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue';
+import type { AccountFilter } from '../../app/navigation';
 import { navigationKey } from '../../app/provide';
 import { useAccounts } from '../accounts/useAccounts';
 import { useConversations } from '../conversations/useConversations';
@@ -37,16 +45,47 @@ useSyncStatus({
 const width = ref(
   typeof window !== 'undefined' ? window.innerWidth : 1200,
 );
+const accountMenuOpen = ref(false);
+const accountMenuRef = ref<HTMLElement | null>(null);
 
 function onResize() {
   width.value = window.innerWidth;
 }
 
+function onAccountMenuPointer(e: PointerEvent): void {
+  if (!accountMenuOpen.value) return;
+  const t = e.target as Node | null;
+  if (accountMenuRef.value && t && accountMenuRef.value.contains(t)) return;
+  accountMenuOpen.value = false;
+}
+
+function onAccountMenuKey(e: KeyboardEvent): void {
+  if (!accountMenuOpen.value) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    accountMenuOpen.value = false;
+  }
+}
+
+watch(accountMenuOpen, (open) => {
+  if (open) {
+    window.addEventListener('pointerdown', onAccountMenuPointer, true);
+    window.addEventListener('keydown', onAccountMenuKey);
+  } else {
+    window.removeEventListener('pointerdown', onAccountMenuPointer, true);
+    window.removeEventListener('keydown', onAccountMenuKey);
+  }
+});
+
 onMounted(() => {
   window.addEventListener('resize', onResize);
   void accounts.bootstrapAccounts();
 });
-onUnmounted(() => window.removeEventListener('resize', onResize));
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize);
+  window.removeEventListener('pointerdown', onAccountMenuPointer, true);
+  window.removeEventListener('keydown', onAccountMenuKey);
+});
 
 const narrow = computed(() => width.value < 760);
 
@@ -66,12 +105,30 @@ const listStyle = computed(() =>
   narrow.value ? { width: '100%' } : listPaneStyle.value,
 );
 
-const accountLabel = computed(
-  () =>
+const accountLabel = computed(() => {
+  if (nav.accountFilter.value === 'all') return '全部账号';
+  return (
+    accounts.filterAccount.value?.display_name ||
+    accounts.filterAccount.value?.email ||
     accounts.current.value?.display_name ||
     accounts.current.value?.email ||
-    '账户',
-);
+    '账户'
+  );
+});
+
+function isFilterActive(filter: AccountFilter): boolean {
+  return nav.accountFilter.value === filter;
+}
+
+function toggleAccountMenu(): void {
+  if (!accounts.hasAccounts.value) return;
+  accountMenuOpen.value = !accountMenuOpen.value;
+}
+
+function pickAccountFilter(filter: AccountFilter): void {
+  accountMenuOpen.value = false;
+  void accounts.setAccountFilter(filter);
+}
 
 function railBtn(active: boolean): string {
   return [
@@ -90,29 +147,95 @@ function railBtn(active: boolean): string {
       class="flex w-14 shrink-0 flex-col items-center gap-1 bg-surface-rail px-1.5 py-3 text-icon-rail min-h-0"
       aria-label="主导航"
     >
-      <div class="mb-3 grid justify-items-center gap-2">
-        <Avatar :name="accountLabel" kind="self" :size="36" />
-        <select
-          v-if="accounts.accounts.value.length > 1"
-          class="w-11 rounded-sm border-0 bg-surface-rail-hover px-0.5 py-0.5 text-[10px] text-icon-rail"
-          :value="accounts.current.value?.id"
-          aria-label="账户切换"
-          :title="accounts.current.value?.email"
-          @change="
-            accounts.selectAccount(
-              ($event.target as HTMLSelectElement).value,
-            )
-          "
+      <div ref="accountMenuRef" class="relative mb-3">
+        <button
+          type="button"
+          class="grid cursor-pointer place-items-center rounded-full border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          :aria-expanded="accountMenuOpen"
+          aria-haspopup="menu"
+          aria-label="切换账号"
+          :title="accountLabel"
+          @click="toggleAccountMenu"
         >
-          <option
+          <Avatar :name="accountLabel" kind="self" :size="36" />
+        </button>
+        <div
+          v-if="accountMenuOpen"
+          class="absolute top-0 left-[calc(100%+10px)] z-50 w-[14.5rem] overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated py-1 shadow-panel"
+          role="menu"
+          aria-label="账号列表"
+        >
+          <button
+            type="button"
+            role="menuitemradio"
+            class="flex w-full cursor-pointer items-center gap-2.5 border-0 bg-transparent px-3 py-2 text-left transition-colors duration-150 hover:bg-surface-sidebar-hover"
+            :class="
+              isFilterActive('all')
+                ? 'bg-surface-sidebar-hover'
+                : ''
+            "
+            :aria-checked="isFilterActive('all')"
+            @click="pickAccountFilter('all')"
+          >
+            <Avatar name="全部账号" kind="self" :size="28" />
+            <span class="min-w-0 flex-1">
+              <span
+                class="block text-[13px] font-medium text-text-primary"
+                >全部账号</span
+              >
+              <span class="block text-[11px] text-text-tertiary"
+                >所有邮箱混在一起</span
+              >
+            </span>
+            <span
+              v-if="isFilterActive('all')"
+              class="text-[12px] text-brand"
+              aria-hidden="true"
+              >✓</span
+            >
+          </button>
+          <div
+            class="my-1 border-0 border-t border-border-subtle"
+            role="separator"
+          />
+          <button
             v-for="a in accounts.accounts.value"
             :key="a.id"
-            :value="a.id"
-            v-no-i18n
+            type="button"
+            role="menuitemradio"
+            class="flex w-full cursor-pointer items-center gap-2.5 border-0 bg-transparent px-3 py-2 text-left transition-colors duration-150 hover:bg-surface-sidebar-hover"
+            :class="
+              isFilterActive(a.id) ? 'bg-surface-sidebar-hover' : ''
+            "
+            :aria-checked="isFilterActive(a.id)"
+            @click="pickAccountFilter(a.id)"
           >
-            {{ a.display_name || a.email }}
-          </option>
-        </select>
+            <Avatar
+              :name="a.display_name || a.email"
+              kind="self"
+              :size="28"
+            />
+            <span class="min-w-0 flex-1 overflow-hidden">
+              <span
+                class="block overflow-hidden text-[13px] font-medium text-ellipsis whitespace-nowrap text-text-primary"
+                v-no-i18n
+                >{{ a.display_name || a.email }}</span
+              >
+              <span
+                v-if="a.display_name"
+                class="block overflow-hidden text-[11px] text-ellipsis whitespace-nowrap text-text-tertiary"
+                v-no-i18n
+                >{{ a.email }}</span
+              >
+            </span>
+            <span
+              v-if="isFilterActive(a.id)"
+              class="text-[12px] text-brand"
+              aria-hidden="true"
+              >✓</span
+            >
+          </button>
+        </div>
       </div>
 
       <ul class="m-0 grid w-full list-none gap-0.5 p-0" aria-label="业务导航">
