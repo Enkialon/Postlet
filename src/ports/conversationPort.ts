@@ -5,6 +5,7 @@ import type {
   ConversationMessagesQuery,
   CursorPage,
   EnsureContactConversationCommand,
+  EnsureGroupConversationCommand,
 } from '../domain/dto';
 import type { AccountId, ConversationId } from '../domain/types';
 
@@ -22,5 +23,8 @@ export interface ConversationPort {
   ): Promise<CursorPage<MessageWithRecipients>>;
   ensureContactConversation(
     cmd: EnsureContactConversationCommand,
+  ): Promise<Conversation>;
+  ensureGroupConversation(
+    cmd: EnsureGroupConversationCommand,
   ): Promise<Conversation>;
 }

@@ -149,6 +149,12 @@ export interface EnsureContactConversationCommand {
   display_name: string | null;
 }
 
+/** 确保存在群组会话（解析到存活根群组） */
+export interface EnsureGroupConversationCommand {
+  account_id: AccountId;
+  group_id: GroupId;
+}
+
 /** 邮件同步进度读模型 */
 export interface MailSyncProgress {
   account_id: AccountId;

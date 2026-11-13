@@ -77,6 +77,13 @@ export class MemoryAccountAdapter implements AccountPort {
       cmd.show_group_messages_in_contact_conversation;
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
+    this.store.recomputeAllConversations(cmd.account_id);
     return { ...account };
+  }
+
+  async loadDemoWorkspace(): Promise<Account> {
+    this.store.clearAll();
+    this.store.seedDemo();
+    return { ...this.store.requireAccount('acc-demo') };
   }
 }

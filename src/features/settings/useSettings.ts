@@ -1,6 +1,8 @@
 import { inject, ref } from 'vue';
 import { portsKey } from '../../app/provide';
 import { useAccounts } from '../accounts/useAccounts';
+import { useConversations } from '../conversations/useConversations';
+import { useMessages } from '../conversations/useMessages';
 import { usePreferences } from '../../app/preferences';
 import type { AppLocale } from '../../i18n';
 import { asAppError } from '../../shared/errors/asAppError';
@@ -8,6 +10,8 @@ import { asAppError } from '../../shared/errors/asAppError';
 export function useSettings() {
   const ports = inject(portsKey)!;
   const accounts = useAccounts();
+  const conversations = useConversations();
+  const messages = useMessages();
   const prefs = usePreferences();
   const saving = ref(false);
   const error = ref<string | null>(null);
@@ -28,6 +32,8 @@ export function useSettings() {
         show_group_messages_in_contact_conversation: value,
       });
       accounts.replaceCurrent(updated);
+      conversations.invalidate();
+      await messages.loadInitial();
     } catch (e) {
       accounts.replaceCurrent({
         ...account,

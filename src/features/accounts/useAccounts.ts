@@ -74,6 +74,22 @@ export function useAccounts() {
     }
   }
 
+  async function loadDemoWorkspace(): Promise<void> {
+    if (signingIn.value) return;
+    signingIn.value = true;
+    error.value = null;
+    try {
+      const account = await ports.account.loadDemoWorkspace();
+      accounts.value = await ports.account.listAccounts();
+      await selectAccount(account.id, { triggerSync: false });
+      nav.goPage('conversations');
+    } catch (e) {
+      error.value = asAppError(e);
+    } finally {
+      signingIn.value = false;
+    }
+  }
+
   async function signOut(): Promise<void> {
     const id = current.value?.id;
     if (!id) return;
@@ -117,6 +133,7 @@ export function useAccounts() {
     bootstrapAccounts,
     selectAccount,
     signIn,
+    loadDemoWorkspace,
     signOut,
     refreshCurrent,
     replaceCurrent,

@@ -111,6 +111,27 @@ export function useGroups() {
     }
   }
 
+  async function openGroupConversation(groupId?: string): Promise<boolean> {
+    const accountId = nav.accountId.value;
+    const id = groupId ?? selected.value?.id;
+    if (!accountId || !id || busy.value) return false;
+    busy.value = true;
+    actionError.value = null;
+    try {
+      const conversation = await ports.conversation.ensureGroupConversation({
+        account_id: accountId,
+        group_id: id,
+      });
+      nav.selectConversation(conversation.id);
+      return true;
+    } catch (e) {
+      actionError.value = asAppError(e).message;
+      return false;
+    } finally {
+      busy.value = false;
+    }
+  }
+
   async function renameGroup(name: string): Promise<boolean> {
     const accountId = nav.accountId.value;
     const group = selected.value;
@@ -252,6 +273,7 @@ export function useGroups() {
     loadInitial,
     loadMore,
     openGroup,
+    openGroupConversation,
     createGroup,
     renameGroup,
     updateMembers,

@@ -7,6 +7,7 @@ import {
   type PageState,
 } from '../../shared/state/pageState';
 import { asAppError } from '../../shared/errors/asAppError';
+import { useConversations } from './useConversations';
 
 const PAGE_SIZE = 30;
 
@@ -30,6 +31,7 @@ function cacheKey(accountId: string, messageId: string): string {
 export function useMessages() {
   const ports = inject(portsKey)!;
   const nav = inject(navigationKey)!;
+  const conversations = useConversations();
 
   function upsertCache(accountId: string, item: MessageWithRecipients): void {
     entityCache.set(cacheKey(accountId, item.message.id), item);
@@ -193,9 +195,16 @@ export function useMessages() {
         }
         if (!isRead) {
           suppressAutoRead.value = new Set(suppressAutoRead.value).add(id);
+        } else {
+          // 自动/手动标已读后允许后续再抑制
+          const next = new Set(suppressAutoRead.value);
+          next.delete(id);
+          suppressAutoRead.value = next;
         }
       }
       applyCacheToList(accountId);
+      // 成功后立即刷新会话列表与选中项未读（规格：提交后再刷新）
+      await conversations.refreshSoft();
     });
     await markQueue.value;
   }

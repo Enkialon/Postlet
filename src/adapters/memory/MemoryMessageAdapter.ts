@@ -55,7 +55,6 @@ export class MemoryMessageAdapter implements MessagePort {
 
   async markRead(cmd: MarkMessagesReadCommand): Promise<void> {
     this.store.requireAccount(cmd.account_id);
-    const touchedConversations = new Set<string>();
 
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
@@ -67,16 +66,9 @@ export class MemoryMessageAdapter implements MessagePort {
       message.sync_status = 'pending_local';
       message.local_updated_at = Date.now();
       this.store.messages.set(key, message);
-
-      for (const [convKey, ids] of this.store.conversationMessages) {
-        if (!convKey.startsWith(`${cmd.account_id}:`)) continue;
-        if (ids.includes(messageId)) touchedConversations.add(convKey);
-      }
     }
 
-    for (const convKey of touchedConversations) {
-      const conversationId = convKey.slice(cmd.account_id.length + 1);
-      this.store.recomputeConversation(cmd.account_id, conversationId);
-    }
+    // 投影开关开启时联系人会话未读依赖群组附着，统一重算账户下全部会话
+    this.store.recomputeAllConversations(cmd.account_id);
   }
 }

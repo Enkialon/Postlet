@@ -27,9 +27,26 @@ function onShowGroupChange(e: Event) {
       <template v-if="accounts.current.value">
         <p v-no-i18n class="name">{{ accounts.current.value.display_name }}</p>
         <p v-no-i18n class="email">{{ accounts.current.value.email }}</p>
-        <Button variant="danger" @click="accounts.signOut">退出</Button>
+        <div class="row">
+          <Button variant="danger" @click="accounts.signOut">退出</Button>
+          <Button
+            :disabled="accounts.signingIn.value"
+            @click="accounts.loadDemoWorkspace"
+          >
+            恢复演示数据
+          </Button>
+        </div>
       </template>
-      <p v-else>无账户</p>
+      <template v-else>
+        <p>无账户</p>
+        <Button
+          variant="primary"
+          :disabled="accounts.signingIn.value"
+          @click="accounts.loadDemoWorkspace"
+        >
+          加载演示数据
+        </Button>
+      </template>
     </section>
 
     <section class="block">

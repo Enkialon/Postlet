@@ -1,20 +1,28 @@
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
-import { navigationKey } from '../../app/provide';
+import { computed, inject, ref, watch } from 'vue';
+import { navigationKey, portsKey } from '../../app/provide';
 import { useConversations } from './useConversations';
 import { useMessages } from './useMessages';
 import { useGroups } from '../groups/useGroups';
 import {
   displayNameOrAddress,
+  formatTimestamp,
 } from '../../shared/formatting/format';
 import Button from '../../shared/ui/Button.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import Dialog from '../../shared/ui/Dialog.vue';
 import MessageCard from './MessageCard.vue';
-import type { Group } from '../../domain/entities';
+import type {
+  Contact,
+  Group,
+  GroupParticipant,
+  MessageWithRecipients,
+} from '../../domain/entities';
+import { asAppError } from '../../shared/errors/asAppError';
 
 const nav = inject(navigationKey)!;
+const ports = inject(portsKey)!;
 const { selected } = useConversations();
 const {
   messageState,
@@ -34,6 +42,13 @@ const moveThreadId = ref<string | null>(null);
 const moveTargets = ref<Group[]>([]);
 const moveTargetId = ref('');
 const moveBusy = ref(false);
+
+const detailContact = ref<Contact | null>(null);
+const detailGroup = ref<Group | null>(null);
+const detailParticipants = ref<GroupParticipant[]>([]);
+const detailLastMessage = ref<MessageWithRecipients | null>(null);
+const detailError = ref<string | null>(null);
+const detailLoading = ref(false);
 
 const title = computed(() => {
   const item = selected.value;
@@ -61,6 +76,76 @@ const showEmptyThread = computed(
     messageState.items.length === 0,
 );
 
+async function loadDetail(): Promise<void> {
+  const accountId = nav.accountId.value;
+  const item = selected.value;
+  if (!accountId || !item || !nav.detailOpen.value) {
+    detailContact.value = null;
+    detailGroup.value = null;
+    detailParticipants.value = [];
+    detailLastMessage.value = null;
+    detailError.value = null;
+    return;
+  }
+
+  detailLoading.value = true;
+  detailError.value = null;
+  try {
+    if (item.conversation.kind === 'contact' && item.conversation.contact_id) {
+      detailContact.value = await ports.contact.getContact(
+        accountId,
+        item.conversation.contact_id,
+      );
+      detailGroup.value = null;
+      detailParticipants.value = [];
+    } else if (
+      item.conversation.kind === 'group' &&
+      item.conversation.group_id
+    ) {
+      detailGroup.value = await ports.group.getGroup(
+        accountId,
+        item.conversation.group_id,
+      );
+      detailParticipants.value = await ports.group.listParticipants(
+        accountId,
+        item.conversation.group_id,
+      );
+      detailContact.value = null;
+    } else {
+      detailContact.value = null;
+      detailGroup.value = null;
+      detailParticipants.value = [];
+    }
+
+    const lastId = item.conversation.last_message_id;
+    if (lastId) {
+      detailLastMessage.value = await ports.message.getMessage(
+        accountId,
+        lastId,
+      );
+    } else {
+      detailLastMessage.value = null;
+    }
+  } catch (e) {
+    detailError.value = asAppError(e).message;
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+watch(
+  () => [
+    nav.detailOpen.value,
+    nav.conversationId.value,
+    selected.value?.conversation.updated_at,
+    selected.value?.conversation.unread_count,
+    selected.value?.conversation.last_message_id,
+  ],
+  () => {
+    void loadDetail();
+  },
+);
+
 async function openMove(threadId: string) {
   moveThreadId.value = threadId;
   moveTargets.value = (await groups.loadAllRootGroups()).filter(
@@ -79,6 +164,14 @@ async function confirmMove() {
     moveOpen.value = false;
     await loadInitial();
   }
+}
+
+function goContactPage() {
+  nav.goPage('contacts');
+}
+
+function goGroupPage() {
+  nav.goPage('groups');
 }
 </script>
 
@@ -147,6 +240,8 @@ async function confirmMove() {
         aria-label="会话详情"
       >
         <h3>会话详情</h3>
+        <p v-if="detailLoading" class="meta">加载中…</p>
+        <p v-else-if="detailError" class="err">{{ detailError }}</p>
         <dl>
           <div>
             <dt>种类</dt>
@@ -162,8 +257,68 @@ async function confirmMove() {
             <dt>未读</dt>
             <dd>{{ selected.conversation.unread_count }}</dd>
           </div>
+          <div v-if="detailContact">
+            <dt>联系人</dt>
+            <dd v-no-i18n>
+              {{
+                displayNameOrAddress(
+                  detailContact.display_name,
+                  detailContact.normalized_address,
+                )
+              }}
+            </dd>
+          </div>
+          <div v-if="detailGroup">
+            <dt>群组</dt>
+            <dd v-no-i18n>{{ detailGroup.name || '未命名群组' }}</dd>
+          </div>
+          <div v-if="detailLastMessage">
+            <dt>最近</dt>
+            <dd>
+              <span v-no-i18n>{{ detailLastMessage.message.subject }}</span>
+              <br />
+              <span class="meta">
+                {{
+                  formatTimestamp(
+                    detailLastMessage.message.received_at ??
+                      detailLastMessage.message.sent_at,
+                  )
+                }}
+              </span>
+            </dd>
+          </div>
         </dl>
-        <Button variant="ghost" @click="nav.setDetailOpen(false)">关闭</Button>
+
+        <div v-if="detailParticipants.length" class="members">
+          <h4>成员</h4>
+          <ul>
+            <li
+              v-for="p in detailParticipants"
+              :key="p.normalized_address"
+              v-no-i18n
+            >
+              {{ displayNameOrAddress(p.display_name, p.normalized_address) }}
+            </li>
+          </ul>
+        </div>
+
+        <div class="detail-actions">
+          <Button
+            v-if="selected.conversation.kind === 'contact'"
+            @click="goContactPage"
+          >
+            查看联系人
+          </Button>
+          <Button
+            v-if="selected.conversation.kind === 'group'"
+            @click="goGroupPage"
+          >
+            查看群组
+          </Button>
+          <Button variant="ghost" @click="nav.setDetailOpen(false)">
+            关闭
+          </Button>
+        </div>
       </aside>
     </template>
 
@@ -247,9 +402,14 @@ async function confirmMove() {
   overflow: auto;
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.06);
 }
-.reader__detail h3 {
+.reader__detail h3,
+.reader__detail h4 {
   margin: 0 0 0.75rem;
   font-size: 1rem;
+}
+.reader__detail h4 {
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
 }
 .reader__detail dl {
   display: grid;
@@ -267,6 +427,23 @@ async function confirmMove() {
 }
 .reader__detail dd {
   margin: 0;
+}
+.members ul {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.meta {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 .field {
   display: grid;

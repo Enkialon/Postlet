@@ -113,6 +113,8 @@ export class MemoryGroupAdapter implements GroupPort {
         last_seen_at: t,
       })),
     );
+    // 手动建群同时建空群会话，便于群组页直接打开
+    this.store.ensureGroupConversationEntity(cmd.account_id, group.id);
     return { ...group };
   }
 

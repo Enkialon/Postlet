@@ -16,6 +16,7 @@ const {
   loadInitial,
   loadMore,
   openGroup,
+  openGroupConversation,
   createGroup,
   renameGroup,
   updateMembers,
@@ -145,6 +146,9 @@ async function confirmMerge() {
           来源：{{ selected.source === 'manual' ? '手动' : '自动' }}
         </p>
         <div class="actions">
+          <Button variant="primary" @click="openGroupConversation()">
+            打开会话
+          </Button>
           <Button @click="openRename">重命名</Button>
           <Button @click="openMembers">发信成员</Button>
           <Button @click="openMerge">合并到…</Button>

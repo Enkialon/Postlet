@@ -37,6 +37,7 @@ export function useSyncStatus(options?: {
     const accountId = nav.accountId.value;
     if (!accountId) return;
     const session = nav.sessionVersion.value;
+    const wasRunning = mailProgress.value?.mail_sync_status === 'running';
     try {
       const mail = await ports.sync.getMailSyncProgress(accountId);
       const contact = await ports.sync.getContactSyncProgress(accountId);
@@ -45,6 +46,9 @@ export function useSyncStatus(options?: {
       contactProgress.value = contact;
       syncError.value = null;
       backoffMs = 2000;
+      if (wasRunning && mail.mail_sync_status !== 'running') {
+        onForegroundRefresh?.();
+      }
     } catch (e) {
       syncError.value = asAppError(e).message;
       backoffMs = Math.min(backoffMs * 2, 60_000);

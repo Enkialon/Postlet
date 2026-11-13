@@ -4,6 +4,7 @@ import { navigationKey } from '../../app/provide';
 import { usePreferences } from '../../app/preferences';
 import { useAccounts } from '../accounts/useAccounts';
 import { useConversations } from '../conversations/useConversations';
+import { useMessages } from '../conversations/useMessages';
 import { useSyncStatus } from '../sync/useSyncStatus';
 import WelcomePage from '../accounts/WelcomePage.vue';
 import ConversationListPane from '../conversations/ConversationListPane.vue';
@@ -16,11 +17,13 @@ const nav = inject(navigationKey)!;
 const prefs = usePreferences();
 const accounts = useAccounts();
 const conversations = useConversations();
+const messages = useMessages();
 
 useSyncStatus({
   onForegroundRefresh: () => {
     if (nav.page.value === 'conversations') {
       void conversations.refreshSoft();
+      if (nav.conversationId.value) void messages.loadInitial();
     }
   },
 });
@@ -140,7 +143,13 @@ const listStyle = computed(() => ({
         </li>
       </ul>
 
-      <p class="nav__sync" :title="accounts.current.value?.mail_sync_status">
+      <button
+        type="button"
+        class="nav__sync"
+        :title="accounts.current.value?.mail_sync_status"
+        aria-label="打开同步设置"
+        @click="nav.goPage('settings')"
+      >
         <template v-if="!compactNav">
           {{
             accounts.current.value?.mail_sync_status === 'running'
@@ -148,8 +157,8 @@ const listStyle = computed(() => ({
               : '同步状态'
           }}
         </template>
-        <span v-else aria-label="同步状态">↻</span>
-      </p>
+        <span v-else>↻</span>
+      </button>
     </nav>
 
     <main class="main">
@@ -241,6 +250,16 @@ const listStyle = computed(() => ({
   font-size: 0.75rem;
   color: var(--muted);
   padding: 0.35rem;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  border-radius: 6px;
+}
+.nav__sync:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 .main {
   flex: 1;

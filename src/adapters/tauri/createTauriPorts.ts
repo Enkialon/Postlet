@@ -21,6 +21,7 @@ export function createTauriPorts(): AppPorts {
       signIn: notReady,
       signOut: notReady,
       updateDisplaySettings: notReady,
+      loadDemoWorkspace: notReady,
     },
     sync: {
       triggerMailSync: notReady,
@@ -38,6 +39,7 @@ export function createTauriPorts(): AppPorts {
       getConversation: notReady,
       listMessages: notReady,
       ensureContactConversation: notReady,
+      ensureGroupConversation: notReady,
     },
     message: {
       getMessage: notReady,

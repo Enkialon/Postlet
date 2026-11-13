@@ -5,11 +5,13 @@ import type {
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
 } from '../../domain/dto';
+import type { Message } from '../../domain/entities';
 import type { AccountId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
 export class MemorySyncAdapter implements SyncPort {
   private readonly timers = new Map<AccountId, ReturnType<typeof setTimeout>>();
+  private syncGeneration = 0;
 
   constructor(private readonly store: MemoryStore) {}
 
@@ -28,6 +30,7 @@ export class MemorySyncAdapter implements SyncPort {
       setTimeout(() => {
         const current = this.store.accounts.get(cmd.account_id);
         if (!current) return;
+        this.injectSyncedMail(cmd.account_id);
         current.mail_sync_status = 'idle';
         current.mail_synced_at = Date.now();
         current.mail_sync_error = null;
@@ -35,6 +38,10 @@ export class MemorySyncAdapter implements SyncPort {
         this.store.accounts.set(current.id, current);
         const folders = this.store.folderStates.get(cmd.account_id) ?? [];
         for (const f of folders) {
+          if (f.folder_id === 'archive' && f.sync_status === 'error') {
+            // 保留演示错误文件夹，便于设置页看到错误态
+            continue;
+          }
           f.sync_status = 'idle';
           f.synced_at = Date.now();
           f.last_error = null;
@@ -46,11 +53,105 @@ export class MemorySyncAdapter implements SyncPort {
     );
   }
 
+  /** 假同步注入一封新邮件，方便验收列表刷新 */
+  private injectSyncedMail(accountId: AccountId): void {
+    const account = this.store.accounts.get(accountId);
+    if (!account) return;
+
+    let target = this.store.findContactConversation(
+      accountId,
+      'alice@example.com',
+    );
+    if (!target) {
+      for (const c of this.store.conversations.values()) {
+        if (c.account_id === accountId && c.kind === 'contact') {
+          target = c;
+          break;
+        }
+      }
+    }
+    if (!target || !target.normalized_address) return;
+
+    this.syncGeneration += 1;
+    const t = Date.now();
+    const id = `msg-sync-${this.syncGeneration}`;
+    const msg: Message = {
+      id,
+      account_id: accountId,
+      graph_id: `g-${id}`,
+      thread_id: `thr-sync-${this.syncGeneration}`,
+      graph_change_key: null,
+      internet_message_id: null,
+      conversation_index: null,
+      subject: `同步到来信 #${this.syncGeneration}`,
+      body_preview: '这是 Memory 假同步注入的新邮件。',
+      body_content_type: 'text',
+      body_content: `假同步注入正文 #${this.syncGeneration}`,
+      from_address: target.normalized_address,
+      from_name: target.normalized_address.startsWith('alice')
+        ? 'Alice Chen'
+        : '',
+      received_at: t,
+      sent_at: t,
+      created_at_graph: t,
+      is_read: false,
+      is_draft: false,
+      is_outbound: false,
+      has_attachments: false,
+      importance: 'normal',
+      folder_id: 'inbox',
+      parent_folder_name: '收件箱',
+      sync_status: 'synced',
+      local_updated_at: t,
+      remote_updated_at: t,
+    };
+
+    this.store.messages.set(this.store.messageKey(accountId, id), msg);
+    this.store.recipients.set(this.store.messageKey(accountId, id), [
+      {
+        account_id: accountId,
+        message_id: id,
+        role: 'to',
+        seq: 0,
+        normalized_address: account.email,
+        display_name: account.display_name,
+      },
+    ]);
+
+    const key = this.store.conversationKey(accountId, target.id);
+    const ids = this.store.conversationMessages.get(key) ?? [];
+    this.store.conversationMessages.set(key, [id, ...ids]);
+    this.store.recomputeConversation(accountId, target.id);
+  }
+
   async triggerContactSync(cmd: TriggerContactSyncCommand): Promise<void> {
     const account = this.store.requireAccount(cmd.account_id);
     account.contact_synced_at = Date.now();
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
+
+    // 注入一个新占位联系人，便于联系人页看到变化
+    const n = String(Date.now()).slice(-4);
+    const address = `synced${n}@example.com`;
+    const existing = [...this.store.contacts.values()].some(
+      (c) => c.account_id === cmd.account_id && c.normalized_address === address,
+    );
+    if (!existing) {
+      const t = Date.now();
+      const contact = {
+        id: this.store.nextId('ct'),
+        account_id: cmd.account_id,
+        graph_id: `graph-synced-${n}`,
+        display_name: `Synced ${n}`,
+        normalized_address: address,
+        created_at: t,
+        updated_at: t,
+      };
+      this.store.contacts.set(
+        this.store.contactKey(cmd.account_id, contact.id),
+        contact,
+      );
+    }
   }
 
   async getMailSyncProgress(accountId: AccountId): Promise<MailSyncProgress> {

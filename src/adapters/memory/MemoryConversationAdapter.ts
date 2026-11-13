@@ -6,6 +6,7 @@ import type {
   ConversationMessagesQuery,
   CursorPage,
   EnsureContactConversationCommand,
+  EnsureGroupConversationCommand,
 } from '../../domain/dto';
 import type { AccountId, ConversationId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
@@ -62,26 +63,16 @@ export class MemoryConversationAdapter implements ConversationPort {
       query.account_id,
       query.conversation_id,
     );
-    if (!this.store.conversations.has(key)) {
+    const conversation = this.store.conversations.get(key);
+    if (!conversation) {
       this.store.failNotFound('会话不存在');
     }
-    const ids = this.store.conversationMessages.get(key) ?? [];
-    const messages = ids
-      .map((id) =>
-        this.store.messages.get(this.store.messageKey(query.account_id, id)),
-      )
-      .filter((m): m is NonNullable<typeof m> =>
-        Boolean(m && m.sync_status !== 'deleted_remote'),
-      )
-      .sort((a, b) => {
-        const ta = a.received_at ?? a.sent_at ?? 0;
-        const tb = b.received_at ?? b.sent_at ?? 0;
-        // older：最近在前（列表首屏）
-        return query.direction === 'newer' ? ta - tb : tb - ta;
-      });
+    const messages = this.store.effectiveMessagesForConversation(conversation);
+    const ordered =
+      query.direction === 'newer' ? [...messages].reverse() : messages;
 
     const page = paginate(
-      messages,
+      ordered,
       query.cursor,
       Math.max(1, Math.min(query.limit, 200)),
     );
@@ -157,6 +148,17 @@ export class MemoryConversationAdapter implements ConversationPort {
     this.store.conversationMessages.set(
       this.store.conversationKey(cmd.account_id, conversation.id),
       [],
+    );
+    return { ...conversation };
+  }
+
+  async ensureGroupConversation(
+    cmd: EnsureGroupConversationCommand,
+  ): Promise<Conversation> {
+    this.store.requireAccount(cmd.account_id);
+    const conversation = this.store.ensureGroupConversationEntity(
+      cmd.account_id,
+      cmd.group_id,
     );
     return { ...conversation };
   }
