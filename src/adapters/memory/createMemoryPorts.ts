@@ -5,6 +5,7 @@ import { MemorySyncAdapter } from './MemorySyncAdapter';
 import { MemoryContactAdapter } from './MemoryContactAdapter';
 import { MemoryConversationAdapter } from './MemoryConversationAdapter';
 import { MemoryMessageAdapter } from './MemoryMessageAdapter';
+import { MemoryComposeAdapter } from './MemoryComposeAdapter';
 import { MemoryGroupAdapter } from './MemoryGroupAdapter';
 import { MemoryPlatformAdapter } from './MemoryPlatformAdapter';
 
@@ -18,6 +19,7 @@ export function createMemoryPorts(options?: { seed?: boolean }): AppPorts {
     contact: new MemoryContactAdapter(store),
     conversation: new MemoryConversationAdapter(store),
     message: new MemoryMessageAdapter(store),
+    compose: new MemoryComposeAdapter(store),
     group: new MemoryGroupAdapter(store),
     platform: new MemoryPlatformAdapter(),
   };

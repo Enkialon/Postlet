@@ -182,3 +182,58 @@ export interface TriggerMailSyncCommand {
 export interface TriggerContactSyncCommand {
   account_id: AccountId;
 }
+
+/** 写信附件草稿（仅元数据，无真实上传） */
+export interface ComposeAttachmentDraft {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+}
+
+/** 写信收件人（标签展示名 + 地址） */
+export interface ComposeRecipientRef {
+  address: EmailAddress;
+  display_name: string;
+}
+
+/** 会话级写信草稿 */
+export interface ComposeDraft {
+  account_id: AccountId;
+  conversation_id: ConversationId;
+  /** 显式回复目标；null = 新邮件，不挂旧线程 */
+  reply_to_message_id: MessageId | null;
+  to: ComposeRecipientRef[];
+  cc: ComposeRecipientRef[];
+  bcc: ComposeRecipientRef[];
+  subject: string;
+  body_html: string;
+  attachments: ComposeAttachmentDraft[];
+  updated_at: TimestampMs;
+}
+
+/** 保存写信草稿 */
+export interface SaveComposeDraftCommand {
+  account_id: AccountId;
+  conversation_id: ConversationId;
+  reply_to_message_id: MessageId | null;
+  to: ComposeRecipientRef[];
+  cc: ComposeRecipientRef[];
+  bcc: ComposeRecipientRef[];
+  subject: string;
+  body_html: string;
+  attachments: ComposeAttachmentDraft[];
+}
+
+/** 发送写信内容 */
+export interface SendComposedMailCommand {
+  account_id: AccountId;
+  conversation_id: ConversationId;
+  reply_to_message_id: MessageId | null;
+  to: ComposeRecipientRef[];
+  cc: ComposeRecipientRef[];
+  bcc: ComposeRecipientRef[];
+  subject: string;
+  body_html: string;
+  attachments: ComposeAttachmentDraft[];
+}

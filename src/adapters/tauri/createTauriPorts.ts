@@ -46,6 +46,12 @@ export function createTauriPorts(): AppPorts {
       ensureMessageBody: notReady,
       markRead: notReady,
     },
+    compose: {
+      getDraft: notReady,
+      saveDraft: notReady,
+      clearDraft: notReady,
+      send: notReady,
+    },
     group: {
       listGroups: notReady,
       getGroup: notReady,

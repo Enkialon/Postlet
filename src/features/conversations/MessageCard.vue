@@ -18,6 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [];
+  reply: [];
   markUnread: [];
   moveThread: [threadId: string];
 }>();
@@ -29,6 +30,7 @@ const menuY = ref(0);
 const menuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = [
     { id: 'open', label: '查看邮件' },
+    { id: 'reply', label: '回复' },
     {
       id: 'markUnread',
       label: '标记未读',
@@ -61,6 +63,10 @@ function onMenuSelect(id: string): void {
   menuOpen.value = false;
   if (id === 'open') {
     emit('select');
+    return;
+  }
+  if (id === 'reply') {
+    emit('reply');
     return;
   }
   if (id === 'markUnread') {

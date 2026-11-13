@@ -16,6 +16,7 @@ import Dialog from '../../shared/ui/Dialog.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 import MessageCard from './MessageCard.vue';
 import MailReadingPane from './MailReadingPane.vue';
+import MailComposer from '../compose/MailComposer.vue';
 import type {
   Contact,
   Group,
@@ -28,7 +29,7 @@ const ROW_SIZE = 118;
 
 const nav = inject(navigationKey)!;
 const ports = inject(portsKey)!;
-const { selected } = useConversations();
+const { selected, refreshSoft: refreshConversations } = useConversations();
 const {
   messageState,
   bodyLoading,
@@ -45,6 +46,8 @@ const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
 const scrollViewport = computed(
   () => scrollAreaRef.value?.viewport ?? null,
 );
+const composerRef = ref<InstanceType<typeof MailComposer> | null>(null);
+const composeFull = ref(false);
 /** 切换会话后只自动贴底一次，避免加载更多时又被拽到底 */
 const pendingStickBottom = ref(Boolean(nav.conversationId.value));
 let loadingOlder = false;
@@ -298,6 +301,25 @@ function closeDetailPanel(): void {
   nav.setDetailOpen(false);
 }
 
+function onComposeModeChange(next: 'compact' | 'full'): void {
+  composeFull.value = next === 'full';
+  if (next === 'full') {
+    mailDetail.value = null;
+    nav.selectMessage(null);
+    nav.setDetailOpen(false);
+  }
+}
+
+function onReplyMessage(item: MessageWithRecipients): void {
+  composerRef.value?.beginReply(item);
+}
+
+async function onMailSent(_item: MessageWithRecipients): Promise<void> {
+  pendingStickBottom.value = true;
+  await loadInitial();
+  void refreshConversations();
+}
+
 const mailBodyLoading = computed(() => {
   const id = mailDetail.value?.message.id;
   return id ? bodyLoading.value.has(id) : false;
@@ -369,7 +391,11 @@ watch(
           @retry="loadInitial"
         />
 
-        <EmptyState v-else-if="showEmptyThread" title="还没有往来邮件" />
+        <EmptyState
+          v-else-if="showEmptyThread"
+          class="min-h-0 flex-1"
+          title="还没有往来邮件"
+        />
 
         <OverlayScrollArea
           v-else
@@ -401,6 +427,7 @@ watch(
                   "
                   :allow-move-thread="selected?.conversation.kind === 'group'"
                   @select="openMailReading(messageState.items[row.index]!)"
+                  @reply="onReplyMessage(messageState.items[row.index]!)"
                   @mark-unread="
                     markRead([messageState.items[row.index]!.message.id], false)
                   "
@@ -428,7 +455,7 @@ watch(
         />
 
         <aside
-          v-if="nav.detailOpen.value && (mailDetail || selected)"
+          v-if="!composeFull && nav.detailOpen.value && (mailDetail || selected)"
           class="absolute inset-y-0 right-0 z-[4] flex w-[min(300px,100%)] flex-col overflow-auto border-l border-border-subtle bg-surface-elevated p-4"
           :class="
             showingMailDetail ? 'w-[min(640px,100%)] overflow-hidden p-0' : ''
@@ -567,6 +594,15 @@ watch(
             </div>
           </template>
         </aside>
+
+        <MailComposer
+          ref="composerRef"
+          :require-recipients-for-send="
+            selected?.conversation.kind === 'group'
+          "
+          @sent="onMailSent"
+          @mode-change="onComposeModeChange"
+        />
       </div>
     </template>
 
