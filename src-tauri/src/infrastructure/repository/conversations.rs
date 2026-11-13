@@ -9,7 +9,8 @@ use crate::domain::entities::{Conversation, ConversationMessageLink, MessageWith
 use crate::domain::value_objects::{
     AccountId, ContactId, ConversationId, EmailAddress, GroupId, MessageId, PageDirection,
 };
-use sqlx::SqliteConnection;
+use crate::infrastructure::repository::accounts;
+use sqlx::{QueryBuilder, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
@@ -88,45 +89,48 @@ pub async fn list(
     // 游标："{last_message_at}:{account_id}:{id}"（兼容旧 "{at}:{id}"）
     let (cursor_at, mut cursor_account, cursor_id) =
         parse_conv_cursor(query.cursor.as_deref())?;
-    let account_filter = query.account_id.as_ref().map(|a| a.as_str());
-    // 旧游标无 account 时，单账号查询用过滤账号补齐
-    if cursor_account.is_none() {
-        cursor_account = account_filter.map(|s| s.to_owned());
+    let account_ids = accounts::resolve_list_account_ids(conn, query.account_id.as_ref()).await?;
+    if account_ids.is_empty() {
+        return Ok(CursorPage::empty());
     }
-    let rows = sqlx::query(
-        "SELECT * FROM conversations
-         WHERE (? IS NULL OR account_id = ?)
-           AND (? IS NULL OR kind = ?)
-           AND (
-             ? IS NULL
-             OR (COALESCE(last_message_at, -1) < ?)
-             OR (
-               COALESCE(last_message_at, -1) = ?
-               AND account_id > ?
-             )
-             OR (
-               COALESCE(last_message_at, -1) = ?
-               AND account_id = ?
-               AND id > ?
-             )
-           )
-         ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC
-         LIMIT ?",
-    )
-    .bind(account_filter)
-    .bind(account_filter)
-    .bind(kind)
-    .bind(kind)
-    .bind(cursor_id.as_deref())
-    .bind(cursor_at.unwrap_or(i64::MAX))
-    .bind(cursor_at.unwrap_or(-1))
-    .bind(cursor_account.as_deref().unwrap_or(""))
-    .bind(cursor_at.unwrap_or(-1))
-    .bind(cursor_account.as_deref().unwrap_or(""))
-    .bind(cursor_id.as_deref())
-    .bind(i64::from(query.limit) + 1)
-    .fetch_all(&mut *conn)
-    .await?;
+    // 旧游标无 account 时，单账号查询用过滤账号补齐
+    if cursor_account.is_none() && account_ids.len() == 1 {
+        cursor_account = Some(account_ids[0].as_str().to_owned());
+    }
+
+    let mut qb = QueryBuilder::new("SELECT * FROM conversations WHERE ");
+    accounts::push_account_id_in(&mut qb, &account_ids);
+    qb.push(" AND (");
+    if let Some(kind) = kind {
+        qb.push("kind = ");
+        qb.push_bind(kind);
+    } else {
+        qb.push("1 = 1");
+    }
+    qb.push(") AND (");
+    if cursor_id.is_none() {
+        qb.push("1 = 1");
+    } else {
+        qb.push("(COALESCE(last_message_at, -1) < ");
+        qb.push_bind(cursor_at.unwrap_or(i64::MAX));
+        qb.push(") OR (COALESCE(last_message_at, -1) = ");
+        qb.push_bind(cursor_at.unwrap_or(-1));
+        qb.push(" AND account_id > ");
+        qb.push_bind(cursor_account.as_deref().unwrap_or(""));
+        qb.push(") OR (COALESCE(last_message_at, -1) = ");
+        qb.push_bind(cursor_at.unwrap_or(-1));
+        qb.push(" AND account_id = ");
+        qb.push_bind(cursor_account.as_deref().unwrap_or(""));
+        qb.push(" AND id > ");
+        qb.push_bind(cursor_id.as_deref());
+        qb.push(")");
+    }
+    qb.push(
+        ") ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
+    );
+    qb.push_bind(i64::from(query.limit) + 1);
+
+    let rows = qb.build().fetch_all(&mut *conn).await?;
 
     let has_more = rows.len() > query.limit as usize;
     let mut conversations = rows

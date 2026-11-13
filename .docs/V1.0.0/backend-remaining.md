@@ -119,15 +119,19 @@ aggregate worker
 
 **验收**：同步入队后，无需前端参与，会话投影与未读数收敛；崩溃后租约可恢复。
 
-### 阶段 D — 运行时调度
+### 阶段 D — 运行时调度与变更分发
+
+详细契约：[change-dispatch.md](./change-dispatch.md)（`ChangeSet` 分离数据变更与业务通知）。
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| `runtime` 模块 | `src-tauri/src/runtime/` | mail sync tick + aggregate drain |
-| `lib.rs` spawn | 组合根 | 启动挂载、退出停止 |
+| `runtime` 模块 | `src-tauri/src/runtime/` | mail sync tick + aggregate drain + change_dispatcher |
+| `ChangeSet` / `ChangeOrigin` | `application/dto/change_set.rs` | commit 后摘要；用例返回，command/runtime 分发 |
+| `ChangeDispatcher` | `runtime/change_dispatcher.rs` | `mail.changed` emit；IncrementalSync 系统通知（可 stub） |
+| `lib.rs` spawn | 组合根 | 启动挂载、退出停止；注入 `AppHandle` 到 dispatcher |
 | 退避与跳过 | scheduler 配置 | `running` 中不重入；错误指数退避；可先固定间隔 |
 
-**验收**：应用空闲时仍周期性推进同步与聚合；关掉前端页面不影响 Rust 循环。
+**验收**：应用空闲时仍周期性推进同步与聚合；关掉前端页面不影响 Rust 循环；本地写路径（如 `mark_read`）可发出 `mail.changed`。
 
 ### 阶段 E — 群组写与会话 ensure
 
@@ -177,6 +181,7 @@ A 登录/Token
 ```text
 src-tauri/src/runtime/
   mod.rs
+  change_dispatcher.rs      # ChangeSet → mail.changed (+ notify stub)
   mail_sync_scheduler.rs    # interval → list_accounts → trigger_mail_sync
   aggregate_scheduler.rs    # interval → process_available_jobs(limit)
 ```

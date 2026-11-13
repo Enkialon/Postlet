@@ -4,21 +4,25 @@ pub mod application;
 pub mod commands;
 pub mod domain;
 pub mod infrastructure;
+pub mod runtime;
 
 use application::dto::ComposeDraft;
 use application::use_cases::compose_use_case;
 use infrastructure::paths::AppPaths;
+use runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
-/// 进程级应用状态（本地 SQLite + 目录布局 + 写信草稿）
+/// 进程级应用状态（本地 SQLite + 目录布局 + 写信草稿 + 变更分发）
 pub struct AppState {
     pub db: SqlitePool,
     pub paths: AppPaths,
     /// 会话级写信草稿（本阶段进程内，不落库）
     pub compose_drafts: Mutex<HashMap<String, ComposeDraft>>,
+    /// 事务提交后的 ChangeSet 分发（UI 事件 / 系统通知）
+    pub changes: ChangeDispatcher,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,10 +34,12 @@ pub fn run() {
             let db =
                 tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
+            let changes = ChangeDispatcher::new(app.handle().clone());
             app.manage(AppState {
                 db,
                 paths,
                 compose_drafts: Mutex::new(compose_use_case::empty_draft_map()),
+                changes,
             });
             Ok(())
         })

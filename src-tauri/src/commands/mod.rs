@@ -152,7 +152,9 @@ pub async fn mark_messages_read(
     state: State<'_, AppState>,
     cmd: MarkMessagesReadCommand,
 ) -> Result<(), AppError> {
-    message_use_case::mark_read(&state.db, cmd).await
+    let changes = message_use_case::mark_read(&state.db, cmd).await?;
+    state.changes.dispatch(changes);
+    Ok(())
 }
 
 #[tauri::command]

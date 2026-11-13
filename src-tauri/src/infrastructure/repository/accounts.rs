@@ -3,7 +3,7 @@
 use crate::application::error::PortError;
 use crate::domain::entities::Account;
 use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
-use sqlx::SqliteConnection;
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
@@ -55,6 +55,40 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError
         .map(super::rows::account)
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// 当前库内有效账号 ID（仍在 `accounts` 表中）。
+///
+/// 退出登录后若保留邮件行、去掉账户行，会话/联系人/群组「全部」列表用此集合做 `IN`，
+/// 避免把已失效账号的残留数据扫出来。
+pub async fn list_ids(conn: &mut SqliteConnection) -> Result<Vec<AccountId>, PortError> {
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM accounts ORDER BY id")
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(ids.into_iter().map(AccountId::new).collect())
+}
+
+/// 列表过滤：指定账号则单元素；否则取有效账号列表。
+pub async fn resolve_list_account_ids(
+    conn: &mut SqliteConnection,
+    account_id: Option<&AccountId>,
+) -> Result<Vec<AccountId>, PortError> {
+    if let Some(id) = account_id {
+        return Ok(vec![id.clone()]);
+    }
+    list_ids(conn).await
+}
+
+/// 向 QueryBuilder 追加 `account_id IN (...)`。
+pub fn push_account_id_in(qb: &mut QueryBuilder<'_, Sqlite>, account_ids: &[AccountId]) {
+    qb.push("account_id IN (");
+    {
+        let mut separated = qb.separated(", ");
+        for id in account_ids {
+            separated.push_bind(id.as_str());
+        }
+    }
+    qb.push(")");
 }
 
 /// 登录路径：插入新账户，或只更新身份字段（不覆盖显示开关与同步元数据）。
@@ -235,6 +269,27 @@ pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), P
         .bind(id.as_str())
         .execute(&mut *conn)
         .await?;
+    Ok(())
+}
+
+/// 退出登录：删除账户行，但保留会话/联系人/群组等业务数据（关闭外键后删除，避免 CASCADE）。
+///
+/// 再登录同一邮箱会复用原 `AccountId`，残留数据重新可见；「全部」列表靠 [`list_ids`] + `IN` 隐藏已退出账号。
+pub async fn delete_keeping_mail_data(
+    conn: &mut SqliteConnection,
+    id: &AccountId,
+) -> Result<(), PortError> {
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+    let result = sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await;
+    let _ = sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *conn)
+        .await;
+    result?;
     Ok(())
 }
 

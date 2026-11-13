@@ -40,6 +40,7 @@ import type {
 } from '../../domain/types';
 import { invoke, notImplemented } from './invoke';
 import { normalizeAppError } from './normalizeError';
+import { TauriChangeEventsAdapter } from './TauriChangeEventsAdapter';
 
 /**
  * Tauri Adapter：已注册 IPC → invoke；未实现能力显式 notImplemented。
@@ -53,8 +54,9 @@ export function createTauriPorts(): AppPorts {
       listAccounts: () => invoke<Account[]>('list_accounts'),
       getAccount: (accountId: AccountId) =>
         invoke<Account>('get_account', { accountId }),
-      signIn: () => notImplemented('account.signIn（请用 loadDemoWorkspace）'),
-      signOut: (_accountId: AccountId) => notImplemented('account.signOut'),
+      signIn: () => invoke<Account>('account_sign_in'),
+      signOut: (accountId: AccountId) =>
+        invoke<void>('account_sign_out', { accountId }),
       updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>
         invoke<Account>('update_display_settings', { cmd }),
       loadDemoWorkspace: () => invoke<Account>('load_demo_workspace'),
@@ -166,5 +168,6 @@ export function createTauriPorts(): AppPorts {
         await openUrl(url.trim());
       },
     },
+    changeEvents: new TauriChangeEventsAdapter(),
   };
 }

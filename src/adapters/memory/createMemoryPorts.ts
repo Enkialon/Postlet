@@ -8,6 +8,7 @@ import { MemoryMessageAdapter } from './MemoryMessageAdapter';
 import { MemoryComposeAdapter } from './MemoryComposeAdapter';
 import { MemoryGroupAdapter } from './MemoryGroupAdapter';
 import { MemoryPlatformAdapter } from './MemoryPlatformAdapter';
+import { MemoryChangeEventsAdapter } from './MemoryChangeEventsAdapter';
 
 /** 创建内存 Port 集；默认带演示数据 */
 export function createMemoryPorts(options?: { seed?: boolean }): AppPorts {
@@ -22,5 +23,6 @@ export function createMemoryPorts(options?: { seed?: boolean }): AppPorts {
     compose: new MemoryComposeAdapter(store),
     group: new MemoryGroupAdapter(store),
     platform: new MemoryPlatformAdapter(),
+    changeEvents: new MemoryChangeEventsAdapter(),
   };
 }

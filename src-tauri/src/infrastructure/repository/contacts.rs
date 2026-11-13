@@ -4,7 +4,8 @@ use crate::application::dto::{ContactListQuery, CursorPage};
 use crate::application::error::PortError;
 use crate::domain::entities::Contact;
 use crate::domain::value_objects::{AccountId, ContactId, EmailAddress};
-use sqlx::SqliteConnection;
+use crate::infrastructure::repository::accounts;
+use sqlx::{QueryBuilder, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
@@ -47,36 +48,40 @@ pub async fn list(
             message: "分页大小须为 1..500".into(),
         });
     }
-    let account_filter = query.account_id.as_ref().map(|a| a.as_str());
+    let account_ids = accounts::resolve_list_account_ids(conn, query.account_id.as_ref()).await?;
+    if account_ids.is_empty() {
+        return Ok(CursorPage::empty());
+    }
     let (cursor_account, cursor_id) = parse_entity_cursor(query.cursor.as_deref())?;
-    let rows = sqlx::query(
-        "SELECT * FROM contacts
-         WHERE (? IS NULL OR account_id = ?)
-           AND (
-             ? IS NULL
-             OR account_id > ?
-             OR (account_id = ? AND id > ?)
-           )
-           AND (
-             ? IS NULL
-             OR instr(lower(display_name), lower(?)) = 1
-             OR instr(normalized_address, lower(?)) = 1
-           )
-         ORDER BY account_id ASC, id ASC
-         LIMIT ?",
-    )
-    .bind(account_filter)
-    .bind(account_filter)
-    .bind(cursor_id.as_deref())
-    .bind(cursor_account.as_deref().unwrap_or(""))
-    .bind(cursor_account.as_deref().unwrap_or(""))
-    .bind(cursor_id.as_deref())
-    .bind(query.search.as_deref())
-    .bind(query.search.as_deref())
-    .bind(query.search.as_deref())
-    .bind(i64::from(query.limit) + 1)
-    .fetch_all(&mut *conn)
-    .await?;
+
+    let mut qb = QueryBuilder::new("SELECT * FROM contacts WHERE ");
+    accounts::push_account_id_in(&mut qb, &account_ids);
+    qb.push(" AND (");
+    if cursor_id.is_none() {
+        qb.push("1 = 1");
+    } else {
+        qb.push("account_id > ");
+        qb.push_bind(cursor_account.as_deref().unwrap_or(""));
+        qb.push(" OR (account_id = ");
+        qb.push_bind(cursor_account.as_deref().unwrap_or(""));
+        qb.push(" AND id > ");
+        qb.push_bind(cursor_id.as_deref());
+        qb.push(")");
+    }
+    qb.push(") AND (");
+    if let Some(search) = query.search.as_deref() {
+        qb.push("instr(lower(display_name), lower(");
+        qb.push_bind(search);
+        qb.push(")) = 1 OR instr(normalized_address, lower(");
+        qb.push_bind(search);
+        qb.push(")) = 1");
+    } else {
+        qb.push("1 = 1");
+    }
+    qb.push(") ORDER BY account_id ASC, id ASC LIMIT ");
+    qb.push_bind(i64::from(query.limit) + 1);
+
+    let rows = qb.build().fetch_all(&mut *conn).await?;
     let has_more = rows.len() > query.limit as usize;
     let items = rows
         .iter()

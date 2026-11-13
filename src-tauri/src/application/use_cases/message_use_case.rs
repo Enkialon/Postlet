@@ -2,10 +2,10 @@
 use crate::infrastructure::repository::{conversations, messages};
 use sqlx::SqlitePool;
 
-use crate::application::dto::MarkMessagesReadCommand;
+use crate::application::dto::{ChangeOrigin, ChangeSet, MarkMessagesReadCommand};
 use crate::application::error::AppError;
 use crate::domain::entities::MessageWithRecipients;
-use crate::domain::value_objects::{AccountId, MessageId};
+use crate::domain::value_objects::{AccountId, ConversationId, MessageId};
 use std::collections::HashSet;
 
 /// 在指定账户内读取本地邮件及收件人；不存在时返回未找到错误。
@@ -36,11 +36,12 @@ pub async fn ensure_message_body(
 /// 批量修改指定账户邮件的已读状态，并重算相关会话未读数。
 ///
 /// 本阶段只写本地库，不排队推送到 Outlook。
-pub async fn mark_read(db: &SqlitePool, cmd: MarkMessagesReadCommand) -> Result<(), AppError> {
+/// 返回 commit 后的 [`ChangeSet`]（`UserAction`），由调用方分发。
+pub async fn mark_read(db: &SqlitePool, cmd: MarkMessagesReadCommand) -> Result<ChangeSet, AppError> {
     let mut tx = db.begin().await?;
     let changed =
         messages::mark_read(&mut tx, &cmd.account_id, &cmd.message_ids, cmd.is_read).await?;
-    let mut touched = HashSet::new();
+    let mut touched: HashSet<String> = HashSet::new();
     for mid in &changed {
         for cid in conversations::find_conversation_ids_by_message(&mut tx, &cmd.account_id, mid)
             .await?
@@ -48,14 +49,19 @@ pub async fn mark_read(db: &SqlitePool, cmd: MarkMessagesReadCommand) -> Result<
             touched.insert(cid.into_inner());
         }
     }
-    for cid in touched {
-        conversations::recompute_projection(
-            &mut tx,
-            &cmd.account_id,
-            &crate::domain::value_objects::ConversationId::new(cid),
-        )
-        .await?;
+    let mut conversation_ids = Vec::with_capacity(touched.len());
+    for cid in &touched {
+        let conversation_id = ConversationId::new(cid.clone());
+        conversations::recompute_projection(&mut tx, &cmd.account_id, &conversation_id).await?;
+        conversation_ids.push(conversation_id);
     }
     tx.commit().await?;
-    Ok(())
+
+    Ok(ChangeSet {
+        account_id: cmd.account_id,
+        conversation_ids,
+        message_ids: changed,
+        new_incoming_ids: Vec::new(),
+        origin: ChangeOrigin::UserAction,
+    })
 }
