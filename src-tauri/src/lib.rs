@@ -1,3 +1,9 @@
+//! Postlet 库入口：声明 DDD 模块；Tauri IPC 胶水仍为薄层。
+
+pub mod application;
+pub mod domain;
+pub mod infrastructure;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
