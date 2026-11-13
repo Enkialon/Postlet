@@ -4,6 +4,47 @@ import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Underline from '@tiptap/extension-underline';
 import Link from '@tiptap/extension-link';
+import Image from '@tiptap/extension-image';
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function collectImageFiles(
+  data: DataTransfer | null | undefined,
+): File[] {
+  if (!data) return [];
+  const fromItems: File[] = [];
+  if (data.items?.length) {
+    for (const item of Array.from(data.items)) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) fromItems.push(file);
+      }
+    }
+  }
+  if (fromItems.length) return fromItems;
+  return Array.from(data.files ?? []).filter((f) =>
+    f.type.startsWith('image/'),
+  );
+}
+
+async function insertImages(editor: Editor, files: File[]): Promise<void> {
+  for (const file of files) {
+    const src = await readFileAsDataUrl(file);
+    if (!src) continue;
+    editor
+      .chain()
+      .focus()
+      .setImage({ src, alt: file.name || '粘贴图片' })
+      .run();
+  }
+}
 
 /** 会话级唯一 Tiptap 实例；模式切换不销毁 */
 export function useMailEditor(options?: { placeholder?: string }) {
@@ -11,7 +52,9 @@ export function useMailEditor(options?: { placeholder?: string }) {
 
   function ensureEditor(): Editor {
     if (editor.value) return editor.value;
-    const instance = new Editor({
+
+    let instance!: Editor;
+    instance = new Editor({
       extensions: [
         StarterKit.configure({
           heading: { levels: [1, 2, 3] },
@@ -23,6 +66,13 @@ export function useMailEditor(options?: { placeholder?: string }) {
           openOnClick: false,
           HTMLAttributes: { rel: 'noopener noreferrer', target: '_blank' },
         }),
+        Image.configure({
+          inline: false,
+          allowBase64: true,
+          HTMLAttributes: {
+            class: 'mail-editor-image',
+          },
+        }),
         Placeholder.configure({
           placeholder: options?.placeholder ?? '写邮件…',
         }),
@@ -32,6 +82,20 @@ export function useMailEditor(options?: { placeholder?: string }) {
         attributes: {
           class:
             'mail-editor outline-none min-h-[2.5rem] text-[14px] leading-relaxed text-text-primary',
+        },
+        handlePaste(_view, event) {
+          const files = collectImageFiles(event.clipboardData);
+          if (!files.length) return false;
+          event.preventDefault();
+          void insertImages(instance, files);
+          return true;
+        },
+        handleDrop(_view, event) {
+          const files = collectImageFiles(event.dataTransfer);
+          if (!files.length) return false;
+          event.preventDefault();
+          void insertImages(instance, files);
+          return true;
         },
       },
     });

@@ -144,6 +144,15 @@
   border-radius: 6px;
 }
 
+.mail-editor-host .ProseMirror img.mail-editor-image,
+.mail-editor-host .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  margin: 0.5em 0;
+}
+
 .mail-letter__inner blockquote {
   margin: 0.5em 0;
   padding-left: 0.85em;

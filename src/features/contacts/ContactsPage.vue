@@ -64,14 +64,19 @@ onMounted(() => {
     aria-label="联系人"
   >
     <aside class="flex min-h-0 flex-col border-r border-border-subtle bg-surface-sidebar">
-      <header class="border-b border-border-subtle px-3.5 py-3.5">
-        <label class="grid gap-1.5 text-[13px] text-text-secondary">
-          按姓名或地址查找
+      <header
+        class="flex h-[52px] shrink-0 items-center border-b border-border-subtle px-3"
+      >
+        <label
+          class="flex h-7 min-w-0 flex-1 items-center rounded-md border border-border-subtle bg-surface-elevated px-2 focus-within:border-brand/35"
+        >
+          <span class="sr-only">搜索联系人</span>
           <input
-            class="rounded-md border border-border-subtle bg-surface-input px-2.5 py-2 text-[14px] text-text-primary placeholder:text-text-tertiary"
+            class="min-w-0 flex-1 border-0 bg-transparent text-[12px] leading-none text-text-primary outline-none placeholder:text-text-tertiary"
             :value="searchInput"
             type="search"
-            placeholder="姓名 / 地址前缀"
+            placeholder="搜索"
+            autocomplete="off"
             @input="setSearch(($event.target as HTMLInputElement).value)"
           />
         </label>

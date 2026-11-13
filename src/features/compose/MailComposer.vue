@@ -162,8 +162,28 @@ function onFilesSelected(e: Event): void {
 function onDrop(e: DragEvent): void {
   e.preventDefault();
   dragOver.value = false;
-  if (e.dataTransfer?.files?.length) {
-    addAttachments(e.dataTransfer.files);
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (!files.length) return;
+  // 图片进正文（与 Outlook 内嵌一致）；其余仍作附件
+  const images = files.filter((f) => f.type.startsWith('image/'));
+  const others = files.filter((f) => !f.type.startsWith('image/'));
+  if (images.length) {
+    const ed = mailEditor.ensureEditor();
+    void (async () => {
+      for (const file of images) {
+        const src = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result ?? ''));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        if (src) ed.chain().focus().setImage({ src, alt: file.name }).run();
+      }
+      scheduleSave(mailEditor.getHtml());
+    })();
+  }
+  if (others.length) {
+    addAttachments(others);
     scheduleSave(mailEditor.getHtml());
   }
 }
@@ -220,12 +240,6 @@ defineExpose({
     @drop="onDrop"
   >
     <template v-if="mode === 'full'">
-      <header
-        class="flex h-[52px] shrink-0 items-center border-b border-border-subtle px-4"
-      >
-        <strong class="text-[14px] font-semibold text-text-primary">写信</strong>
-      </header>
-
       <div class="shrink-0 space-y-2 border-b border-border-subtle px-4 py-3">
         <div class="grid grid-cols-[3rem_1fr] items-start gap-2 text-[13px]">
           <span class="pt-2 text-text-secondary">收件人</span>
