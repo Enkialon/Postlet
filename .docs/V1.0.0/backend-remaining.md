@@ -86,11 +86,14 @@ aggregate worker
 
 ### 阶段 A — 身份与密钥（接入微软的前提）
 
+详细契约：[auth-login.md](./auth-login.md)（Auth Code + PKCE、localhost 回跳、`azure.json` client_id）。
+
 | 项 | 位置 | 说明 |
 |---|---|---|
-| OAuth 登录 / 退出 | `graph/auth` + `account_use_case::{sign_in,sign_out}` | 浏览器/系统流程；刷新 token |
-| Token 存储 | `credentials/` 或系统钥匙串 | 禁止明文长期塞进业务表 |
-| 账户 upsert 与本地 AccountId 绑定 | auth → accounts 仓储 | 登录不得覆盖用户显示配置 |
+| OAuth 登录 / 退出 | `graph/auth` + `account_use_case::{sign_in,sign_out}` | 授权码+PKCE；系统浏览器；刷新 token |
+| Token 存储 | `credentials/{account_id}.json` | 禁止明文长期塞进业务表；V1 不用钥匙串 |
+| 账户 upsert 与本地 AccountId 绑定 | `upsert_identity` + home_account_id/email | 登录不得覆盖用户显示配置 |
+| Azure 配置 | `{app_config_dir}/azure.json` | `client_id` / `client_secret` / `redirect_uri` 必填；`tenant` 默认 `common` |
 
 **验收**：`signIn` 返回本地 Account；重启后 `listAccounts` 仍可用；token 可刷新。
 

@@ -33,6 +33,20 @@ pub async fn get_by_email(
         .map_err(Into::into)
 }
 
+pub async fn get_by_home_account_id(
+    conn: &mut SqliteConnection,
+    home_account_id: &str,
+) -> Result<Option<Account>, PortError> {
+    let row = sqlx::query("SELECT * FROM accounts WHERE home_account_id = ?")
+        .bind(home_account_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    row.as_ref()
+        .map(super::rows::account)
+        .transpose()
+        .map_err(Into::into)
+}
+
 pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError> {
     sqlx::query("SELECT * FROM accounts ORDER BY id")
         .fetch_all(&mut *conn)
@@ -41,6 +55,54 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError
         .map(super::rows::account)
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// 登录路径：插入新账户，或只更新身份字段（不覆盖显示开关与同步元数据）。
+pub async fn upsert_identity(
+    conn: &mut SqliteConnection,
+    account: &Account,
+) -> Result<(), PortError> {
+    let aliases_json = serde_json::to_string(
+        &account
+            .aliases
+            .iter()
+            .map(|a| a.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| PortError::Storage {
+        message: format!("aliases_json 序列化失败: {e}"),
+    })?;
+    sqlx::query(
+        "INSERT INTO accounts (
+            id, email, display_name, aliases_json, tenant_id, home_account_id,
+            contact_delta_link, mail_synced_at, contact_synced_at, mail_sync_status,
+            mail_sync_error, show_group_messages_in_contact_conversation, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            email=excluded.email,
+            display_name=excluded.display_name,
+            aliases_json=excluded.aliases_json,
+            tenant_id=excluded.tenant_id,
+            home_account_id=excluded.home_account_id,
+            updated_at=excluded.updated_at",
+    )
+    .bind(account.id.as_str())
+    .bind(account.email.as_str())
+    .bind(&account.display_name)
+    .bind(&aliases_json)
+    .bind(&account.tenant_id)
+    .bind(&account.home_account_id)
+    .bind(&account.contact_delta_link)
+    .bind(account.mail_synced_at)
+    .bind(account.contact_synced_at)
+    .bind(account.mail_sync_status.as_str())
+    .bind(&account.mail_sync_error)
+    .bind(account.show_group_messages_in_contact_conversation)
+    .bind(account.created_at)
+    .bind(account.updated_at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<(), PortError> {

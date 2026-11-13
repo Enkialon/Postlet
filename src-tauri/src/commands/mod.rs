@@ -30,6 +30,19 @@ pub async fn get_account(
 }
 
 #[tauri::command]
+pub async fn account_sign_in(state: State<'_, AppState>) -> Result<Account, AppError> {
+    account_use_case::sign_in(&state.db, &state.paths).await
+}
+
+#[tauri::command]
+pub async fn account_sign_out(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<(), AppError> {
+    account_use_case::sign_out(&state.db, &state.paths, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
 pub async fn load_demo_workspace(state: State<'_, AppState>) -> Result<Account, AppError> {
     account_use_case::load_demo_workspace(&state.db).await
 }
