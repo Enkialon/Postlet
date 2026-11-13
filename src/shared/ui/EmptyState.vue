@@ -3,31 +3,16 @@ defineProps<{ title: string; description?: string }>();
 </script>
 
 <template>
-  <div class="empty" role="status">
-    <p class="empty__title">{{ title }}</p>
-    <p v-if="description" class="empty__desc">{{ description }}</p>
-    <div v-if="$slots.default" class="empty__actions">
+  <div class="px-4 py-8 text-center" role="status">
+    <p class="m-0 text-[14px] font-medium text-text-secondary">{{ title }}</p>
+    <p
+      v-if="description"
+      class="mt-2 mb-0 text-[13px] leading-normal text-text-tertiary"
+    >
+      {{ description }}
+    </p>
+    <div v-if="$slots.default" class="mt-4">
       <slot />
     </div>
   </div>
 </template>
-
-<style scoped>
-.empty {
-  padding: 2rem 1.25rem;
-  text-align: center;
-  color: var(--muted);
-}
-.empty__title {
-  margin: 0;
-  color: var(--text);
-  font-size: 1rem;
-}
-.empty__desc {
-  margin: 0.5rem 0 0;
-  font-size: 0.9rem;
-}
-.empty__actions {
-  margin-top: 1rem;
-}
-</style>

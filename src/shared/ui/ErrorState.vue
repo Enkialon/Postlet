@@ -11,10 +11,14 @@ const emit = defineEmits<{ retry: [] }>();
 </script>
 
 <template>
-  <div class="error" role="alert">
-    <p class="error__msg">{{ errorMessageForUi(props.error) }}</p>
-    <p v-if="staleHint" class="error__hint">内容可能未更新</p>
-    <p v-if="props.error.message" class="error__detail">
+  <div class="grid justify-items-start gap-2 p-4" role="alert">
+    <p class="m-0 text-[14px] font-medium text-danger">
+      {{ errorMessageForUi(props.error) }}
+    </p>
+    <p v-if="staleHint" class="m-0 text-[13px] text-text-secondary">
+      内容可能未更新
+    </p>
+    <p v-if="props.error.message" class="m-0 text-[13px] text-text-secondary">
       {{ props.error.message }}
     </p>
     <Button
@@ -26,23 +30,3 @@ const emit = defineEmits<{ retry: [] }>();
     </Button>
   </div>
 </template>
-
-<style scoped>
-.error {
-  padding: 1rem;
-  display: grid;
-  gap: 0.5rem;
-  justify-items: start;
-}
-.error__msg {
-  margin: 0;
-  color: var(--danger);
-  font-weight: 600;
-}
-.error__hint,
-.error__detail {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-</style>

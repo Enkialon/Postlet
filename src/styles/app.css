@@ -1,46 +1,118 @@
-:root {
-  --bg: #eef1f4;
-  --surface: #fbfcfd;
-  --surface-2: #eef2f6;
-  --text: #1c2430;
-  --muted: #5b6777;
-  --border: #d5dde6;
-  --accent: #2f6fed;
-  --danger: #c23b3b;
-  --warn: #9a6b12;
-  font-family: "Segoe UI", "Source Han Sans SC", "Noto Sans SC", sans-serif;
-  font-size: 15px;
-  line-height: 1.45;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@import "tailwindcss";
+
+/*
+  Postlet — Notion Minimal Workspace tokens
+  语义化命名；组件只引用这些变量对应的 Tailwind 色板。
+*/
+@theme {
+  /* Surfaces */
+  --color-surface-rail: #222222;
+  --color-surface-rail-hover: #2e2e2e;
+  --color-surface-rail-selected: #393939;
+  --color-surface-sidebar: #f7f7f5;
+  --color-surface-sidebar-hover: #f0f0ee;
+  --color-surface-sidebar-selected: #eaeae7;
+  /* 聊天画布略深于白气泡，靠明度差分层，不用重阴影 */
+  --color-surface-chat: #f3f3f0;
+  --color-surface-header: #ffffff;
+  --color-surface-input: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-muted: #f0f0ee;
+
+  /* Icons (rail) */
+  --color-icon-rail: #a5a5a5;
+  --color-icon-rail-active: #ffffff;
+
+  /* Bubbles：收=纯白块面；发=更清晰的浅薄荷，仍克制 */
+  --color-bubble-incoming: #ffffff;
+  --color-bubble-outgoing: #e3ebe5;
+  --color-border-bubble: #e0e0db;
+  --color-border-bubble-out: #d2ddd6;
+
+  /* Text */
+  --color-text-primary: #252525;
+  --color-text-secondary: #727272;
+  --color-text-tertiary: #858585;
+
+  /* Borders */
+  --color-border-subtle: #ebebe8;
+
+  /* Accents */
+  --color-brand: #54836c;
+  --color-brand-hover: #46705c;
+  --color-danger: #e05555;
+  --color-unread: #e85c5c;
+  --color-warn: #a8842f;
+
+  /* Radius — 6 / 8 / 10 */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* Shadows — 克制，仅弹层等必要场景 */
+  --shadow-xs: 0 1px 0 rgba(37, 37, 37, 0.04);
+  --shadow-sm: 0 1px 2px rgba(37, 37, 37, 0.04);
+  --shadow-panel: 0 8px 24px rgba(37, 37, 37, 0.1);
+
+  --font-sans:
+    Inter, "Segoe UI Variable", "Microsoft YaHei UI", "PingFang SC",
+    sans-serif;
+
+  --default-transition-duration: 150ms;
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+@layer base {
+  html,
+  body,
+  #app {
+    @apply m-0 h-full min-h-full;
+  }
+
+  body {
+    @apply bg-surface-chat font-sans text-sm leading-[1.45] text-text-primary antialiased;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    color: inherit;
+    font: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-brand) 40%, #fff);
+    outline-offset: 2px;
+  }
 }
 
-html,
-body,
-#app {
-  margin: 0;
-  height: 100%;
-  min-height: 100%;
+/* vue-letter 邮件正文 */
+.mail-letter__inner {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--color-text-primary);
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
-button,
-input,
-select,
-textarea {
-  color: inherit;
+.mail-letter__inner p {
+  margin: 0 0 0.85em;
 }
 
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.mail-letter__inner a {
+  color: #3b6d9a;
+}
+
+.mail-letter__inner img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.mail-letter__inner blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.85em;
+  border-left: 3px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
 }
