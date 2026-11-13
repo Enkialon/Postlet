@@ -5,12 +5,14 @@ pub mod commands;
 pub mod domain;
 pub mod infrastructure;
 
+use infrastructure::paths::AppPaths;
 use sqlx::SqlitePool;
 use tauri::Manager;
 
-/// 进程级应用状态（本地 SQLite）。
+/// 进程级应用状态（本地 SQLite + 目录布局）。
 pub struct AppState {
     pub db: SqlitePool,
+    pub paths: AppPaths,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,16 +20,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_data = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("无法解析 app_data_dir: {e}"))?;
-            std::fs::create_dir_all(&app_data)
-                .map_err(|e| format!("无法创建 app_data_dir: {e}"))?;
-            let db_path = app_data.join("postlet.db");
-            let db = tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&db_path))
-                .map_err(|e| format!("打开数据库失败: {e}"))?;
-            app.manage(AppState { db });
+            let paths = AppPaths::resolve(app.handle())?;
+            let db =
+                tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
+                    .map_err(|e| format!("打开数据库失败: {e}"))?;
+            app.manage(AppState { db, paths });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
