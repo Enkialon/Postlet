@@ -1,6 +1,9 @@
 import type { AccountPort } from '../../ports/accountPort';
 import type { Account } from '../../domain/entities';
-import type { UpdateAccountDisplaySettingsCommand } from '../../domain/dto';
+import type {
+  UpdateAccountDisplaySettingsCommand,
+  UpsertImapSmtpAccountCommand,
+} from '../../domain/dto';
 import type { AccountId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
@@ -27,6 +30,55 @@ export class MemoryAccountAdapter implements AccountPort {
       aliases: [],
       tenant_id: 'tenant-demo',
       home_account_id: `home-${id}`,
+      contact_delta_link: null,
+      mail_synced_at: null,
+      contact_synced_at: null,
+      mail_sync_status: 'idle',
+      mail_sync_error: null,
+      show_group_messages_in_contact_conversation: false,
+      include_in_all: true,
+      created_at: t,
+      updated_at: t,
+    };
+    this.store.accounts.set(id, account);
+    this.store.markSignedIn(id);
+    this.store.folderStates.set(id, []);
+    return account;
+  }
+
+  async upsertImapSmtpAccount(
+    cmd: UpsertImapSmtpAccountCommand,
+  ): Promise<Account> {
+    const email = cmd.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      throw { code: 'validation', message: '邮箱地址无效', retryable: false };
+    }
+    if (cmd.auth_kind === 'password' && !cmd.password) {
+      throw {
+        code: 'validation',
+        message: '密码认证须提供 password',
+        retryable: false,
+      };
+    }
+    const t = Date.now();
+    const existing = [...this.store.accounts.values()].find(
+      (a) => a.email.toLowerCase() === email,
+    );
+    if (existing) {
+      existing.display_name = cmd.display_name.trim() || email;
+      existing.updated_at = t;
+      this.store.accounts.set(existing.id, existing);
+      this.store.markSignedIn(existing.id);
+      return { ...existing };
+    }
+    const id = this.store.nextId('acc');
+    const account: Account = {
+      id,
+      email,
+      display_name: cmd.display_name.trim() || email,
+      aliases: [],
+      tenant_id: null,
+      home_account_id: null,
       contact_delta_link: null,
       mail_synced_at: null,
       contact_synced_at: null,

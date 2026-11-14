@@ -7,6 +7,8 @@ import type {
   FolderId,
   GroupId,
   Importance,
+  MailAuthKind,
+  MailTlsMode,
   MessageId,
   PageDirection,
   SyncStatus,
@@ -98,6 +100,24 @@ export interface UpdateAccountDisplaySettingsCommand {
   show_group_messages_in_contact_conversation: boolean;
   /** 是否纳入「全部账号」跨账号列表 */
   include_in_all: boolean;
+}
+
+/** 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌） */
+export interface UpsertImapSmtpAccountCommand {
+  email: string;
+  display_name: string;
+  auth_kind: MailAuthKind;
+  imap_host: string;
+  imap_port: number;
+  imap_tls: MailTlsMode;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_tls: MailTlsMode;
+  username: string | null;
+  password: string | null;
+  access_token: string | null;
+  refresh_token: string | null;
+  expires_at_ms: TimestampMs | null;
 }
 
 /** 批量标记已读 / 未读 */

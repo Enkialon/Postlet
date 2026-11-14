@@ -29,3 +29,11 @@ export type AggregateJobStatus =
   | 'failed';
 export type AggregationOutcome = 'completed' | 'partial' | 'deferred' | 'skipped';
 export type PageDirection = 'older' | 'newer';
+/** 收信协议（按账号配置，非服务商品牌） */
+export type ReceiveProtocol = 'graph' | 'imap';
+/** 发信协议 */
+export type SendProtocol = 'graph' | 'smtp';
+/** 邮箱认证方式 */
+export type MailAuthKind = 'password' | 'oauth2';
+/** TLS 模式 */
+export type MailTlsMode = 'implicit' | 'starttls' | 'plain';

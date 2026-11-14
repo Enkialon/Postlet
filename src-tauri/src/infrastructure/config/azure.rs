@@ -1,6 +1,6 @@
 //! Azure / Entra 客户端配置：`{app_config_dir}/azure.json`
 //!
-//! `client_id`、`client_secret`、`redirect_uri` 均从配置文件读取（不使用环境变量覆盖）。
+//! `client_id`、`redirect_uri` 必填；`client_secret` 可选（公开客户端 / PKCE 可省略）。
 
 use crate::application::error::PortError;
 use serde::Deserialize;
@@ -9,22 +9,35 @@ use std::fs;
 use std::path::Path;
 use url::Url;
 
-/// 登录用 Azure 机密客户端配置（授权码 + 密钥；回跳地址固定）
+/// 登录用 Azure 客户端配置（授权码 + PKCE；机密客户端可带 secret）
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct AzureAuthConfig {
     pub client_id: String,
-    pub client_secret: String,
-    /// 与 Entra 应用注册完全一致的回跳 URI，例如 `http://localhost:8765/`
+    /// 机密客户端密钥；公开客户端（如复用 Mailspring Client ID）可为空
+    pub client_secret: Option<String>,
+    /// 与 Entra 应用注册完全一致的回跳 URI，例如 `http://localhost:12141/desktop`
     pub redirect_uri: String,
     #[serde(default = "default_tenant")]
     pub tenant: String,
+}
+
+impl AzureAuthConfig {
+    pub fn is_public_client(&self) -> bool {
+        self.client_secret
+            .as_ref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+    }
 }
 
 impl fmt::Debug for AzureAuthConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AzureAuthConfig")
             .field("client_id", &self.client_id)
-            .field("client_secret", &"***")
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "***"),
+            )
             .field("redirect_uri", &self.redirect_uri)
             .field("tenant", &self.tenant)
             .finish()
@@ -43,13 +56,13 @@ struct AzureAuthConfigFile {
     tenant: Option<String>,
 }
 
-/// 从 `azure.json` 加载全部鉴权字段。
+/// 从 `azure.json` 加载鉴权字段。
 pub fn load_azure_auth_config(config_dir: &Path) -> Result<AzureAuthConfig, PortError> {
     let path = config_dir.join("azure.json");
     if !path.exists() {
         return Err(PortError::Auth {
             message: format!(
-                "未找到 Azure 配置：请在 {} 写入 client_id、client_secret、redirect_uri",
+                "未找到 Azure 配置：请在 {} 写入 client_id、redirect_uri（公开客户端可省略 client_secret）",
                 path.display()
             ),
         });
@@ -64,9 +77,13 @@ pub fn load_azure_auth_config(config_dir: &Path) -> Result<AzureAuthConfig, Port
         })?;
 
     let client_id = require_field(file_cfg.client_id, "client_id", &path)?;
-    let client_secret = require_field(file_cfg.client_secret, "client_secret", &path)?;
     let redirect_uri = require_field(file_cfg.redirect_uri, "redirect_uri", &path)?;
     validate_redirect_uri(&redirect_uri)?;
+
+    let client_secret = file_cfg
+        .client_secret
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
 
     let tenant = file_cfg
         .tenant
@@ -112,7 +129,7 @@ fn validate_redirect_uri(raw: &str) -> Result<(), PortError> {
     }
     if url.port().is_none() {
         return Err(PortError::Auth {
-            message: "redirect_uri 必须显式包含端口，例如 http://localhost:8765/".into(),
+            message: "redirect_uri 必须显式包含端口，例如 http://localhost:12141/desktop".into(),
         });
     }
     Ok(())

@@ -1,4 +1,4 @@
-//! Graph / OAuth：授权码 + PKCE + client_secret；回跳 URI 来自配置。
+//! Graph / OAuth：授权码 + PKCE；机密客户端带 secret，公开客户端走 SPA 流。
 
 use super::loopback::{bind_redirect_listener, wait_for_authorization_code};
 use super::token_store::{self, TokenCache};
@@ -8,8 +8,8 @@ use crate::domain::value_objects::{AccountId, EmailAddress};
 use crate::infrastructure::config::AzureAuthConfig;
 use base64::Engine;
 use graph_rs_sdk::identity::{
-    AuthorizationCodeCredential, ConfidentialClientApplication, GenPkce, ProofKeyCodeExchange,
-    TokenCredentialExecutor,
+    AuthorizationCodeCredential, AuthorizationCodeSpaCredential, ConfidentialClientApplication,
+    GenPkce, ProofKeyCodeExchange, PublicClientApplication, TokenCredentialExecutor,
 };
 use graph_rs_sdk::GraphClient;
 use serde::Deserialize;
@@ -67,13 +67,25 @@ pub async fn sign_in(
 
     let listener = bind_redirect_listener(&redirect_uri).await?;
 
-    let mut url_builder = AuthorizationCodeCredential::authorization_url_builder(client_uuid);
-    url_builder
-        .with_tenant(&config.tenant)
-        .with_redirect_uri(redirect_uri.clone())
-        .with_scope(scopes.clone())
-        .with_pkce(&pkce);
-    let auth_url = url_builder.url().map_err(|e| PortError::Auth {
+    let auth_url = if config.is_public_client() {
+        let mut url_builder =
+            AuthorizationCodeSpaCredential::authorization_url_builder(client_uuid);
+        url_builder
+            .with_tenant(&config.tenant)
+            .with_redirect_uri(redirect_uri.clone())
+            .with_scope(scopes.clone())
+            .with_pkce(&pkce);
+        url_builder.url()
+    } else {
+        let mut url_builder = AuthorizationCodeCredential::authorization_url_builder(client_uuid);
+        url_builder
+            .with_tenant(&config.tenant)
+            .with_redirect_uri(redirect_uri.clone())
+            .with_scope(scopes.clone())
+            .with_pkce(&pkce);
+        url_builder.url()
+    }
+    .map_err(|e| PortError::Auth {
         message: format!("构造授权 URL 失败: {e}"),
     })?;
 
@@ -180,12 +192,30 @@ async fn exchange_authorization_code(
     pkce: &ProofKeyCodeExchange,
     scopes: &[String],
 ) -> Result<TokenEndpointResponse, PortError> {
+    if config.is_public_client() {
+        let mut pub_client = PublicClientApplication::builder(&config.client_id);
+        pub_client.with_tenant(&config.tenant);
+        pub_client.with_scope(scopes.to_vec());
+        let mut auth = pub_client.with_auth_code(authorization_code);
+        auth.with_redirect_uri(redirect_uri.clone())
+            .with_pkce(pkce)
+            .with_scope(scopes.to_vec());
+        let mut app = auth.build();
+        return execute_token_request(&mut app).await;
+    }
+
     let client_id = parse_client_id(&config.client_id)?;
+    let secret = config
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| PortError::Auth {
+            message: "机密客户端缺少 client_secret".into(),
+        })?;
     let mut conf = ConfidentialClientApplication::builder(client_id);
     conf.with_tenant(&config.tenant);
     conf.with_scope(scopes.to_vec());
     let mut auth = conf.with_auth_code(authorization_code);
-    auth.with_client_secret(&config.client_secret)
+    auth.with_client_secret(secret)
         .with_redirect_uri(redirect_uri.clone())
         .with_pkce(pkce)
         .with_scope(scopes.to_vec());
@@ -198,12 +228,29 @@ async fn refresh_access_token(
     refresh_token: &str,
     scopes: &[String],
 ) -> Result<TokenEndpointResponse, PortError> {
+    if config.is_public_client() {
+        let mut pub_client = PublicClientApplication::builder(&config.client_id);
+        pub_client.with_tenant(&config.tenant);
+        pub_client.with_scope(scopes.to_vec());
+        let mut auth = pub_client.with_auth_code(".");
+        auth.with_refresh_token(refresh_token)
+            .with_scope(scopes.to_vec());
+        let mut app = auth.build();
+        return execute_token_request(&mut app).await;
+    }
+
     let client_id = parse_client_id(&config.client_id)?;
+    let secret = config
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| PortError::Auth {
+            message: "机密客户端缺少 client_secret".into(),
+        })?;
     let mut conf = ConfidentialClientApplication::builder(client_id);
     conf.with_tenant(&config.tenant);
     conf.with_scope(scopes.to_vec());
     let mut auth = conf.with_auth_code(".");
-    auth.with_client_secret(&config.client_secret)
+    auth.with_client_secret(secret)
         .with_refresh_token(refresh_token)
         .with_scope(scopes.to_vec());
     let mut app = auth.build();
@@ -211,7 +258,7 @@ async fn refresh_access_token(
 }
 
 async fn execute_token_request(
-    app: &mut ConfidentialClientApplication<AuthorizationCodeCredential>,
+    app: &mut (impl TokenCredentialExecutor + Send),
 ) -> Result<TokenEndpointResponse, PortError> {
     let response = app.execute_async().await.map_err(|e| PortError::Auth {
         message: format!("向微软换取令牌失败: {e}"),

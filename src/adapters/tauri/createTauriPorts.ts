@@ -22,6 +22,7 @@ import type {
   TriggerMailSyncCommand,
   UpdateAccountDisplaySettingsCommand,
   UpdateGroupSendMembersCommand,
+  UpsertImapSmtpAccountCommand,
 } from '../../domain/dto';
 import type {
   Account,
@@ -56,6 +57,8 @@ export function createTauriPorts(): AppPorts {
       getAccount: (accountId: AccountId) =>
         invoke<Account>('get_account', { accountId }),
       signIn: () => invoke<Account>('account_sign_in'),
+      upsertImapSmtpAccount: (cmd: UpsertImapSmtpAccountCommand) =>
+        invoke<Account>('upsert_imap_smtp_account', { cmd }),
       signOut: (accountId: AccountId) =>
         invoke<void>('account_sign_out', { accountId }),
       updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>

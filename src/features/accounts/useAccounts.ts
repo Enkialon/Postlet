@@ -1,5 +1,6 @@
 import { computed, inject, ref } from 'vue';
 import type { Account } from '../../domain/entities';
+import type { UpsertImapSmtpAccountCommand } from '../../domain/dto';
 import type { AppError } from '../../domain/errors';
 import type { AccountFilter } from '../../app/navigation';
 import { portsKey, navigationKey } from '../../app/provide';
@@ -104,29 +105,49 @@ export function useAccounts() {
     syncCurrentFromNav();
   }
 
+  async function afterAccountReady(account: Account): Promise<void> {
+    accounts.value = await ports.account.listAccounts();
+    nav.setAccount(account.id);
+    // 多账号时保持「全部」过滤，便于立刻看到所有邮箱
+    if (accounts.value.length > 1) {
+      nav.setAccountFilter('all');
+    } else {
+      nav.setAccountFilter(account.id);
+    }
+    syncCurrentFromNav();
+    nav.bumpSession();
+    nav.clearReading();
+    nav.goPage('conversations');
+    void ports.sync.triggerMailSync({
+      account_id: account.id,
+      folder_ids: null,
+    });
+    void ports.sync.triggerContactSync({ account_id: account.id });
+  }
+
   async function signIn(): Promise<void> {
     if (signingIn.value) return;
     signingIn.value = true;
     error.value = null;
     try {
       const account = await ports.account.signIn();
-      accounts.value = await ports.account.listAccounts();
-      nav.setAccount(account.id);
-      // 多账号时保持「全部」过滤，便于立刻看到所有邮箱
-      if (accounts.value.length > 1) {
-        nav.setAccountFilter('all');
-      } else {
-        nav.setAccountFilter(account.id);
-      }
-      syncCurrentFromNav();
-      nav.bumpSession();
-      nav.clearReading();
-      nav.goPage('conversations');
-      void ports.sync.triggerMailSync({
-        account_id: account.id,
-        folder_ids: null,
-      });
-      void ports.sync.triggerContactSync({ account_id: account.id });
+      await afterAccountReady(account);
+    } catch (e) {
+      error.value = asAppError(e);
+    } finally {
+      signingIn.value = false;
+    }
+  }
+
+  async function addImapSmtpAccount(
+    cmd: UpsertImapSmtpAccountCommand,
+  ): Promise<void> {
+    if (signingIn.value) return;
+    signingIn.value = true;
+    error.value = null;
+    try {
+      const account = await ports.account.upsertImapSmtpAccount(cmd);
+      await afterAccountReady(account);
     } catch (e) {
       error.value = asAppError(e);
     } finally {
@@ -219,6 +240,7 @@ export function useAccounts() {
     setContextAccount,
     accountLabel,
     signIn,
+    addImapSmtpAccount,
     loadDemoWorkspace,
     signOut,
     refreshCurrent,

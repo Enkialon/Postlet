@@ -21,7 +21,7 @@ const addAccountOpen = ref(false);
         像微信一样看邮件往来
       </h1>
       <p class="m-0 text-[14px] leading-normal text-text-secondary">
-        以联系人与会话为中心。登录 Outlook 账号开始，或先加载演示数据验收界面。
+        以联系人与会话为中心。可登录 Outlook（Graph）或 IMAP/SMTP 邮箱，也可先加载演示数据。
       </p>
       <div class="mt-1 flex flex-wrap gap-2">
         <Button
@@ -41,7 +41,7 @@ const addAccountOpen = ref(false);
         </Button>
       </div>
       <p class="m-0 text-[13px] leading-normal text-text-tertiary">
-        登录将打开系统浏览器完成 Microsoft 账号授权；演示模式不连邮箱。
+        Outlook 走浏览器 OAuth；IMAP/SMTP 在对话框内填写主机与密码。演示模式不连邮箱。
       </p>
       <ErrorState
         v-if="error && !addAccountOpen"
