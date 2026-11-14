@@ -110,15 +110,44 @@ pub async fn upsert(conn: &mut SqliteConnection, contact: &Contact) -> Result<()
     Ok(())
 }
 
+pub async fn get_by_graph_id(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    graph_id: &str,
+) -> Result<Option<Contact>, PortError> {
+    let row = sqlx::query(
+        "SELECT * FROM contacts WHERE account_id = ? AND graph_id = ?",
+    )
+    .bind(account_id.as_str())
+    .bind(graph_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    row.as_ref()
+        .map(super::rows::contact)
+        .transpose()
+        .map_err(Into::into)
+}
+
 pub async fn delete(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &ContactId,
 ) -> Result<(), PortError> {
-    let _ = (conn, account_id, id);
-    Err(PortError::Storage {
-        message: "尚未实现: repository::contacts::delete".into(),
-    })
+    // 清空会话上的 contact_id 引用，避免悬挂外键语义
+    sqlx::query(
+        "UPDATE conversations SET contact_id = NULL
+         WHERE account_id = ? AND contact_id = ?",
+    )
+    .bind(account_id.as_str())
+    .bind(id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("DELETE FROM contacts WHERE account_id = ? AND id = ?")
+        .bind(account_id.as_str())
+        .bind(id.as_str())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 /// 游标 `account_id:id`；兼容旧纯 `id`

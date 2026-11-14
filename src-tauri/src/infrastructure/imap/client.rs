@@ -128,3 +128,51 @@ pub fn list_capabilities(session: &mut ImapSession) -> Result<(bool, Vec<String>
     let idle = caps.has_str("IDLE");
     Ok((idle, names))
 }
+
+/// 设置或清除 UID 的 `\Seen` 标志。
+pub fn uid_set_seen(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+    is_read: bool,
+) -> Result<(), PortError> {
+    session
+        .select(folder)
+        .map_err(|e| PortError::Remote {
+            message: format!("IMAP SELECT 失败: {e}"),
+            retryable: true,
+        })?;
+    let seq = format!("{uid}");
+    let result = if is_read {
+        session.uid_store(&seq, "+FLAGS (\\Seen)")
+    } else {
+        session.uid_store(&seq, "-FLAGS (\\Seen)")
+    };
+    result.map_err(|e| PortError::Remote {
+        message: format!("IMAP STORE FLAGS 失败: {e}"),
+        retryable: true,
+    })?;
+    Ok(())
+}
+
+pub async fn uid_set_seen_async(
+    endpoint: &ImapEndpoint,
+    auth: &ImapAuth,
+    folder: &str,
+    uid: u32,
+    is_read: bool,
+) -> Result<(), PortError> {
+    let endpoint = endpoint.clone();
+    let auth = auth.clone();
+    let folder = folder.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut session = session_login_blocking(&endpoint, &auth)?;
+        let out = uid_set_seen(&mut session, &folder, uid, is_read);
+        let _ = session.logout();
+        out
+    })
+    .await
+    .map_err(|e| PortError::Network {
+        message: format!("IMAP STORE 任务失败: {e}"),
+    })?
+}

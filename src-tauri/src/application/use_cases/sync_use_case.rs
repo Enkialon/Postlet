@@ -7,24 +7,26 @@ use crate::application::dto::{
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{
-    Conversation, ConversationMessageLink, MailFolderSyncState, Message, MessageRecipient,
+    Contact, Conversation, ConversationMessageLink, MailFolderSyncState, Message, MessageRecipient,
     MessageWithRecipients,
 };
 use crate::domain::value_objects::{
-    AccountId, ConversationId, ConversationKind, FolderId, MailAuthKind, MailTlsMode, MessageId,
-    MessageSyncStatus, ReceiveProtocol, SyncStatus, TimestampMs,
-};
-use crate::infrastructure::imap::{
-    sync_account_blocking, FolderSyncRequest, ImapAuth, ImapEndpoint,
+    AccountId, ContactId, ConversationId, ConversationKind, FolderId, MailAuthKind, MailTlsMode,
+    MessageId, MessageSyncStatus, ReceiveProtocol, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
+use crate::infrastructure::imap::{
+    sync_account_blocking, FolderSyncRequest, ImapAuth, ImapEndpoint,
+};
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_last_uid, encode_uidvalidity};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, contacts, conversations, folder_states, mail_transports, messages,
+    accounts, contacts, conversations, folder_states, locate_pending, mail_transports, messages,
+    mutations,
 };
+use crate::application::dto::remote_models::RemoteMessageLocation;
 use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -154,25 +156,16 @@ async fn sync_graph_mail(
                     }
                 }
                 GraphMessageChange::Remove { graph_id } => {
-                    if let Some(existing) =
-                        messages::get_by_graph_id(&mut tx, &cmd.account_id, &graph_id)
-                            .await
-                            .map_err(AppError::from)?
-                    {
-                        let mut msg = existing.message;
-                        msg.sync_status = MessageSyncStatus::DeletedRemote;
-                        msg.local_updated_at = now_ms();
-                        messages::upsert_with_recipients(
-                            &mut tx,
-                            &MessageWithRecipients {
-                                message: msg.clone(),
-                                recipients: existing.recipients,
-                            },
-                        )
-                        .await
-                        .map_err(AppError::from)?;
-                        changeset.message_ids.push(msg.id);
-                    }
+                    // Remove 仅移出信号：入队核对，事务外 locate 后再软删/改位置
+                    locate_pending::enqueue(
+                        &mut tx,
+                        &cmd.account_id,
+                        &graph_id,
+                        &folder,
+                        now_ms(),
+                    )
+                    .await
+                    .map_err(AppError::from)?;
                 }
             }
         }
@@ -194,6 +187,11 @@ async fn sync_graph_mail(
             .map_err(AppError::from)?;
         tx.commit().await?;
     }
+
+    // 事务外处理到期核对
+    let locate_changes = process_due_locates(db, paths, &cmd.account_id, 32).await?;
+    changeset.message_ids.extend(locate_changes.message_ids);
+    changeset.conversation_ids.extend(locate_changes.conversation_ids);
 
     if is_initial {
         changeset.origin = ChangeOrigin::InitialSync;
@@ -420,10 +418,18 @@ async fn upsert_remote_message(
         .map(|e| e.message.id.clone())
         .unwrap_or_else(|| MessageId::new(Uuid::new_v4().to_string()));
 
-    // FLAGS-only 占位：空 subject 且无 body → 仅更新已读
+    let pending_read = mutations::get(conn, account_id, &local_id)
+        .await
+        .map_err(AppError::from)?;
+
+    // FLAGS-only 占位：空 subject 且无 body → 仅更新已读（有 pending 时保留本地）
     if !is_new && remote.subject.is_empty() && remote.body_content.is_none() {
         let mut bundle = existing.unwrap();
-        bundle.message.is_read = remote.is_read;
+        if let Some(p) = &pending_read {
+            bundle.message.is_read = p.desired_is_read;
+        } else {
+            bundle.message.is_read = remote.is_read;
+        }
         bundle.message.local_updated_at = now_ms();
         messages::upsert_with_recipients(conn, &bundle)
             .await
@@ -440,6 +446,20 @@ async fn upsert_remote_message(
         _ => false,
     };
 
+    let is_read = pending_read
+        .as_ref()
+        .map(|p| p.desired_is_read)
+        .unwrap_or(remote.is_read);
+
+    let body_content = if let Some(ref ex) = existing {
+        remote
+            .body_content
+            .clone()
+            .or_else(|| ex.message.body_content.clone())
+    } else {
+        remote.body_content.clone()
+    };
+
     let message = Message {
         id: local_id.clone(),
         account_id: account_id.clone(),
@@ -451,13 +471,13 @@ async fn upsert_remote_message(
         subject: remote.subject.clone(),
         body_preview: remote.body_preview.clone(),
         body_content_type: remote.body_content_type,
-        body_content: remote.body_content.clone(),
+        body_content,
         from_address: remote.from_address.clone(),
         from_name: remote.from_name.clone(),
         received_at: remote.received_at.or(Some(now_ms())),
         sent_at: remote.sent_at,
         created_at_graph: remote.created_at_graph,
-        is_read: remote.is_read,
+        is_read,
         is_draft: remote.is_draft,
         is_outbound,
         has_attachments: remote.has_attachments,
@@ -578,12 +598,229 @@ async fn ensure_contact_conversation_local(
 
 pub async fn trigger_contact_sync(
     db: &SqlitePool,
+    paths: &AppPaths,
     cmd: TriggerContactSyncCommand,
 ) -> Result<(), AppError> {
-    let _ = (db, cmd);
-    Err(AppError::not_implemented(
-        "sync_use_case::trigger_contact_sync",
-    ))
+    let transport = {
+        let mut conn = db.acquire().await?;
+        mail_transports::ensure_default(&mut conn, &cmd.account_id, now_ms())
+            .await
+            .map_err(AppError::from)?
+    };
+    if transport.receive_protocol != ReceiveProtocol::Graph {
+        // IMAP 无 Graph 通讯录 Delta；直接成功返回
+        return Ok(());
+    }
+
+    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, &cmd.account_id)
+        .await
+        .map_err(AppError::from)?;
+
+    let mut link = {
+        let mut conn = db.acquire().await?;
+        accounts::get(&mut conn, &cmd.account_id)
+            .await
+            .map_err(AppError::from)?
+            .and_then(|a| a.contact_delta_link)
+    };
+
+    // 最多拉若干页，避免一次阻塞过久
+    for _ in 0..20 {
+        let page = graph::contacts::delta_contacts(&token, link.as_deref())
+            .await
+            .map_err(AppError::from)?;
+        let mut tx = db.begin().await?;
+        for remote in page.upserts {
+            let existing = contacts::get_by_graph_id(&mut tx, &cmd.account_id, &remote.graph_id)
+                .await
+                .map_err(AppError::from)?;
+            let by_addr =
+                contacts::get_by_address(&mut tx, &cmd.account_id, &remote.normalized_address)
+                    .await
+                    .map_err(AppError::from)?;
+            let now = now_ms();
+            let contact = if let Some(mut c) = existing.or(by_addr) {
+                c.graph_id = Some(remote.graph_id.clone());
+                c.display_name = remote.display_name;
+                c.normalized_address = remote.normalized_address;
+                c.updated_at = now;
+                c
+            } else {
+                Contact {
+                    id: ContactId::new(Uuid::new_v4().to_string()),
+                    account_id: cmd.account_id.clone(),
+                    graph_id: Some(remote.graph_id),
+                    display_name: remote.display_name,
+                    normalized_address: remote.normalized_address,
+                    created_at: now,
+                    updated_at: now,
+                }
+            };
+            contacts::upsert(&mut tx, &contact)
+                .await
+                .map_err(AppError::from)?;
+        }
+        for gid in page.removed_graph_ids {
+            if let Some(c) = contacts::get_by_graph_id(&mut tx, &cmd.account_id, &gid)
+                .await
+                .map_err(AppError::from)?
+            {
+                contacts::delete(&mut tx, &cmd.account_id, &c.id)
+                    .await
+                    .map_err(AppError::from)?;
+            }
+        }
+        let next = page.next_link.clone();
+        let delta = page.delta_link.clone();
+        if let Some(ref d) = delta {
+            accounts::update_contact_sync_meta(&mut tx, &cmd.account_id, Some(d), Some(now_ms()))
+                .await
+                .map_err(AppError::from)?;
+        }
+        tx.commit().await?;
+
+        if let Some(n) = next {
+            link = Some(n);
+            continue;
+        }
+        if let Some(d) = delta {
+            let mut conn = db.acquire().await?;
+            accounts::update_contact_sync_meta(&mut conn, &cmd.account_id, Some(&d), Some(now_ms()))
+                .await
+                .map_err(AppError::from)?;
+        }
+        break;
+    }
+    Ok(())
+}
+
+/// 处理到期的 Remove 核对记录。
+pub async fn process_due_locates(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    limit: u32,
+) -> Result<ChangeSet, AppError> {
+    let due = {
+        let mut conn = db.acquire().await?;
+        locate_pending::list_due(&mut conn, account_id, now_ms(), limit)
+            .await
+            .map_err(AppError::from)?
+    };
+    let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::IncrementalSync);
+    if due.is_empty() {
+        return Ok(changeset);
+    }
+
+    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+        .await
+        .map_err(AppError::from)?;
+
+    for item in due {
+        match graph::mail::locate_message(&token, &item.graph_id).await {
+            Ok(RemoteMessageLocation::NotFound) => {
+                let mut tx = db.begin().await?;
+                if !locate_pending::complete_if_revision(
+                    &mut tx,
+                    account_id,
+                    &item.graph_id,
+                    item.revision,
+                )
+                .await
+                .map_err(AppError::from)?
+                {
+                    tx.rollback().await.ok();
+                    continue;
+                }
+                if let Some(existing) =
+                    messages::get_by_graph_id(&mut tx, account_id, &item.graph_id)
+                        .await
+                        .map_err(AppError::from)?
+                {
+                    let mut msg = existing.message;
+                    msg.sync_status = MessageSyncStatus::DeletedRemote;
+                    msg.local_updated_at = now_ms();
+                    messages::upsert_with_recipients(
+                        &mut tx,
+                        &MessageWithRecipients {
+                            message: msg.clone(),
+                            recipients: existing.recipients,
+                        },
+                    )
+                    .await
+                    .map_err(AppError::from)?;
+                    changeset.message_ids.push(msg.id);
+                }
+                tx.commit().await?;
+            }
+            Ok(RemoteMessageLocation::Present { folder_id }) => {
+                let mut tx = db.begin().await?;
+                if !locate_pending::complete_if_revision(
+                    &mut tx,
+                    account_id,
+                    &item.graph_id,
+                    item.revision,
+                )
+                .await
+                .map_err(AppError::from)?
+                {
+                    tx.rollback().await.ok();
+                    continue;
+                }
+                if let Some(existing) =
+                    messages::get_by_graph_id(&mut tx, account_id, &item.graph_id)
+                        .await
+                        .map_err(AppError::from)?
+                {
+                    let mut msg = existing.message;
+                    msg.folder_id = Some(folder_id);
+                    msg.sync_status = MessageSyncStatus::Synced;
+                    msg.local_updated_at = now_ms();
+                    messages::upsert_with_recipients(
+                        &mut tx,
+                        &MessageWithRecipients {
+                            message: msg.clone(),
+                            recipients: existing.recipients,
+                        },
+                    )
+                    .await
+                    .map_err(AppError::from)?;
+                    changeset.message_ids.push(msg.id);
+                }
+                tx.commit().await?;
+            }
+            Err(e) => {
+                if !e_retryable(&e) {
+                    // 非可恢复：仍记失败退避，不当删除
+                }
+                let mut conn = db.acquire().await?;
+                let available_at = now_ms() + 30_000;
+                locate_pending::record_failure(
+                    &mut conn,
+                    account_id,
+                    &item.graph_id,
+                    item.revision,
+                    &e.to_string(),
+                    available_at,
+                    now_ms(),
+                )
+                .await
+                .map_err(AppError::from)?;
+            }
+        }
+    }
+    Ok(changeset)
+}
+
+fn e_retryable(e: &crate::application::error::PortError) -> bool {
+    match e {
+        crate::application::error::PortError::Remote { retryable, .. } => *retryable,
+        crate::application::error::PortError::Network { .. } => true,
+        crate::application::error::PortError::Auth { .. } => false,
+        _ => false,
+    }
 }
 
 pub async fn get_mail_sync_progress(

@@ -26,6 +26,7 @@ import type {
 import type {
   Account,
   Contact,
+  Conversation,
   Group,
   GroupParticipant,
   MessageWithRecipients,
@@ -38,12 +39,12 @@ import type {
   GroupId,
   MessageId,
 } from '../../domain/types';
-import { invoke, notImplemented } from './invoke';
+import { invoke } from './invoke';
 import { normalizeAppError } from './normalizeError';
 import { TauriChangeEventsAdapter } from './TauriChangeEventsAdapter';
 
 /**
- * Tauri Adapter：已注册 IPC → invoke；未实现能力显式 notImplemented。
+ * Tauri Adapter：已注册 IPC → invoke。
  *
  * 注意：Tauri 2 命令**参数名**默认 camelCase（accountId）；
  * 嵌套 DTO 字段仍按 serde snake_case（account_id）。
@@ -62,10 +63,10 @@ export function createTauriPorts(): AppPorts {
       loadDemoWorkspace: () => invoke<Account>('load_demo_workspace'),
     },
     sync: {
-      triggerMailSync: (_cmd: TriggerMailSyncCommand) =>
-        notImplemented('sync.triggerMailSync'),
-      triggerContactSync: (_cmd: TriggerContactSyncCommand) =>
-        notImplemented('sync.triggerContactSync'),
+      triggerMailSync: (cmd: TriggerMailSyncCommand) =>
+        invoke<void>('trigger_mail_sync', { cmd }),
+      triggerContactSync: (cmd: TriggerContactSyncCommand) =>
+        invoke<void>('trigger_contact_sync', { cmd }),
       getMailSyncProgress: (accountId: AccountId) =>
         invoke<MailSyncProgress>('get_mail_sync_progress', { accountId }),
       getContactSyncProgress: (accountId: AccountId) =>
@@ -99,10 +100,10 @@ export function createTauriPorts(): AppPorts {
           'list_conversation_messages',
           { query },
         ),
-      ensureContactConversation: (_cmd: EnsureContactConversationCommand) =>
-        notImplemented('conversation.ensureContactConversation'),
-      ensureGroupConversation: (_cmd: EnsureGroupConversationCommand) =>
-        notImplemented('conversation.ensureGroupConversation'),
+      ensureContactConversation: (cmd: EnsureContactConversationCommand) =>
+        invoke<Conversation>('ensure_contact_conversation', { cmd }),
+      ensureGroupConversation: (cmd: EnsureGroupConversationCommand) =>
+        invoke<Conversation>('ensure_group_conversation', { cmd }),
     },
     message: {
       getMessage: (accountId: AccountId, messageId: MessageId) =>
@@ -144,16 +145,16 @@ export function createTauriPorts(): AppPorts {
           accountId,
           groupId,
         }),
-      createManualGroup: (_cmd: CreateManualGroupCommand) =>
-        notImplemented('group.createManualGroup'),
-      renameGroup: (_cmd: RenameGroupCommand) =>
-        notImplemented('group.renameGroup'),
-      mergeGroups: (_cmd: MergeGroupsCommand) =>
-        notImplemented('group.mergeGroups'),
-      moveThreadToGroup: (_cmd: MoveThreadToGroupCommand) =>
-        notImplemented('group.moveThreadToGroup'),
-      updateSendMembers: (_cmd: UpdateGroupSendMembersCommand) =>
-        notImplemented('group.updateSendMembers'),
+      createManualGroup: (cmd: CreateManualGroupCommand) =>
+        invoke<Group>('create_manual_group', { cmd }),
+      renameGroup: (cmd: RenameGroupCommand) =>
+        invoke<Group>('rename_group', { cmd }),
+      mergeGroups: (cmd: MergeGroupsCommand) =>
+        invoke<Group>('merge_groups', { cmd }),
+      moveThreadToGroup: (cmd: MoveThreadToGroupCommand) =>
+        invoke<void>('move_thread_to_group', { cmd }),
+      updateSendMembers: (cmd: UpdateGroupSendMembersCommand) =>
+        invoke<GroupParticipant[]>('update_group_send_members', { cmd }),
     },
     platform: {
       openExternalUrl: async (url: string) => {

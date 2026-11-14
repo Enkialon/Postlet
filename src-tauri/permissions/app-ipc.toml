@@ -1,9 +1,11 @@
 [[permission]]
 identifier = "allow-ipc"
-description = "允许前端调用 Postlet 应用 IPC（读路径 + 演示种子 + 本地写信）"
+description = "允许前端调用 Postlet 应用 IPC（读路径 + 同步 + 写信 + 群组写）"
 commands.allow = [
   "list_accounts",
   "get_account",
+  "account_sign_in",
+  "account_sign_out",
   "load_demo_workspace",
   "update_display_settings",
   "list_contacts",
@@ -20,8 +22,16 @@ commands.allow = [
   "list_group_participants",
   "get_mail_sync_progress",
   "trigger_mail_sync",
+  "trigger_contact_sync",
   "get_contact_sync_progress",
   "upsert_imap_smtp_account",
+  "ensure_contact_conversation",
+  "ensure_group_conversation",
+  "create_manual_group",
+  "rename_group",
+  "merge_groups",
+  "move_thread_to_group",
+  "update_group_send_members",
   "compose_get_draft",
   "compose_save_draft",
   "compose_clear_draft",

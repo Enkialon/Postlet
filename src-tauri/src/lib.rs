@@ -36,6 +36,7 @@ pub fn run() {
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
             let changes = ChangeDispatcher::new(app.handle().clone());
             runtime::mail_watcher::spawn_watchers(db.clone(), paths.clone(), changes.clone());
+            runtime::mail_sync_scheduler::spawn(db.clone(), paths.clone(), changes.clone());
             app.manage(AppState {
                 db,
                 paths,
@@ -66,7 +67,15 @@ pub fn run() {
             commands::list_group_participants,
             commands::get_mail_sync_progress,
             commands::trigger_mail_sync,
+            commands::trigger_contact_sync,
             commands::get_contact_sync_progress,
+            commands::ensure_contact_conversation,
+            commands::ensure_group_conversation,
+            commands::create_manual_group,
+            commands::rename_group,
+            commands::merge_groups,
+            commands::move_thread_to_group,
+            commands::update_group_send_members,
             commands::compose_get_draft,
             commands::compose_save_draft,
             commands::compose_clear_draft,

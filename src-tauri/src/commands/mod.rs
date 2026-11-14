@@ -2,16 +2,21 @@
 
 use crate::application::dto::{
     ComposeDraft, ContactListQuery, ContactSyncProgress, ConversationListItem,
-    ConversationListQuery, ConversationMessagesQuery, CursorPage, GroupListQuery, MailSyncProgress,
-    MarkMessagesReadCommand, SaveComposeDraftCommand, SendComposedMailCommand,
-    TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand, UpsertImapSmtpAccountCommand,
+    ConversationListQuery, ConversationMessagesQuery, CreateManualGroupCommand, CursorPage,
+    EnsureContactConversationCommand, EnsureGroupConversationCommand, GroupListQuery,
+    MailSyncProgress, MarkMessagesReadCommand, MergeGroupsCommand, MoveThreadToGroupCommand,
+    RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand,
+    TriggerContactSyncCommand, TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand,
+    UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
     account_use_case, compose_use_case, contact_use_case, conversation_use_case, group_use_case,
     mail_account_use_case, message_use_case, sync_use_case,
 };
-use crate::domain::entities::{Account, Contact, Group, GroupParticipant, MessageWithRecipients};
+use crate::domain::entities::{
+    Account, Contact, Conversation, Group, GroupParticipant, MessageWithRecipients,
+};
 use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
 use crate::AppState;
 use tauri::State;
@@ -141,6 +146,7 @@ pub async fn ensure_message_body(
 ) -> Result<MessageWithRecipients, AppError> {
     message_use_case::ensure_message_body(
         &state.db,
+        &state.paths,
         &AccountId::new(account_id),
         &MessageId::new(message_id),
     )
@@ -152,7 +158,7 @@ pub async fn mark_messages_read(
     state: State<'_, AppState>,
     cmd: MarkMessagesReadCommand,
 ) -> Result<(), AppError> {
-    let changes = message_use_case::mark_read(&state.db, cmd).await?;
+    let changes = message_use_case::mark_read(&state.db, &state.paths, cmd).await?;
     state.changes.dispatch(changes);
     Ok(())
 }
@@ -218,11 +224,75 @@ pub async fn upsert_imap_smtp_account(
 }
 
 #[tauri::command]
+pub async fn trigger_contact_sync(
+    state: State<'_, AppState>,
+    cmd: TriggerContactSyncCommand,
+) -> Result<(), AppError> {
+    sync_use_case::trigger_contact_sync(&state.db, &state.paths, cmd).await
+}
+
+#[tauri::command]
 pub async fn get_contact_sync_progress(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<ContactSyncProgress, AppError> {
     sync_use_case::get_contact_sync_progress(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
+pub async fn ensure_contact_conversation(
+    state: State<'_, AppState>,
+    cmd: EnsureContactConversationCommand,
+) -> Result<Conversation, AppError> {
+    conversation_use_case::ensure_contact_conversation(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn ensure_group_conversation(
+    state: State<'_, AppState>,
+    cmd: EnsureGroupConversationCommand,
+) -> Result<Conversation, AppError> {
+    conversation_use_case::ensure_group_conversation(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn create_manual_group(
+    state: State<'_, AppState>,
+    cmd: CreateManualGroupCommand,
+) -> Result<Group, AppError> {
+    group_use_case::create_manual_group(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn rename_group(
+    state: State<'_, AppState>,
+    cmd: RenameGroupCommand,
+) -> Result<Group, AppError> {
+    group_use_case::rename_group(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn merge_groups(
+    state: State<'_, AppState>,
+    cmd: MergeGroupsCommand,
+) -> Result<Group, AppError> {
+    group_use_case::merge_groups(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn move_thread_to_group(
+    state: State<'_, AppState>,
+    cmd: MoveThreadToGroupCommand,
+) -> Result<(), AppError> {
+    group_use_case::move_thread_to_group(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn update_group_send_members(
+    state: State<'_, AppState>,
+    cmd: UpdateGroupSendMembersCommand,
+) -> Result<Vec<GroupParticipant>, AppError> {
+    group_use_case::update_send_members(&state.db, cmd).await
 }
 
 #[tauri::command]

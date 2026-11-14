@@ -122,6 +122,11 @@ export function useAccounts() {
       nav.bumpSession();
       nav.clearReading();
       nav.goPage('conversations');
+      void ports.sync.triggerMailSync({
+        account_id: account.id,
+        folder_ids: null,
+      });
+      void ports.sync.triggerContactSync({ account_id: account.id });
     } catch (e) {
       error.value = asAppError(e);
     } finally {
@@ -142,6 +147,11 @@ export function useAccounts() {
       nav.bumpSession();
       nav.clearReading();
       nav.goPage('conversations');
+      void ports.sync.triggerMailSync({
+        account_id: account.id,
+        folder_ids: null,
+      });
+      void ports.sync.triggerContactSync({ account_id: account.id });
     } catch (e) {
       error.value = asAppError(e);
     } finally {

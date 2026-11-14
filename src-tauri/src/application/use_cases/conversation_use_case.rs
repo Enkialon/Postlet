@@ -1,18 +1,26 @@
 //! 会话用例（主导航）
-use crate::infrastructure::repository::conversations;
+use crate::infrastructure::repository::{contacts, conversations, groups};
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 use crate::application::dto::{
     ConversationListItem, ConversationListQuery, ConversationMessagesQuery, CursorPage,
     EnsureContactConversationCommand, EnsureGroupConversationCommand,
 };
 use crate::application::error::AppError;
-use crate::domain::entities::{Conversation, MessageWithRecipients};
-use crate::domain::value_objects::{AccountId, ConversationId};
+use crate::domain::entities::{Contact, Conversation, MessageWithRecipients};
+use crate::domain::value_objects::{
+    AccountId, ContactId, ConversationId, ConversationKind, TimestampMs,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 分页读取账户内的联系人或群组会话，供主导航列表展示。
-///
-/// 未读数和最新消息信息以本地会话投影为准，不在应用层重新聚合。
+fn now_ms() -> TimestampMs {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub async fn list_conversations(
     db: &SqlitePool,
     query: ConversationListQuery,
@@ -23,7 +31,6 @@ pub async fn list_conversations(
         .map_err(Into::into)
 }
 
-/// 在指定账户内获取会话详情（含列表预览字段）；不存在时返回未找到错误。
 pub async fn get_conversation(
     db: &SqlitePool,
     account_id: &AccountId,
@@ -35,7 +42,6 @@ pub async fn get_conversation(
         .ok_or_else(|| AppError::not_found(format!("会话不存在: {conversation_id}")))
 }
 
-/// 按游标及方向分页读取会话附着的邮件和收件人，不按文件夹组织邮件。
 pub async fn list_messages(
     db: &SqlitePool,
     query: ConversationMessagesQuery,
@@ -47,27 +53,103 @@ pub async fn list_messages(
 }
 
 /// 按账户及规范化地址取得或创建联系人会话，必要时创建占位联系人。
-///
-/// 当前为骨架，返回未实现错误。
 pub async fn ensure_contact_conversation(
     db: &SqlitePool,
     cmd: EnsureContactConversationCommand,
 ) -> Result<Conversation, AppError> {
-    let _ = (db, cmd);
-    Err(AppError::not_implemented(
-        "conversation_use_case::ensure_contact_conversation",
-    ))
+    let mut tx = db.begin().await?;
+    if let Some(existing) =
+        conversations::get_contact_conversation(&mut tx, &cmd.account_id, &cmd.normalized_address)
+            .await
+            .map_err(AppError::from)?
+    {
+        tx.commit().await?;
+        return Ok(existing);
+    }
+
+    let now = now_ms();
+    let contact = if let Some(c) =
+        contacts::get_by_address(&mut tx, &cmd.account_id, &cmd.normalized_address)
+            .await
+            .map_err(AppError::from)?
+    {
+        c
+    } else {
+        let c = Contact {
+            id: ContactId::new(Uuid::new_v4().to_string()),
+            account_id: cmd.account_id.clone(),
+            graph_id: None,
+            display_name: cmd
+                .display_name
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| cmd.normalized_address.as_str().to_string()),
+            normalized_address: cmd.normalized_address.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        contacts::upsert(&mut tx, &c)
+            .await
+            .map_err(AppError::from)?;
+        c
+    };
+
+    let conversation = Conversation {
+        id: ConversationId::new(format!("conv-{}", Uuid::new_v4())),
+        account_id: cmd.account_id.clone(),
+        kind: ConversationKind::Contact,
+        normalized_address: Some(cmd.normalized_address),
+        contact_id: Some(contact.id),
+        group_id: None,
+        last_message_at: None,
+        last_message_id: None,
+        unread_count: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    conversations::upsert(&mut tx, &conversation)
+        .await
+        .map_err(AppError::from)?;
+    tx.commit().await?;
+    Ok(conversation)
 }
 
 /// 确保存在群组会话（解析到存活根群组）。
-///
-/// 当前为骨架，返回未实现错误。
 pub async fn ensure_group_conversation(
     db: &SqlitePool,
     cmd: EnsureGroupConversationCommand,
 ) -> Result<Conversation, AppError> {
-    let _ = (db, cmd);
-    Err(AppError::not_implemented(
-        "conversation_use_case::ensure_group_conversation",
-    ))
+    let mut tx = db.begin().await?;
+    let root = groups::resolve_root(&mut tx, &cmd.account_id, &cmd.group_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(format!("群组不存在: {}", cmd.group_id)))?;
+
+    if let Some(existing) =
+        conversations::get_group_conversation(&mut tx, &cmd.account_id, &root.id)
+            .await
+            .map_err(AppError::from)?
+    {
+        tx.commit().await?;
+        return Ok(existing);
+    }
+
+    let now = now_ms();
+    let conversation = Conversation {
+        id: ConversationId::new(format!("conv-{}", Uuid::new_v4())),
+        account_id: cmd.account_id.clone(),
+        kind: ConversationKind::Group,
+        normalized_address: None,
+        contact_id: None,
+        group_id: Some(root.id.clone()),
+        last_message_at: None,
+        last_message_id: None,
+        unread_count: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    conversations::upsert(&mut tx, &conversation)
+        .await
+        .map_err(AppError::from)?;
+    tx.commit().await?;
+    Ok(conversation)
 }

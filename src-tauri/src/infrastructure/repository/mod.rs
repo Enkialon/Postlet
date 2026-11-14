@@ -5,6 +5,7 @@ pub mod conversations;
 pub mod folder_states;
 pub mod groups;
 pub mod jobs;
+pub mod locate_pending;
 pub mod mail_transports;
 pub mod messages;
 pub mod mutations;
