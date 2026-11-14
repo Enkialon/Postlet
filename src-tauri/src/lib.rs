@@ -37,6 +37,7 @@ pub fn run() {
             let changes = ChangeDispatcher::new(app.handle().clone());
             runtime::mail_watcher::spawn_watchers(db.clone(), paths.clone(), changes.clone());
             runtime::mail_sync_scheduler::spawn(db.clone(), paths.clone(), changes.clone());
+            runtime::aggregate_scheduler::spawn(db.clone(), changes.clone());
             app.manage(AppState {
                 db,
                 paths,

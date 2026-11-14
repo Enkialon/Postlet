@@ -274,6 +274,13 @@ pub async fn send(
     )
     .await?;
     conversations::recompute_projection(&mut tx, &cmd.account_id, &cmd.conversation_id).await?;
+    crate::infrastructure::repository::jobs::enqueue_or_reset(
+        &mut tx,
+        &cmd.account_id,
+        &message_id,
+        t,
+    )
+    .await?;
     tx.commit().await?;
 
     // 清草稿

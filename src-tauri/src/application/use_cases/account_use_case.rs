@@ -154,6 +154,13 @@ pub async fn update_display_settings(
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
     tx.commit().await?;
+    // 显示开关影响联系人/群组投影：受影响邮件重新入队
+    let _ = crate::application::use_cases::aggregate_worker_use_case::requeue_account_messages(
+        db,
+        &cmd.account_id,
+        5_000,
+    )
+    .await;
     Ok(account)
 }
 

@@ -143,6 +143,29 @@ pub enum AggregateJobStatus {
     Failed,
 }
 
+impl AggregateJobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Processing => "processing",
+            Self::Completed => "completed",
+            Self::Retry => "retry",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "processing" => Some(Self::Processing),
+            "completed" => Some(Self::Completed),
+            "retry" => Some(Self::Retry),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
 /// 会话内消息分页方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,6 +182,27 @@ pub enum AggregationOutcome {
     Partial,
     Deferred,
     Skipped,
+}
+
+impl AggregationOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Partial => "partial",
+            Self::Deferred => "deferred",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "completed" => Some(Self::Completed),
+            "partial" => Some(Self::Partial),
+            "deferred" => Some(Self::Deferred),
+            "skipped" => Some(Self::Skipped),
+            _ => None,
+        }
+    }
 }
 
 /// 收信协议（按账号配置，非服务商品牌）

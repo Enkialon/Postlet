@@ -7,12 +7,11 @@ use crate::application::dto::{
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{
-    Contact, Conversation, ConversationMessageLink, MailFolderSyncState, Message, MessageRecipient,
-    MessageWithRecipients,
+    Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients,
 };
 use crate::domain::value_objects::{
-    AccountId, ContactId, ConversationId, ConversationKind, FolderId, MailAuthKind, MailTlsMode,
-    MessageId, MessageSyncStatus, ReceiveProtocol, SyncStatus, TimestampMs,
+    AccountId, ContactId, ConversationId, FolderId, MailAuthKind, MailTlsMode, MessageId,
+    MessageSyncStatus, ReceiveProtocol, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
@@ -23,9 +22,10 @@ use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_last_uid, encode_uidvalidity};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, contacts, conversations, folder_states, locate_pending, mail_transports, messages,
-    mutations,
+    accounts, contacts, conversations, folder_states, jobs, locate_pending, mail_transports,
+    messages, mutations,
 };
+use crate::application::use_cases::aggregate_worker_use_case;
 use crate::application::dto::remote_models::RemoteMessageLocation;
 use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
@@ -83,6 +83,9 @@ pub async fn trigger_mail_sync(
             if !changeset.is_empty() {
                 changes.dispatch(changeset);
             }
+            // 同步后立刻排空一批聚合，让会话列表尽快收敛
+            let _ =
+                aggregate_worker_use_case::process_available_jobs(db, Some(changes), 64).await;
             let _ = account;
             Ok(())
         }
@@ -434,6 +437,9 @@ async fn upsert_remote_message(
         messages::upsert_with_recipients(conn, &bundle)
             .await
             .map_err(AppError::from)?;
+        jobs::enqueue_or_reset(conn, account_id, &bundle.message.id, now_ms())
+            .await
+            .map_err(AppError::from)?;
         return Ok((bundle.message.id, None, false));
     }
 
@@ -510,90 +516,15 @@ async fn upsert_remote_message(
     .await
     .map_err(AppError::from)?;
 
-    let peer = if is_outbound {
-        remote
-            .recipients
-            .iter()
-            .find(|r| {
-                matches!(
-                    r.role,
-                    crate::domain::value_objects::RecipientRole::To
-                        | crate::domain::value_objects::RecipientRole::Cc
-                )
-            })
-            .map(|r| r.normalized_address.clone())
-    } else {
-        remote.from_address.clone()
-    };
-
-    let conversation_id = if let Some(peer) = peer {
-        Some(ensure_contact_conversation_local(conn, account_id, &peer, &local_id).await?)
-    } else {
-        None
-    };
-
-    Ok((local_id, conversation_id, is_new))
-}
-
-async fn ensure_contact_conversation_local(
-    conn: &mut sqlx::SqliteConnection,
-    account_id: &AccountId,
-    peer: &crate::domain::value_objects::EmailAddress,
-    message_id: &MessageId,
-) -> Result<ConversationId, AppError> {
-    let existing = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM conversations WHERE account_id = ? AND kind = 'contact' AND normalized_address = ?",
-    )
-    .bind(account_id.as_str())
-    .bind(peer.as_str())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(AppError::from)?;
-
-    let cid = if let Some(id) = existing {
-        ConversationId::new(id)
-    } else {
-        let contact = contacts::get_by_address(conn, account_id, peer)
+    // 投影交由聚合 Worker；同事务入队避免丢任务
+    if !message.is_draft {
+        jobs::enqueue_or_reset(conn, account_id, &local_id, now_ms())
             .await
             .map_err(AppError::from)?;
-        let cid = ConversationId::new(format!("conv-{}", Uuid::new_v4()));
-        let now = now_ms();
-        conversations::upsert(
-            conn,
-            &Conversation {
-                id: cid.clone(),
-                account_id: account_id.clone(),
-                kind: ConversationKind::Contact,
-                normalized_address: Some(peer.clone()),
-                contact_id: contact.map(|c| c.id),
-                group_id: None,
-                last_message_at: Some(now),
-                last_message_id: Some(message_id.clone()),
-                unread_count: 0,
-                created_at: now,
-                updated_at: now,
-            },
-        )
-        .await
-        .map_err(AppError::from)?;
-        cid
-    };
+    }
 
-    conversations::attach_messages(
-        conn,
-        &[ConversationMessageLink {
-            account_id: account_id.clone(),
-            conversation_id: cid.clone(),
-            message_id: message_id.clone(),
-            attached_at: now_ms(),
-        }],
-    )
-    .await
-    .map_err(AppError::from)?;
-    conversations::recompute_projection(conn, account_id, &cid)
-        .await
-        .map_err(AppError::from)?;
-    Ok(cid)
+    let _ = is_outbound;
+    Ok((local_id, None, is_new))
 }
 
 pub async fn trigger_contact_sync(
@@ -739,19 +670,31 @@ pub async fn process_due_locates(
                         .await
                         .map_err(AppError::from)?
                 {
+                    let mid = existing.message.id.clone();
                     let mut msg = existing.message;
                     msg.sync_status = MessageSyncStatus::DeletedRemote;
                     msg.local_updated_at = now_ms();
                     messages::upsert_with_recipients(
                         &mut tx,
                         &MessageWithRecipients {
-                            message: msg.clone(),
+                            message: msg,
                             recipients: existing.recipients,
                         },
                     )
                     .await
                     .map_err(AppError::from)?;
-                    changeset.message_ids.push(msg.id);
+                    for cid in conversations::find_conversation_ids_by_message(
+                        &mut tx, account_id, &mid,
+                    )
+                    .await
+                    .map_err(AppError::from)?
+                    {
+                        conversations::recompute_projection(&mut tx, account_id, &cid)
+                            .await
+                            .map_err(AppError::from)?;
+                        changeset.conversation_ids.push(cid);
+                    }
+                    changeset.message_ids.push(mid);
                 }
                 tx.commit().await?;
             }
