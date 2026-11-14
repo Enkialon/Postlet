@@ -39,7 +39,7 @@
 3. 重定向 URI：与配置文件 `redirect_uri` **完全一致**（含端口与尾斜杠），例如 `http://localhost:8765/`
 4. API 权限（委托）：至少  
    `openid` `profile` `offline_access` `User.Read`  
-   并为后续同步预申：`Mail.Read` `Contacts.Read`  
+   并为后续同步/发送预申：`Mail.ReadWrite` `Mail.Send` `Contacts.Read`  
 5. 将 client_id、secret、redirect_uri 写入配置文件（见 §3）
 
 ---

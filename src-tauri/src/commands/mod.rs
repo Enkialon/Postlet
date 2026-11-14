@@ -2,14 +2,14 @@
 
 use crate::application::dto::{
     ComposeDraft, ContactListQuery, ContactSyncProgress, ConversationListItem,
-    ConversationListQuery, ConversationMessagesQuery, CursorPage, GroupListQuery,
-    MailSyncProgress, MarkMessagesReadCommand, SaveComposeDraftCommand, SendComposedMailCommand,
-    UpdateAccountDisplaySettingsCommand,
+    ConversationListQuery, ConversationMessagesQuery, CursorPage, GroupListQuery, MailSyncProgress,
+    MarkMessagesReadCommand, SaveComposeDraftCommand, SendComposedMailCommand,
+    TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand, UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
     account_use_case, compose_use_case, contact_use_case, conversation_use_case, group_use_case,
-    message_use_case, sync_use_case,
+    mail_account_use_case, message_use_case, sync_use_case,
 };
 use crate::domain::entities::{Account, Contact, Group, GroupParticipant, MessageWithRecipients};
 use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
@@ -199,6 +199,22 @@ pub async fn get_mail_sync_progress(
     account_id: String,
 ) -> Result<MailSyncProgress, AppError> {
     sync_use_case::get_mail_sync_progress(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
+pub async fn trigger_mail_sync(
+    state: State<'_, AppState>,
+    cmd: TriggerMailSyncCommand,
+) -> Result<(), AppError> {
+    sync_use_case::trigger_mail_sync(&state.db, &state.paths, &state.changes, cmd).await
+}
+
+#[tauri::command]
+pub async fn upsert_imap_smtp_account(
+    state: State<'_, AppState>,
+    cmd: UpsertImapSmtpAccountCommand,
+) -> Result<Account, AppError> {
+    mail_account_use_case::upsert_imap_smtp_account(&state.db, &state.paths, cmd).await
 }
 
 #[tauri::command]

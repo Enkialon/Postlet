@@ -2,6 +2,9 @@
 pub mod config;
 pub mod db;
 pub mod graph;
+pub mod imap;
+pub mod mail;
 pub mod paths;
 pub mod repository;
 pub mod seed;
+pub mod smtp;

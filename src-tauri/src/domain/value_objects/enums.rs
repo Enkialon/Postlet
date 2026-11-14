@@ -160,3 +160,109 @@ pub enum AggregationOutcome {
     Deferred,
     Skipped,
 }
+
+/// 收信协议（按账号配置，非服务商品牌）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiveProtocol {
+    Graph,
+    Imap,
+}
+
+impl ReceiveProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Graph => "graph",
+            Self::Imap => "imap",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "graph" => Some(Self::Graph),
+            "imap" => Some(Self::Imap),
+            _ => None,
+        }
+    }
+}
+
+/// 发信协议（按账号配置，非服务商品牌）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendProtocol {
+    Graph,
+    Smtp,
+}
+
+impl SendProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Graph => "graph",
+            Self::Smtp => "smtp",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "graph" => Some(Self::Graph),
+            "smtp" => Some(Self::Smtp),
+            _ => None,
+        }
+    }
+}
+
+/// 邮箱协议认证方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailAuthKind {
+    Password,
+    OAuth2,
+}
+
+impl MailAuthKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::OAuth2 => "oauth2",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "password" => Some(Self::Password),
+            "oauth2" => Some(Self::OAuth2),
+            _ => None,
+        }
+    }
+}
+
+/// TLS 连接模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailTlsMode {
+    /// 隐式 TLS（如 IMAPS 993 / SMTPS 465）
+    Implicit,
+    /// STARTTLS
+    StartTls,
+    /// 明文（仅测试）
+    Plain,
+}
+
+impl MailTlsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Implicit => "implicit",
+            Self::StartTls => "starttls",
+            Self::Plain => "plain",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "implicit" => Some(Self::Implicit),
+            "starttls" => Some(Self::StartTls),
+            "plain" => Some(Self::Plain),
+            _ => None,
+        }
+    }
+}

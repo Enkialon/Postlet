@@ -1,6 +1,8 @@
 //! 写入命令与列表查询命令
 
-use crate::domain::value_objects::{AccountId, EmailAddress, GroupId, MessageId, ThreadId};
+use crate::domain::value_objects::{
+    AccountId, EmailAddress, GroupId, MailAuthKind, MailTlsMode, MessageId, ThreadId,
+};
 
 /// 登录后落库 / 刷新账户资料
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -20,6 +22,25 @@ pub struct UpdateAccountDisplaySettingsCommand {
     pub show_group_messages_in_contact_conversation: bool,
     /// 是否纳入「全部账号」跨账号列表
     pub include_in_all: bool,
+}
+
+/// 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpsertImapSmtpAccountCommand {
+    pub email: String,
+    pub display_name: String,
+    pub auth_kind: MailAuthKind,
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub imap_tls: MailTlsMode,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_tls: MailTlsMode,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub expires_at_ms: Option<i64>,
 }
 
 /// 批量标记已读 / 未读

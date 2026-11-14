@@ -226,11 +226,13 @@ tauri::async_runtime::spawn(async move {
 
 ## 8. 非目标（本文不展开实现）
 
-- 多厂商邮箱 / IMAP 通用层  
-- 前端直连 Graph  
+- 前端直连 Graph / IMAP / SMTP  
 - 以文件夹树为主导航  
 - 服务端中转  
 - 为分库而分库、责任链式邮件 Pipeline  
+- 按服务商品牌硬编码协议（须用账号 `receive_protocol` / `send_protocol` 路由）  
+
+> 注：通用 IMAP + SMTP 已纳入产品能力；与 Graph 并存，不另建第二套同步/存储。
 
 ---
 

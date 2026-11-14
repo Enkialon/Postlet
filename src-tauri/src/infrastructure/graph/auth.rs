@@ -23,7 +23,8 @@ const DEFAULT_SCOPES: &[&str] = &[
     "profile",
     "offline_access",
     "User.Read",
-    "Mail.Read",
+    "Mail.ReadWrite",
+    "Mail.Send",
     "Contacts.Read",
 ];
 

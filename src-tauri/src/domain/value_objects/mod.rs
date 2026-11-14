@@ -7,7 +7,8 @@ mod ids;
 pub use email::{EmailAddress, SelfAddressSet};
 pub use enums::{
     AggregationOutcome, AggregateJobStatus, BodyContentType, ConversationKind, GroupSource,
-    Importance, MessageSyncStatus, PageDirection, RecipientRole, SyncStatus, TimestampMs,
+    Importance, MailAuthKind, MailTlsMode, MessageSyncStatus, PageDirection, ReceiveProtocol,
+    RecipientRole, SendProtocol, SyncStatus, TimestampMs,
 };
 pub use ids::{
     AccountId, ContactId, ConversationId, FolderId, GraphImmutableId, GroupId, MessageId,

@@ -1,10 +1,10 @@
-//! Outlook 账户实体
+//! 邮件账户实体
 
 use crate::domain::value_objects::{
     AccountId, EmailAddress, SyncStatus, TimestampMs,
 };
 
-/// Outlook 账户（租户根）
+/// 邮件账户（租户根；协议由 AccountMailTransport 配置）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Account {
     pub id: AccountId,

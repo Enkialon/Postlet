@@ -98,6 +98,13 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
     };
 
     accounts::upsert_identity(&mut tx, &account).await?;
+    crate::infrastructure::repository::mail_transports::ensure_default(
+        &mut tx,
+        &account.id,
+        now,
+    )
+    .await
+    .map_err(AppError::from)?;
     let saved = accounts::get(&mut tx, &account.id)
         .await?
         .ok_or_else(|| AppError::internal("登录后读取账户失败"))?;
@@ -121,6 +128,8 @@ pub async fn sign_out(
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
     graph_auth::sign_out(&paths.credentials_dir, account_id).await?;
+    let _ = crate::infrastructure::mail::credentials::delete(&paths.credentials_dir, account_id)
+        .await;
     accounts::set_signed_in(&mut conn, account_id, false)
         .await
         .map_err(AppError::from)?;

@@ -38,6 +38,12 @@ pub async fn seed_demo_workspace(conn: &mut SqliteConnection) -> Result<Account,
         updated_at: t,
     };
     accounts::upsert(conn, &account).await?;
+    crate::infrastructure::repository::mail_transports::ensure_default(
+        conn,
+        &account_id,
+        t,
+    )
+    .await?;
 
     let contact_alice = contact(
         &account_id,

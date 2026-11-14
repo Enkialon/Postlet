@@ -6,5 +6,7 @@ pub mod compose_use_case;
 pub mod contact_use_case;
 pub mod conversation_use_case;
 pub mod group_use_case;
+pub mod mail_account_use_case;
 pub mod message_use_case;
+pub mod outbound_use_case;
 pub mod sync_use_case;

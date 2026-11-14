@@ -104,6 +104,14 @@ impl AppError {
     pub fn not_implemented(feature: &str) -> Self {
         Self::internal(format!("尚未实现: {feature}"))
     }
+
+    pub fn auth(message: impl Into<String>) -> Self {
+        Self {
+            code: AppErrorCode::Auth,
+            message: message.into(),
+            retryable: false,
+        }
+    }
 }
 
 impl From<DomainError> for AppError {

@@ -282,6 +282,15 @@ pub async fn send(
         guard.remove(&key);
     }
 
+    // 按账号 send_protocol 外发（SMTP / Graph）；失败保留 PendingLocal
+    let _ = crate::application::use_cases::outbound_use_case::flush_pending_message(
+        &state.db,
+        &state.paths,
+        &cmd.account_id,
+        &message_id,
+    )
+    .await;
+
     Ok(bundle)
 }
 

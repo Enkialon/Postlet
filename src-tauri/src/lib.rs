@@ -35,6 +35,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
             let changes = ChangeDispatcher::new(app.handle().clone());
+            runtime::mail_watcher::spawn_watchers(db.clone(), paths.clone(), changes.clone());
             app.manage(AppState {
                 db,
                 paths,
@@ -48,6 +49,7 @@ pub fn run() {
             commands::get_account,
             commands::account_sign_in,
             commands::account_sign_out,
+            commands::upsert_imap_smtp_account,
             commands::load_demo_workspace,
             commands::update_display_settings,
             commands::list_contacts,
@@ -63,6 +65,7 @@ pub fn run() {
             commands::get_group,
             commands::list_group_participants,
             commands::get_mail_sync_progress,
+            commands::trigger_mail_sync,
             commands::get_contact_sync_progress,
             commands::compose_get_draft,
             commands::compose_save_draft,
