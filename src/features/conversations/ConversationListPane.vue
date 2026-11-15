@@ -28,7 +28,7 @@ import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 import type { ConversationKindFilter } from '../../app/navigation';
 import type { ConversationListItem } from '../../domain/dto';
 
-const ROW_SIZE = 72;
+const ROW_SIZE = 70;
 
 const nav = inject(navigationKey)!;
 const { accountLabel, accounts } = useAccounts();
@@ -69,19 +69,26 @@ function titleOf(item: (typeof listState.items)[number]): string {
   if (item.conversation.kind === 'group') {
     return item.group_name?.trim() || '未命名群组';
   }
+  const addr = item.conversation.normalized_address;
+  // contact 常被建档成邮箱；邮件 from_name（如「Google 安全中心」）作回退
+  const fromMail =
+    item.last_message_preview && !item.last_message_preview.is_outbound
+      ? item.last_message_preview.from_name
+      : null;
   return (
-    displayNameOrAddress(
-      item.contact_display_name,
-      item.conversation.normalized_address,
-    ) || '未知联系人'
+    displayNameOrAddress(item.contact_display_name, addr, fromMail) ||
+    '未知联系人'
   );
 }
 
 function previewOf(item: (typeof listState.items)[number]): string {
   const p = item.last_message_preview;
   if (!p) return '';
+  // 列表预览只留正文摘要；发件人已由会话标题表达，不必再拼进一行
+  const text = (p.body_preview || p.subject || '').trim();
+  if (!text) return p.is_outbound ? '我发送了一封邮件' : '';
   const who = p.is_outbound ? '我: ' : '';
-  return `${who}${truncateText(p.body_preview || p.subject, 36)}`;
+  return `${who}${truncateText(text, 42)}`;
 }
 
 const filteredItems = computed(() => {
@@ -244,7 +251,7 @@ function onKeySelect(e: KeyboardEvent, item: ConversationListItem) {
 
 function itemClass(active: boolean): string {
   return [
-    'absolute top-0 left-0 box-border flex w-full cursor-pointer items-center gap-3 px-3 py-3 transition-colors duration-150',
+    'absolute top-0 left-0 box-border flex w-full overflow-hidden cursor-pointer items-center gap-2.5 px-3 py-2 transition-colors duration-150',
     'hover:bg-surface-sidebar-hover',
     active ? 'bg-surface-sidebar-selected' : '',
   ].join(' ');
@@ -404,18 +411,19 @@ function itemClass(active: boolean): string {
                   ? 'group'
                   : 'contact'
               "
-              :size="40"
+              :size="36"
             />
-            <div class="grid min-w-0 flex-1 gap-0.5">
-              <div class="flex items-center gap-2">
+            <div class="grid min-w-0 flex-1 overflow-hidden gap-0.5">
+              <div class="flex min-w-0 items-baseline gap-2">
                 <strong
-                  class="min-w-0 flex-1 overflow-hidden text-[14px] font-semibold text-ellipsis whitespace-nowrap text-text-primary"
+                  class="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary"
+                  :title="titleOf(filteredItems[row.index]!)"
                   v-no-i18n
                   >{{ titleOf(filteredItems[row.index]!) }}</strong
                 >
                 <time
                   v-if="filteredItems[row.index]!.conversation.last_message_at"
-                  class="shrink-0 text-[11px] text-text-tertiary"
+                  class="shrink-0 text-[11px] tabular-nums text-text-tertiary"
                   :datetime="
                     String(
                       filteredItems[row.index]!.conversation.last_message_at,
@@ -429,22 +437,13 @@ function itemClass(active: boolean): string {
                   }}
                 </time>
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex min-w-0 items-center gap-2">
                 <p
-                  class="m-0 min-w-0 flex-1 overflow-hidden text-[12px] leading-normal text-ellipsis whitespace-nowrap text-text-secondary"
+                  class="m-0 min-w-0 flex-1 truncate text-[12px] leading-snug text-text-secondary"
+                  :title="previewOf(filteredItems[row.index]!)"
                   v-no-i18n
                 >
-                  <span
-                    v-if="showAccountHint"
-                    class="text-text-tertiary"
-                    v-no-i18n
-                    >{{
-                      accountLabel(
-                        filteredItems[row.index]!.conversation.account_id,
-                      )
-                    }}
-                    · </span
-                  >{{ previewOf(filteredItems[row.index]!) }}
+                  {{ previewOf(filteredItems[row.index]!) }}
                 </p>
                 <span
                   v-if="
@@ -460,6 +459,22 @@ function itemClass(active: boolean): string {
                   }}
                 </span>
               </div>
+              <p
+                v-if="showAccountHint"
+                class="m-0 truncate text-[10px] leading-none text-text-tertiary"
+                :title="
+                  accountLabel(
+                    filteredItems[row.index]!.conversation.account_id,
+                  )
+                "
+                v-no-i18n
+              >
+                {{
+                  accountLabel(
+                    filteredItems[row.index]!.conversation.account_id,
+                  )
+                }}
+              </p>
             </div>
           </template>
         </div>

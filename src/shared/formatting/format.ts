@@ -27,12 +27,29 @@ export function formatTimestampOrUnknown(
   return formatTimestamp(value, locale) || unknownLabel;
 }
 
+/** 名字与邮箱相同（忽略大小写）则视为没有昵称 */
+function isUsableDisplayName(
+  name: string,
+  address: string | null | undefined,
+): boolean {
+  if (!name) return false;
+  const a = address?.trim().toLowerCase() || '';
+  if (a && name.toLowerCase() === a) return false;
+  return true;
+}
+
+/**
+ * 有昵称用昵称；名字为空或只是邮箱本身时，可用 fallbackName，再不行才用邮箱。
+ */
 export function displayNameOrAddress(
   name: string | null | undefined,
   address: string | null | undefined,
+  fallbackName?: string | null | undefined,
 ): string {
-  const n = name?.trim();
-  if (n) return n;
+  const n = name?.trim() || '';
+  if (isUsableDisplayName(n, address)) return n;
+  const f = fallbackName?.trim() || '';
+  if (isUsableDisplayName(f, address)) return f;
   return address?.trim() || '';
 }
 

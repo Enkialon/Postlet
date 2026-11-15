@@ -295,7 +295,13 @@ async fn apply_plan(
 
     // --- 联系人会话 ---
     for addr in &plan.contact_addresses {
-        let cid = ensure_contact_conversation(conn, account_id, addr, now).await?;
+        let observed_name = plan
+            .observed_participants
+            .iter()
+            .find(|(a, _)| a == addr)
+            .map(|(_, n)| n.as_str());
+        let cid =
+            ensure_contact_conversation(conn, account_id, addr, observed_name, now).await?;
         desired.insert(cid.as_str().to_string());
         conversations::attach_messages(
             conn,
@@ -408,29 +414,68 @@ async fn apply_plan(
     })
 }
 
+/// 邮件里的展示名是否比「邮箱占位」更适合作为联系人昵称。
+fn usable_contact_display_name(name: &str, address: &EmailAddress) -> bool {
+    let n = name.trim();
+    if n.is_empty() {
+        return false;
+    }
+    !n.eq_ignore_ascii_case(address.as_str())
+}
+
 async fn ensure_contact_conversation(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     peer: &EmailAddress,
+    observed_name: Option<&str>,
     now: TimestampMs,
 ) -> Result<ConversationId, AppError> {
+    let better_name = observed_name
+        .map(str::trim)
+        .filter(|n| usable_contact_display_name(n, peer));
+
     if let Some(existing) = conversations::get_contact_conversation(conn, account_id, peer)
         .await
         .map_err(AppError::from)?
     {
+        if let (Some(name), Some(cid)) = (better_name, existing.contact_id.as_ref()) {
+            if let Some(mut contact) = contacts::get(conn, account_id, cid)
+                .await
+                .map_err(AppError::from)?
+            {
+                if !usable_contact_display_name(&contact.display_name, peer) {
+                    contact.display_name = name.to_owned();
+                    contact.updated_at = now;
+                    contacts::upsert(conn, &contact)
+                        .await
+                        .map_err(AppError::from)?;
+                }
+            }
+        }
         return Ok(existing.id);
     }
-    let contact = if let Some(c) = contacts::get_by_address(conn, account_id, peer)
+    let contact = if let Some(mut c) = contacts::get_by_address(conn, account_id, peer)
         .await
         .map_err(AppError::from)?
     {
+        if let Some(name) = better_name {
+            if !usable_contact_display_name(&c.display_name, peer) {
+                c.display_name = name.to_owned();
+                c.updated_at = now;
+                contacts::upsert(conn, &c)
+                    .await
+                    .map_err(AppError::from)?;
+            }
+        }
         c
     } else {
         let c = Contact {
             id: ContactId::new(Uuid::new_v4().to_string()),
             account_id: account_id.clone(),
             graph_id: None,
-            display_name: peer.as_str().to_string(),
+            display_name: better_name
+                .unwrap_or(peer.as_str())
+                .to_owned(),
             normalized_address: peer.clone(),
             created_at: now,
             updated_at: now,

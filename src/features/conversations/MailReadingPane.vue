@@ -15,6 +15,8 @@ const props = defineProps<{
   item: MessageWithRecipients;
   bodyLoading: boolean;
   bodyError: string | null;
+  /** 会话联系人昵称；from_name 缺失或等于邮箱时回退 */
+  preferredName?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -24,13 +26,16 @@ const emit = defineEmits<{
 
 const showMoreMeta = ref(false);
 
-const fromLabel = computed(
-  () =>
+const fromLabel = computed(() => {
+  if (props.item.message.is_outbound) return '我';
+  return (
     displayNameOrAddress(
       props.item.message.from_name,
       props.item.message.from_address,
-    ) || '未知',
-);
+      props.preferredName,
+    ) || '未知'
+  );
+});
 
 function recipientsByRole(role: RecipientRole): string {
   return props.item.recipients

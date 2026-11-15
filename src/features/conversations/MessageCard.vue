@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
 import {
   displayNameOrAddress,
-  formatTimestampOrUnknown,
+  formatChatTime,
 } from '../../shared/formatting/format';
 import Avatar from '../../shared/ui/Avatar.vue';
 import ContextMenu, {
@@ -14,6 +14,8 @@ const props = defineProps<{
   item: MessageWithRecipients;
   selected?: boolean;
   allowMoveThread?: boolean;
+  /** 会话联系人昵称；邮件 from_name 缺失或等于邮箱时回退 */
+  preferredName?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -43,14 +45,29 @@ const menuItems = computed<ContextMenuItem[]>(() => {
   return items;
 });
 
-function fromLabel(): string {
+/** 头像旁：有昵称用昵称，没有才用邮箱 */
+const senderLabel = computed(() => {
+  if (props.item.message.is_outbound) return '我';
   return (
     displayNameOrAddress(
       props.item.message.from_name,
       props.item.message.from_address,
+      props.preferredName,
     ) || '未知'
   );
-}
+});
+
+const timeLabel = computed(() =>
+  formatChatTime(
+    props.item.message.received_at ?? props.item.message.sent_at,
+  ),
+);
+
+const previewText = computed(
+  () => props.item.message.body_preview?.trim() || '',
+);
+
+const outbound = computed(() => props.item.message.is_outbound);
 
 function openMenu(e: MouseEvent): void {
   e.preventDefault();
@@ -81,91 +98,99 @@ function onMenuSelect(id: string): void {
 
 <template>
   <article
-    class="flex max-w-[820px] items-start gap-3"
-    :class="item.message.is_outbound ? 'ml-auto flex-row justify-end' : ''"
+    class="flex w-full max-w-[760px] items-start gap-2.5"
+    :class="outbound ? 'ml-auto flex-row-reverse' : ''"
     @contextmenu="openMenu"
   >
     <Avatar
-      v-if="!item.message.is_outbound"
-      :name="fromLabel()"
+      :name="senderLabel"
+      :kind="outbound ? 'self' : 'contact'"
       :size="36"
+      class="mt-0.5 shrink-0"
     />
 
     <div
-      class="grid max-w-[min(560px,78vw)] min-w-0 gap-1.5"
-      :class="item.message.is_outbound ? 'justify-items-end' : ''"
+      class="grid min-w-0 max-w-[min(520px,70vw)] gap-1.5"
+      :class="outbound ? 'justify-items-end' : 'justify-items-start'"
     >
+      <!-- 与头像顶对齐：昵称/邮箱 + 时间 -->
       <div
-        class="flex items-center gap-2 px-0.5 text-[12px] text-text-tertiary"
-        :class="item.message.is_outbound ? 'justify-end' : ''"
+        class="flex max-w-full min-w-0 items-center gap-2 px-0.5"
+        :class="outbound ? 'flex-row-reverse' : ''"
       >
         <span
-          v-if="!item.message.is_outbound"
-          class="text-[13px] font-medium text-text-secondary"
+          class="min-w-0 truncate text-[12px] font-medium text-text-secondary"
+          :title="senderLabel"
           v-no-i18n
         >
-          {{ fromLabel() }}
+          {{ senderLabel }}
         </span>
-        <time>
-          {{
-            formatTimestampOrUnknown(
-              item.message.received_at ?? item.message.sent_at,
-            )
-          }}
+        <time
+          class="shrink-0 text-[11px] tabular-nums text-text-tertiary"
+        >
+          {{ timeLabel }}
         </time>
         <span
-          v-if="!item.message.is_read"
-          class="font-medium text-unread"
+          v-if="!item.message.is_read && !outbound"
+          class="size-1.5 shrink-0 rounded-full bg-unread"
           aria-label="未读"
-          >未读</span
-        >
+        />
       </div>
 
       <button
         type="button"
-        class="relative max-w-full cursor-pointer rounded-lg border px-3.5 py-2.5 text-left text-text-primary transition-colors duration-150"
+        class="max-w-full cursor-pointer rounded-[14px] px-3.5 py-2.5 text-left transition-[box-shadow,background-color] duration-150"
         :class="[
-          item.message.is_outbound
-            ? 'border-border-bubble-out bg-bubble-outgoing'
-            : 'border-border-bubble bg-bubble-incoming',
-          selected ? 'ring-1 ring-brand/35' : '',
+          outbound
+            ? 'rounded-tr-md bg-bubble-outgoing'
+            : 'rounded-tl-md bg-bubble-incoming shadow-xs',
+          selected
+            ? 'ring-2 ring-brand/30 ring-offset-1 ring-offset-surface-chat'
+            : '',
         ]"
         :aria-pressed="selected"
         @click="emit('select')"
         @contextmenu="openMenu"
       >
-        <strong
-          class="mb-1 block text-[14px] font-semibold text-text-primary"
-          v-no-i18n
-          >{{ item.message.subject }}</strong
-        >
         <p
-          class="m-0 line-clamp-3 text-[14px] leading-[1.55] break-words whitespace-pre-wrap text-text-primary"
+          v-if="item.message.subject"
+          class="m-0 truncate text-[13px] font-medium leading-snug text-text-primary"
+          :title="item.message.subject"
           v-no-i18n
         >
-          {{ item.message.body_preview }}
+          {{ item.message.subject }}
         </p>
+
         <p
-          v-if="item.message.has_attachments"
-          class="mt-2 mb-0 text-[12px] text-text-tertiary"
+          v-if="previewText"
+          class="m-0 line-clamp-3 text-[13px] leading-[1.5] break-words whitespace-pre-wrap text-text-secondary"
+          :class="item.message.subject ? 'mt-1' : ''"
+          v-no-i18n
         >
-          含附件
+          {{ previewText }}
         </p>
+
         <p
-          v-if="item.message.sync_status === 'pending_local'"
-          class="mt-2 mb-0 text-[12px] text-text-tertiary"
+          v-else-if="!item.message.subject"
+          class="m-0 text-[13px] text-text-tertiary"
         >
-          等待同步
+          （无正文预览）
+        </p>
+
+        <p
+          v-if="
+            item.message.has_attachments ||
+            item.message.sync_status === 'pending_local'
+          "
+          class="mt-1.5 mb-0 flex gap-2 text-[11px] text-text-tertiary"
+        >
+          <span v-if="item.message.has_attachments">含附件</span>
+          <span v-if="item.message.sync_status === 'pending_local'"
+            >发送中</span
+          >
         </p>
       </button>
     </div>
-
-    <Avatar
-      v-if="item.message.is_outbound"
-      name="我"
-      kind="self"
-      :size="36"
-    />
 
     <ContextMenu
       :open="menuOpen"

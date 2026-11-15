@@ -28,7 +28,7 @@ import type {
 } from '../../domain/entities';
 import { asAppError } from '../../shared/errors/asAppError';
 
-const ROW_SIZE = 118;
+const ROW_SIZE = 128;
 
 const nav = inject(navigationKey)!;
 const ports = inject(portsKey)!;
@@ -169,10 +169,15 @@ const title = computed(() => {
   if (item.conversation.kind === 'group') {
     return item.group_name?.trim() || '未命名群组';
   }
+  const fromMail =
+    item.last_message_preview && !item.last_message_preview.is_outbound
+      ? item.last_message_preview.from_name
+      : null;
   return (
     displayNameOrAddress(
       item.contact_display_name,
       item.conversation.normalized_address,
+      fromMail,
     ) || '会话'
   );
 });
@@ -433,7 +438,7 @@ watch(
           class="min-h-0 flex-1 bg-surface-chat"
           type="hover"
         >
-          <div class="px-6 py-5">
+          <div class="px-5 py-5">
             <div
               class="relative w-full"
               :style="{ height: `${messagesTotalSize}px` }"
@@ -441,7 +446,7 @@ watch(
               <div
                 v-for="row in messageVirtualItems"
                 :key="String(row.key)"
-                class="absolute top-0 left-0 box-border w-full pb-4"
+                class="absolute top-0 left-0 box-border w-full px-1 pb-5"
                 :data-index="row.index"
                 :style="{
                   height: `${row.size}px`,
@@ -455,6 +460,7 @@ watch(
                     mailDetail?.message.id ===
                     messageState.items[row.index]!.message.id
                   "
+                  :preferred-name="selected?.contact_display_name"
                   :allow-move-thread="selected?.conversation.kind === 'group'"
                   @select="openMailReading(messageState.items[row.index]!)"
                   @reply="onReplyMessage(messageState.items[row.index]!)"
@@ -509,6 +515,7 @@ watch(
             :item="mailDetail"
             :body-loading="mailBodyLoading"
             :body-error="mailBodyError"
+            :preferred-name="selected?.contact_display_name"
             @close="closeDetailPanel"
             @retry-body="ensureBody(mailDetail.message.id)"
           />
