@@ -128,7 +128,12 @@ export function useContacts() {
       () => {
         selected.value = null;
         searchInput.value = '';
-        Object.assign(listState, createEmptyPageState<Contact>());
+        listState.requestVersion += 1;
+        listState.items = [];
+        listState.nextCursor = null;
+        listState.hasMore = false;
+        listState.error = null;
+        listState.loading = 'idle';
         void loadInitial(null);
       },
     );

@@ -295,7 +295,12 @@ export function useGroups() {
       () => {
         selected.value = null;
         participants.value = [];
-        Object.assign(listState, createEmptyPageState<Group>());
+        listState.requestVersion += 1;
+        listState.items = [];
+        listState.nextCursor = null;
+        listState.hasMore = false;
+        listState.error = null;
+        listState.loading = 'idle';
         void loadInitial();
       },
     );

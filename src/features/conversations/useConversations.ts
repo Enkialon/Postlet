@@ -259,12 +259,14 @@ export function useConversations() {
       selected.value = inList;
       return;
     }
-    try {
-      selected.value = await ports.conversation.getConversation(accountId, id);
-    } catch {
-      selected.value = null;
-      nav.selectConversation(null);
+    // 仍指向当前选中则保留；勿再 IPC 拉回已不在筛选结果中的旧会话
+    if (
+      selected.value?.conversation.id === id &&
+      selected.value.conversation.account_id === accountId
+    ) {
+      return;
     }
+    selected.value = null;
   }
 
   async function openConversation(
@@ -273,13 +275,35 @@ export function useConversations() {
   ): Promise<void> {
     nav.setAccount(accountId);
     nav.selectConversation(conversationId);
+
+    // 先用本地列表项立刻切换，避免干等 getConversation IPC
+    const key = `${accountId}:${conversationId}`;
+    const cached =
+      conversationByKey.get(key) ??
+      listState.items.find(
+        (i) =>
+          i.conversation.id === conversationId &&
+          i.conversation.account_id === accountId,
+      ) ??
+      null;
+    if (cached) {
+      selected.value = cached;
+    }
+
     try {
       const item = await ports.conversation.getConversation(
         accountId,
         conversationId,
       );
-      const key = conversationListKey(item);
-      const merged = conversationByKey.get(key);
+      // 用户已点到别的会话则丢弃迟到响应
+      if (
+        nav.conversationId.value !== conversationId ||
+        nav.accountId.value !== accountId
+      ) {
+        return;
+      }
+      const itemKey = conversationListKey(item);
+      const merged = conversationByKey.get(itemKey);
       if (merged) {
         Object.assign(merged.conversation, item.conversation);
         merged.contact_display_name = item.contact_display_name;
@@ -296,8 +320,17 @@ export function useConversations() {
         selected.value = item;
       }
     } catch (e) {
-      selected.value = null;
-      listState.error = asAppError(e);
+      if (
+        nav.conversationId.value !== conversationId ||
+        nav.accountId.value !== accountId
+      ) {
+        return;
+      }
+      // 列表里已有缓存时保留选中，只记错误
+      if (!cached) {
+        selected.value = null;
+        listState.error = asAppError(e);
+      }
     }
   }
 
@@ -336,8 +369,16 @@ export function useConversations() {
         nav.sessionVersion.value,
       ],
       () => {
+        // 筛选变化：清阅读上下文，避免 restoreSelection 把旧会话又拉回来
         selected.value = null;
-        Object.assign(listState, createEmptyPageState<ConversationListItem>());
+        nav.clearReading();
+        // 作废在途请求，但绝不能把 requestVersion 重置为 0（否则新旧请求版本撞车）
+        listState.requestVersion += 1;
+        listState.items = [];
+        listState.nextCursor = null;
+        listState.hasMore = false;
+        listState.error = null;
+        listState.loading = 'idle';
         resetOrderState();
         void loadInitial();
       },

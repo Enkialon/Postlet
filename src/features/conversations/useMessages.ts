@@ -109,7 +109,7 @@ export function useMessages() {
     ) {
       return 0;
     }
-    const version = messageState.requestVersion;
+    const version = ++messageState.requestVersion;
     const session = nav.sessionVersion.value;
     messageState.loading = 'more';
     try {
@@ -122,7 +122,8 @@ export function useMessages() {
       });
       if (
         version !== messageState.requestVersion ||
-        session !== nav.sessionVersion.value
+        session !== nav.sessionVersion.value ||
+        conversationId !== nav.conversationId.value
       ) {
         return 0;
       }
@@ -253,6 +254,14 @@ export function useMessages() {
         nav.sessionVersion.value,
       ],
       () => {
+        // 立刻清空旧线程，避免切换时仍显示上一会话气泡
+        messageState.requestVersion += 1;
+        messageState.items = [];
+        messageState.nextCursor = null;
+        messageState.hasMore = false;
+        messageState.error = null;
+        messageState.loading = 'idle';
+        expandedIds.value = new Set();
         void loadInitial();
       },
     );
