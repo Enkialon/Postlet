@@ -17,6 +17,7 @@ import {
   formatUnreadBadge,
   truncateText,
 } from '../../shared/formatting/format';
+import { plainPreview } from '../../shared/formatting/plainPreview';
 import {
   sessionListKey,
   isScrollAtTop,
@@ -96,7 +97,7 @@ function previewOf(item: (typeof listState.items)[number]): string {
   const p = item.last_message_preview;
   if (!p) return '';
   // 列表预览只留正文摘要；发件人已由会话标题表达，不必再拼进一行
-  const text = (p.body_preview || p.subject || '').trim();
+  const text = plainPreview(p.body_preview || p.subject);
   if (!text) return p.is_outbound ? '我发送了一封邮件' : '';
   const who = p.is_outbound ? '我: ' : '';
   return `${who}${truncateText(text, 42)}`;

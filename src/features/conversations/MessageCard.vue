@@ -6,6 +6,7 @@ import {
   displayNameOrAddress,
   formatChatTime,
 } from '../../shared/formatting/format';
+import { plainPreview } from '../../shared/formatting/plainPreview';
 import Avatar from '../../shared/ui/Avatar.vue';
 import ContextMenu, {
   type ContextMenuItem,
@@ -78,8 +79,8 @@ const timeLabel = computed(() =>
   ),
 );
 
-const previewText = computed(
-  () => props.item.message.body_preview?.trim() || '',
+const previewText = computed(() =>
+  plainPreview(props.item.message.body_preview),
 );
 
 const outbound = computed(() => props.item.message.is_outbound);

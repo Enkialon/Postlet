@@ -362,6 +362,11 @@ async fn sync_imap_mail(
     let mut requests = Vec::new();
     let mut is_initial = false;
     let folder_ids = resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids).await?;
+    if folder_ids.is_empty() {
+        return Err(AppError::validation(
+            "未勾选任何同步文件夹，请先在设置中勾选收件箱等文件夹后再同步",
+        ));
+    }
     {
         let mut conn = db.acquire().await?;
         for folder_id in folder_ids {

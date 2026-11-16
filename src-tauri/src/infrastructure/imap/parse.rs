@@ -15,6 +15,7 @@ pub fn parse_rfc822(
     uid: u32,
     bytes: &[u8],
     is_read: bool,
+    internal_date_ms: Option<i64>,
 ) -> Result<RemoteMessage, String> {
     let parsed = parse_mail(bytes).map_err(|e| format!("mailparse: {e}"))?;
     let headers = &parsed.headers;
@@ -41,12 +42,23 @@ pub fn parse_rfc822(
         headers.get_all_values("Reply-To"),
     );
 
-    let (body_content_type, body_content) = extract_body(&parsed);
-    let preview: String = body_content
-        .chars()
-        .filter(|c| !c.is_control() || *c == '\n')
-        .take(180)
-        .collect();
+    let (plain, html) = collect_text_parts(&parsed);
+    // 阅读窗：有 HTML 用 HTML；气泡预览：优先 plain，否则去标签
+    let (body_content_type, body_content) = if let Some(h) = html.clone() {
+        (BodyContentType::Html, h)
+    } else {
+        (BodyContentType::Text, plain.clone().unwrap_or_default())
+    };
+    let preview_source = plain
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| html.map(|h| html_to_plain(&h)).unwrap_or_default());
+    let preview = truncate_preview(&preview_source);
+
+    let header_date = headers
+        .get_first_value("Date")
+        .and_then(|d| mailparse::dateparse(&d).ok())
+        .map(|secs| secs.saturating_mul(1000));
+    let dated = header_date.or(internal_date_ms);
 
     Ok(RemoteMessage {
         graph_id: remote_id(folder, uid),
@@ -60,9 +72,9 @@ pub fn parse_rfc822(
         from_address,
         from_name,
         recipients,
-        received_at: None,
-        sent_at: None,
-        created_at_graph: None,
+        received_at: dated,
+        sent_at: dated,
+        created_at_graph: dated,
         is_read,
         is_draft: false,
         has_attachments: false,
@@ -71,6 +83,71 @@ pub fn parse_rfc822(
         parent_folder_name: Some(folder.to_string()),
         remote_updated_at: None,
     })
+}
+
+fn truncate_preview(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .take(180)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 气泡/列表用：去标签、解码常见实体、压空白。不引入 HTML 引擎。
+pub fn html_to_plain(html: &str) -> String {
+    let mut s = html.to_string();
+    // 丢掉脚本/样式整块
+    for tag in ["script", "style", "noscript"] {
+        loop {
+            let open = format!("<{tag}");
+            let close = format!("</{tag}>");
+            let Some(start) = s.to_ascii_lowercase().find(&open) else {
+                break;
+            };
+            let rest = &s[start..];
+            let Some(rel_end) = rest.to_ascii_lowercase().find(&close) else {
+                s.truncate(start);
+                break;
+            };
+            let end = start + rel_end + close.len();
+            s.replace_range(start..end, " ");
+        }
+    }
+    s = s
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .replace("</p>", "\n")
+        .replace("</div>", "\n")
+        .replace("</tr>", "\n")
+        .replace("</li>", "\n");
+    // 去标签
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    decode_basic_entities(&out)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn decode_basic_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }
 
 fn split_mailbox(raw: &str) -> (String, Option<EmailAddress>) {
@@ -109,34 +186,30 @@ fn push_role(out: &mut Vec<RemoteRecipient>, role: RecipientRole, values: Vec<St
     }
 }
 
-fn extract_body(parsed: &mailparse::ParsedMail<'_>) -> (BodyContentType, String) {
-    if parsed.subparts.is_empty() {
-        let ctype = parsed
-            .ctype
-            .mimetype
-            .to_ascii_lowercase();
-        let body = parsed.get_body().unwrap_or_default();
-        if ctype.contains("html") {
-            return (BodyContentType::Html, body);
-        }
-        return (BodyContentType::Text, body);
-    }
-    let mut text = None;
+/// 递归收集 text/plain 与 text/html（multipart 嵌套也能拿到）。
+fn collect_text_parts(parsed: &mailparse::ParsedMail<'_>) -> (Option<String>, Option<String>) {
+    let mut plain = None;
     let mut html = None;
-    for part in &parsed.subparts {
-        let mime = part.ctype.mimetype.to_ascii_lowercase();
-        let body = part.get_body().unwrap_or_default();
-        if mime.contains("html") && html.is_none() {
-            html = Some(body);
-        } else if mime.starts_with("text/plain") && text.is_none() {
-            text = Some(body);
+    walk_parts(parsed, &mut plain, &mut html);
+    (plain, html)
+}
+
+fn walk_parts(
+    parsed: &mailparse::ParsedMail<'_>,
+    plain: &mut Option<String>,
+    html: &mut Option<String>,
+) {
+    if !parsed.subparts.is_empty() {
+        for part in &parsed.subparts {
+            walk_parts(part, plain, html);
         }
+        return;
     }
-    if let Some(h) = html {
-        return (BodyContentType::Html, h);
+    let mime = parsed.ctype.mimetype.to_ascii_lowercase();
+    let body = parsed.get_body().unwrap_or_default();
+    if mime.starts_with("text/plain") && plain.is_none() {
+        *plain = Some(body);
+    } else if mime.contains("html") && html.is_none() {
+        *html = Some(body);
     }
-    (
-        BodyContentType::Text,
-        text.unwrap_or_default(),
-    )
 }
