@@ -4,14 +4,12 @@ use crate::application::dto::{
     ComposeDraft, ComposeRecipientRef, SaveComposeDraftCommand, SendComposedMailCommand,
 };
 use crate::application::error::AppError;
-use crate::domain::entities::{
-    ConversationMessageLink, Message, MessageRecipient, MessageWithRecipients,
-};
+use crate::domain::entities::{Message, MessageRecipient, MessageWithRecipients};
 use crate::domain::value_objects::{
-    AccountId, BodyContentType, ConversationId, EmailAddress, Importance, MessageId,
-    MessageSyncStatus, RecipientRole, ThreadId, TimestampMs,
+    AccountId, BodyContentType, EmailAddress, Importance, MessageId, MessageSyncStatus,
+    RecipientRole, SessionId, TimestampMs,
 };
-use crate::infrastructure::repository::{accounts, conversations, messages};
+use crate::infrastructure::repository::{accounts, messages, sessions};
 use crate::AppState;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -32,8 +30,8 @@ fn next_local_id(prefix: &str) -> String {
     format!("{prefix}-{}-{n}", now_ms())
 }
 
-fn draft_key(account_id: &AccountId, conversation_id: &ConversationId) -> String {
-    format!("{}:{}", account_id.as_str(), conversation_id.as_str())
+fn draft_key(account_id: &AccountId, session_id: &SessionId) -> String {
+    format!("{}:{}", account_id.as_str(), session_id.as_str())
 }
 
 fn strip_html(html: &str) -> String {
@@ -42,7 +40,6 @@ fn strip_html(html: &str) -> String {
         .replace("<br/>", "\n")
         .replace("<br />", "\n")
         .replace("</p>", "\n");
-    // 粗略去标签
     while let Some(start) = out.find('<') {
         if let Some(end_rel) = out[start..].find('>') {
             out.replace_range(start..start + end_rel + 1, "");
@@ -98,9 +95,9 @@ fn normalize_recipients(list: &[ComposeRecipientRef]) -> Vec<ComposeRecipientRef
 pub fn get_draft(
     state: &AppState,
     account_id: &AccountId,
-    conversation_id: &ConversationId,
+    session_id: &SessionId,
 ) -> Result<Option<ComposeDraft>, AppError> {
-    let key = draft_key(account_id, conversation_id);
+    let key = draft_key(account_id, session_id);
     let guard = state
         .compose_drafts
         .lock()
@@ -113,7 +110,6 @@ pub async fn save_draft(
     state: &AppState,
     cmd: SaveComposeDraftCommand,
 ) -> Result<ComposeDraft, AppError> {
-    // 校验账户存在
     {
         let mut conn = state.db.acquire().await?;
         accounts::get(&mut conn, &cmd.account_id)
@@ -123,7 +119,7 @@ pub async fn save_draft(
 
     let draft = ComposeDraft {
         account_id: cmd.account_id.clone(),
-        conversation_id: cmd.conversation_id.clone(),
+        session_id: cmd.session_id.clone(),
         reply_to_message_id: cmd.reply_to_message_id,
         to: normalize_recipients(&cmd.to),
         cc: normalize_recipients(&cmd.cc),
@@ -133,7 +129,7 @@ pub async fn save_draft(
         attachments: cmd.attachments,
         updated_at: now_ms(),
     };
-    let key = draft_key(&draft.account_id, &draft.conversation_id);
+    let key = draft_key(&draft.account_id, &draft.session_id);
     let mut guard = state
         .compose_drafts
         .lock()
@@ -146,9 +142,9 @@ pub async fn save_draft(
 pub fn clear_draft(
     state: &AppState,
     account_id: &AccountId,
-    conversation_id: &ConversationId,
+    session_id: &SessionId,
 ) -> Result<(), AppError> {
-    let key = draft_key(account_id, conversation_id);
+    let key = draft_key(account_id, session_id);
     let mut guard = state
         .compose_drafts
         .lock()
@@ -157,7 +153,7 @@ pub fn clear_draft(
     Ok(())
 }
 
-/// 本地发送：落库 outbound 邮件并附着到会话；清除草稿
+/// 本地发送：落库 outbound 邮件到指定 Session；清除草稿
 pub async fn send(
     state: &AppState,
     cmd: SendComposedMailCommand,
@@ -169,10 +165,17 @@ pub async fn send(
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
 
-    let conversation = conversations::get(&mut tx, &cmd.account_id, &cmd.conversation_id)
+    let session = sessions::get(&mut tx, &cmd.account_id, &cmd.session_id)
         .await?
         .ok_or_else(|| AppError::not_found("会话不存在"))?;
-    let _ = conversation;
+    let session_id = if let Some(merged) = &session.merged_into_id {
+        sessions::resolve_root(&mut tx, &cmd.account_id, merged)
+            .await?
+            .map(|s| s.id)
+            .unwrap_or(session.id)
+    } else {
+        session.id
+    };
 
     let to = normalize_recipients(&cmd.to);
     let cc = normalize_recipients(&cmd.cc);
@@ -186,7 +189,7 @@ pub async fn send(
         return Err(AppError::validation("正文或附件不能为空"));
     }
 
-    let mut thread_id: Option<ThreadId> = None;
+    let mut in_reply_to: Option<String> = None;
     let mut subject = cmd.subject.trim().to_string();
 
     if let Some(reply_id) = &cmd.reply_to_message_id {
@@ -196,11 +199,7 @@ pub async fn send(
         if reply.message.sync_status == MessageSyncStatus::DeletedRemote {
             return Err(AppError::not_found("回复目标邮件不存在"));
         }
-        thread_id = reply
-            .message
-            .thread_id
-            .clone()
-            .or_else(|| Some(ThreadId::new(next_local_id("thread"))));
+        in_reply_to = reply.message.internet_message_id.clone();
         if subject.is_empty() {
             subject = reply_subject(&reply.message.subject);
         }
@@ -211,11 +210,11 @@ pub async fn send(
     let message = Message {
         id: message_id.clone(),
         account_id: cmd.account_id.clone(),
+        session_id: session_id.clone(),
         graph_id: None,
-        thread_id,
         graph_change_key: None,
         internet_message_id: None,
-        conversation_index: None,
+        in_reply_to,
         subject,
         body_preview: plain.chars().take(160).collect(),
         body_content_type: BodyContentType::Html,
@@ -263,17 +262,7 @@ pub async fn send(
         recipients,
     };
     messages::upsert_with_recipients(&mut tx, &bundle).await?;
-    conversations::attach_messages(
-        &mut tx,
-        &[ConversationMessageLink {
-            account_id: cmd.account_id.clone(),
-            conversation_id: cmd.conversation_id.clone(),
-            message_id: message_id.clone(),
-            attached_at: t,
-        }],
-    )
-    .await?;
-    conversations::recompute_projection(&mut tx, &cmd.account_id, &cmd.conversation_id).await?;
+    sessions::recompute_projection(&mut tx, &cmd.account_id, &session_id).await?;
     crate::infrastructure::repository::jobs::enqueue_or_reset(
         &mut tx,
         &cmd.account_id,
@@ -283,13 +272,11 @@ pub async fn send(
     .await?;
     tx.commit().await?;
 
-    // 清草稿
-    let key = draft_key(&cmd.account_id, &cmd.conversation_id);
+    let key = draft_key(&cmd.account_id, &cmd.session_id);
     if let Ok(mut guard) = state.compose_drafts.lock() {
         guard.remove(&key);
     }
 
-    // 按账号 send_protocol 外发（SMTP / Graph）；失败保留 PendingLocal
     let _ = crate::application::use_cases::outbound_use_case::flush_pending_message(
         &state.db,
         &state.paths,

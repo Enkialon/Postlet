@@ -38,7 +38,6 @@ export function useGroups() {
         account_id: nav.listAccountId.value,
         cursor: null,
         limit: PAGE_SIZE,
-        include_merged: false,
       });
       if (
         version !== listState.requestVersion ||
@@ -67,7 +66,6 @@ export function useGroups() {
         account_id: nav.listAccountId.value,
         cursor: listState.nextCursor,
         limit: PAGE_SIZE,
-        include_merged: false,
       });
       if (
         version !== listState.requestVersion ||
@@ -155,11 +153,11 @@ export function useGroups() {
     actionError.value = null;
     try {
       nav.setAccount(accountId);
-      const conversation = await ports.conversation.ensureGroupConversation({
+      const session = await ports.session.ensureGroupSession({
         account_id: accountId,
         group_id: id,
       });
-      nav.selectConversation(conversation.id);
+      nav.selectSession(session.id);
       return true;
     } catch (e) {
       actionError.value = asAppError(e).message;
@@ -218,19 +216,28 @@ export function useGroups() {
     }
   }
 
+  /** 合并两个群的群聊 Session：先 ensure 再 merge_sessions */
   async function mergeInto(targetGroupId: string): Promise<boolean> {
     const group = selected.value;
     if (!group || busy.value) return false;
     busy.value = true;
     actionError.value = null;
     try {
-      const target = await ports.group.mergeGroups({
+      const sourceSession = await ports.session.ensureGroupSession({
         account_id: group.account_id,
-        source_group_id: group.id,
-        target_group_id: targetGroupId,
+        group_id: group.id,
+      });
+      const targetSession = await ports.session.ensureGroupSession({
+        account_id: group.account_id,
+        group_id: targetGroupId,
+      });
+      await ports.group.mergeSessions({
+        account_id: group.account_id,
+        source_session_id: sourceSession.id,
+        target_session_id: targetSession.id,
       });
       await loadInitial();
-      await openGroup(target);
+      await openGroup(targetGroupId);
       return true;
     } catch (e) {
       actionError.value = asAppError(e).message;
@@ -241,18 +248,18 @@ export function useGroups() {
     }
   }
 
-  async function moveThread(
-    threadId: string,
+  async function reassignMessages(
+    messageIds: string[],
     targetGroupId: string,
   ): Promise<boolean> {
     const accountId = selected.value?.account_id ?? nav.accountId.value;
-    if (!accountId || busy.value) return false;
+    if (!accountId || busy.value || messageIds.length === 0) return false;
     busy.value = true;
     actionError.value = null;
     try {
-      await ports.group.moveThreadToGroup({
+      await ports.group.reassignMessagesToGroup({
         account_id: accountId,
-        thread_id: threadId,
+        message_ids: messageIds,
         target_group_id: targetGroupId,
       });
       if (selected.value) await openGroup(selected.value);
@@ -266,7 +273,7 @@ export function useGroups() {
     }
   }
 
-  /** 分页加载全部候选根群组（与当前选中群同账号） */
+  /** 分页加载全部候选群组（与当前选中群同账号） */
   async function loadAllRootGroups(): Promise<Group[]> {
     const accountId = selected.value?.account_id ?? nav.accountId.value;
     if (!accountId) return [];
@@ -278,7 +285,6 @@ export function useGroups() {
         account_id: accountId,
         cursor,
         limit: PAGE_SIZE,
-        include_merged: false,
       });
       all.push(...page.items);
       hasMore = page.has_more;
@@ -320,7 +326,7 @@ export function useGroups() {
     renameGroup,
     updateMembers,
     mergeInto,
-    moveThread,
+    reassignMessages,
     loadAllRootGroups,
   };
 }

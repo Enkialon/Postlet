@@ -47,14 +47,6 @@ function onIncludeInAll(account: Account, e: Event) {
   });
 }
 
-function onShowGroup(account: Account, e: Event) {
-  void updateAccountSettings(account.id, {
-    show_group_messages_in_contact_conversation: (
-      e.target as HTMLInputElement
-    ).checked,
-  });
-}
-
 function folderStatusLabel(status: string, syncedAt: number | null): string {
   if (status === 'running') return '正在同步';
   if (status === 'error') return '部分内容可能未更新';
@@ -245,26 +237,6 @@ function onFolderSyncToggle(
                       纳入「全部账号」列表
                       <span class="mt-1 block text-[12px] text-text-tertiary">
                         关闭后，会话/联系人/群组的「全部」视图将不再包含此账号
-                      </span>
-                    </span>
-                  </label>
-
-                  <label
-                    class="flex cursor-pointer items-start gap-3 text-[14px] leading-snug text-text-primary"
-                  >
-                    <input
-                      class="mt-0.5"
-                      type="checkbox"
-                      :checked="
-                        account.show_group_messages_in_contact_conversation
-                      "
-                      :disabled="savingId === account.id"
-                      @change="onShowGroup(account, $event)"
-                    />
-                    <span>
-                      在联系人会话中同时显示群组邮件
-                      <span class="mt-1 block text-[12px] text-text-tertiary">
-                        关闭时，群组邮件只出现在群组会话中
                       </span>
                     </span>
                   </label>

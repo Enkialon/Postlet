@@ -10,8 +10,8 @@ use crate::domain::entities::{
     Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients,
 };
 use crate::domain::value_objects::{
-    AccountId, ContactId, ConversationId, FolderId, MailAuthKind, MailTlsMode, MessageId,
-    MessageSyncStatus, ReceiveProtocol, SyncStatus, TimestampMs,
+    AccountId, ContactId, EmailAddress, FolderId, MailAuthKind, MailTlsMode, MessageId,
+    MessageSyncStatus, ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
@@ -23,8 +23,8 @@ use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_last_uid, encode_uidvalidity};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, contacts, conversations, folder_states, jobs, locate_pending, mail_transports,
-    messages, mutations,
+    accounts, contacts, folder_states, jobs, locate_pending, mail_transports, messages, mutations,
+    sessions,
 };
 use crate::application::use_cases::aggregate_worker_use_case;
 use crate::application::dto::remote_models::RemoteMessageLocation;
@@ -267,8 +267,8 @@ async fn sync_graph_mail(
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
                     changeset.message_ids.push(mid.clone());
-                    if let Some(cid) = cid {
-                        changeset.conversation_ids.push(cid);
+                    if let Some(sid) = cid {
+                        changeset.session_ids.push(sid);
                     }
                     if is_new && !is_draft {
                         changeset.new_incoming_ids.push(mid);
@@ -306,13 +306,13 @@ async fn sync_graph_mail(
     // 事务外处理到期核对
     let locate_changes = process_due_locates(db, paths, &cmd.account_id, 32).await?;
     changeset.message_ids.extend(locate_changes.message_ids);
-    changeset.conversation_ids.extend(locate_changes.conversation_ids);
+    changeset.session_ids.extend(locate_changes.session_ids);
 
     if is_initial {
         changeset.origin = ChangeOrigin::InitialSync;
     }
     let mut seen = HashSet::new();
-    changeset.conversation_ids.retain(|c| seen.insert(c.clone()));
+    changeset.session_ids.retain(|c| seen.insert(c.clone()));
     Ok(changeset)
 }
 
@@ -411,8 +411,8 @@ async fn sync_imap_mail(
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
                     changeset.message_ids.push(mid.clone());
-                    if let Some(cid) = cid {
-                        changeset.conversation_ids.push(cid);
+                    if let Some(sid) = cid {
+                        changeset.session_ids.push(sid);
                     }
                     if is_new && !is_draft {
                         changeset.new_incoming_ids.push(mid);
@@ -484,9 +484,8 @@ async fn sync_imap_mail(
     if is_initial {
         changeset.origin = ChangeOrigin::InitialSync;
     }
-    // 去重 conversation_ids
     let mut seen = HashSet::new();
-    changeset.conversation_ids.retain(|c| seen.insert(c.clone()));
+    changeset.session_ids.retain(|c| seen.insert(c.clone()));
     Ok(changeset)
 }
 
@@ -521,7 +520,7 @@ async fn upsert_remote_message(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     remote: &RemoteMessage,
-) -> Result<(MessageId, Option<ConversationId>, bool), AppError> {
+) -> Result<(MessageId, Option<SessionId>, bool), AppError> {
     let existing = messages::get_by_graph_id(conn, account_id, &remote.graph_id)
         .await
         .map_err(AppError::from)?;
@@ -564,15 +563,15 @@ async fn upsert_remote_message(
         jobs::enqueue_or_reset(conn, account_id, &bundle.message.id, now_ms())
             .await
             .map_err(AppError::from)?;
-        return Ok((bundle.message.id, None, false));
+        return Ok((bundle.message.id, Some(bundle.message.session_id), false));
     }
 
-    let self_email = accounts::get(conn, account_id)
+    let account = accounts::get(conn, account_id)
         .await
         .map_err(AppError::from)?
-        .map(|a| a.email);
-    let is_outbound = match (&remote.from_address, &self_email) {
-        (Some(from), Some(me)) => from.as_str() == me.as_str(),
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    let is_outbound = match &remote.from_address {
+        Some(from) => from.as_str() == account.email.as_str(),
         _ => false,
     };
 
@@ -590,21 +589,29 @@ async fn upsert_remote_message(
         remote.body_content.clone()
     };
 
+    let now = now_ms();
+    // 已有保留 session；新建则按父信 / 对端地址建临时私聊 Session
+    let session_id = if let Some(ref ex) = existing {
+        ex.message.session_id.clone()
+    } else {
+        provisional_session_id(conn, account_id, remote, &account.email, is_outbound, now).await?
+    };
+
     let message = Message {
         id: local_id.clone(),
         account_id: account_id.clone(),
+        session_id: session_id.clone(),
         graph_id: Some(remote.graph_id.clone()),
-        thread_id: remote.thread_id.clone(),
         graph_change_key: remote.graph_change_key.clone(),
         internet_message_id: remote.internet_message_id.clone(),
-        conversation_index: remote.conversation_index.clone(),
+        in_reply_to: remote.in_reply_to.clone(),
         subject: remote.subject.clone(),
         body_preview: remote.body_preview.clone(),
         body_content_type: remote.body_content_type,
         body_content,
         from_address: remote.from_address.clone(),
         from_name: remote.from_name.clone(),
-        received_at: remote.received_at.or(Some(now_ms())),
+        received_at: remote.received_at.or(Some(now)),
         sent_at: remote.sent_at,
         created_at_graph: remote.created_at_graph,
         is_read,
@@ -615,7 +622,7 @@ async fn upsert_remote_message(
         folder_id: remote.folder_id.clone(),
         parent_folder_name: remote.parent_folder_name.clone(),
         sync_status: MessageSyncStatus::Synced,
-        local_updated_at: now_ms(),
+        local_updated_at: now,
         remote_updated_at: remote.remote_updated_at,
     };
     let recipients: Vec<_> = remote
@@ -642,13 +649,62 @@ async fn upsert_remote_message(
 
     // 投影交由聚合 Worker；同事务入队避免丢任务
     if !message.is_draft {
-        jobs::enqueue_or_reset(conn, account_id, &local_id, now_ms())
+        jobs::enqueue_or_reset(conn, account_id, &local_id, now)
             .await
             .map_err(AppError::from)?;
     }
 
-    let _ = is_outbound;
-    Ok((local_id, None, is_new))
+    Ok((local_id, Some(session_id), is_new))
+}
+
+/// 同步落库前的临时 Session：父信优先，否则对端私聊，否则本账户地址。
+async fn provisional_session_id(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    remote: &RemoteMessage,
+    self_email: &EmailAddress,
+    is_outbound: bool,
+    now: TimestampMs,
+) -> Result<SessionId, AppError> {
+    if let Some(irt) = remote
+        .in_reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let first = irt.split_whitespace().next().unwrap_or(irt).trim();
+        if let Some(parent) = messages::find_by_internet_message_id(conn, account_id, first)
+            .await
+            .map_err(AppError::from)?
+        {
+            if let Some(root) =
+                sessions::resolve_root(conn, account_id, &parent.message.session_id)
+                    .await
+                    .map_err(AppError::from)?
+            {
+                return Ok(root.id);
+            }
+        }
+    }
+
+    let peer = if is_outbound {
+        remote
+            .recipients
+            .iter()
+            .find(|r| {
+                matches!(
+                    r.role,
+                    crate::domain::value_objects::RecipientRole::To
+                        | crate::domain::value_objects::RecipientRole::Cc
+                )
+            })
+            .map(|r| r.normalized_address.clone())
+            .or_else(|| remote.from_address.clone())
+    } else {
+        remote.from_address.clone()
+    };
+    let address = peer.unwrap_or_else(|| self_email.clone());
+    aggregate_worker_use_case::ensure_provisional_private(conn, account_id, &address, now).await
 }
 
 pub async fn trigger_contact_sync(
@@ -795,6 +851,7 @@ pub async fn process_due_locates(
                         .map_err(AppError::from)?
                 {
                     let mid = existing.message.id.clone();
+                    let sid = existing.message.session_id.clone();
                     let mut msg = existing.message;
                     msg.sync_status = MessageSyncStatus::DeletedRemote;
                     msg.local_updated_at = now_ms();
@@ -807,17 +864,10 @@ pub async fn process_due_locates(
                     )
                     .await
                     .map_err(AppError::from)?;
-                    for cid in conversations::find_conversation_ids_by_message(
-                        &mut tx, account_id, &mid,
-                    )
-                    .await
-                    .map_err(AppError::from)?
-                    {
-                        conversations::recompute_projection(&mut tx, account_id, &cid)
-                            .await
-                            .map_err(AppError::from)?;
-                        changeset.conversation_ids.push(cid);
-                    }
+                    sessions::recompute_projection(&mut tx, account_id, &sid)
+                        .await
+                        .map_err(AppError::from)?;
+                    changeset.session_ids.push(sid);
                     changeset.message_ids.push(mid);
                 }
                 tx.commit().await?;

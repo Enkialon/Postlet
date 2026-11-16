@@ -38,7 +38,7 @@ useSyncStatus({
   onForegroundRefresh: () => {
     if (nav.page.value === 'conversations') {
       void conversations.refreshSoft();
-      if (nav.conversationId.value) void messages.loadInitial();
+      if (nav.sessionId.value) void messages.loadInitial();
     }
   },
 });
@@ -94,13 +94,13 @@ const narrow = computed(() => width.value < 760);
 const showList = computed(() => {
   if (nav.page.value !== 'conversations') return false;
   if (!narrow.value) return true;
-  return nav.narrowShowList.value || !nav.conversationId.value;
+  return nav.narrowShowList.value || !nav.sessionId.value;
 });
 
 const showReader = computed(() => {
   if (nav.page.value !== 'conversations') return false;
   if (!narrow.value) return true;
-  return !nav.narrowShowList.value && Boolean(nav.conversationId.value);
+  return !nav.narrowShowList.value && Boolean(nav.sessionId.value);
 });
 
 const listStyle = computed(() =>

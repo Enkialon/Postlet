@@ -29,7 +29,6 @@ export const zhCN = {
   全部: '全部',
   欢迎使用_Postlet: '欢迎使用 Postlet',
   欢迎说明: '以联系人与会话为中心的 Outlook 邮件客户端。',
-  '在联系人会话中同时显示群组邮件': '在联系人会话中同时显示群组邮件',
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

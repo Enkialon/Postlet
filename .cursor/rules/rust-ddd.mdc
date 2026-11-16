@@ -18,9 +18,9 @@ async fn list_mail() { graph_client.mail()... }
 
 // ✅ GOOD — IPC 胶水 → 用例；Graph 在 infrastructure
 #[tauri::command]
-async fn list_conversations(svc: State<'_, ConversationService>) -> Result<Vec<ConversationDto>, AppError> {
-    Ok(svc.list_for_active_contact().await?.into_iter().map(Into::into).collect())
+async fn list_sessions(svc: State<'_, SessionService>) -> Result<Vec<SessionDto>, AppError> {
+    Ok(svc.list_for_active_account().await?.into_iter().map(Into::into).collect())
 }
 ```
 
-领域以 `Contact` / `Conversation` / `Message` 为核心。
+领域以 `Session` 为核心；`Contact` / `Group` 是会话投影；`Message` 只挂 `session_id`。

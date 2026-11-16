@@ -123,7 +123,7 @@ onMounted(async () => {
 });
 
 watch(
-  () => [nav.accountId.value, nav.conversationId.value] as const,
+  () => [nav.accountId.value, nav.sessionId.value] as const,
   async () => {
     await reloadDraft();
   },

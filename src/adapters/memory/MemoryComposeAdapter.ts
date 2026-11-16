@@ -10,11 +10,7 @@ import type {
   MessageRecipient,
   MessageWithRecipients,
 } from '../../domain/entities';
-import type {
-  AccountId,
-  ConversationId,
-  MessageId,
-} from '../../domain/types';
+import type { AccountId, MessageId, SessionId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
 function stripHtml(html: string): string {
@@ -60,24 +56,24 @@ export class MemoryComposeAdapter implements ComposePort {
 
   constructor(private readonly store: MemoryStore) {}
 
-  private draftKey(accountId: AccountId, conversationId: ConversationId): string {
-    return `${accountId}:${conversationId}`;
+  private draftKey(accountId: AccountId, sessionId: SessionId): string {
+    return `${accountId}:${sessionId}`;
   }
 
   async getDraft(
     accountId: AccountId,
-    conversationId: ConversationId,
+    sessionId: SessionId,
   ): Promise<ComposeDraft | null> {
     this.store.requireAccount(accountId);
-    return this.drafts.get(this.draftKey(accountId, conversationId)) ?? null;
+    return this.drafts.get(this.draftKey(accountId, sessionId)) ?? null;
   }
 
   async saveDraft(cmd: SaveComposeDraftCommand): Promise<ComposeDraft> {
     this.store.requireAccount(cmd.account_id);
-    const key = this.draftKey(cmd.account_id, cmd.conversation_id);
+    const key = this.draftKey(cmd.account_id, cmd.session_id);
     const draft: ComposeDraft = {
       account_id: cmd.account_id,
-      conversation_id: cmd.conversation_id,
+      session_id: cmd.session_id,
       reply_to_message_id: cmd.reply_to_message_id,
       to: normalizeRecipients(cmd.to, this.store),
       cc: normalizeRecipients(cmd.cc, this.store),
@@ -91,22 +87,16 @@ export class MemoryComposeAdapter implements ComposePort {
     return draft;
   }
 
-  async clearDraft(
-    accountId: AccountId,
-    conversationId: ConversationId,
-  ): Promise<void> {
+  async clearDraft(accountId: AccountId, sessionId: SessionId): Promise<void> {
     this.store.requireAccount(accountId);
-    this.drafts.delete(this.draftKey(accountId, conversationId));
+    this.drafts.delete(this.draftKey(accountId, sessionId));
   }
 
   async send(cmd: SendComposedMailCommand): Promise<MessageWithRecipients> {
     const account = this.store.requireAccount(cmd.account_id);
-    const convKey = this.store.conversationKey(
-      cmd.account_id,
-      cmd.conversation_id,
-    );
-    const conversation = this.store.conversations.get(convKey);
-    if (!conversation) this.store.failNotFound('会话不存在');
+    const sessKey = this.store.sessionKey(cmd.account_id, cmd.session_id);
+    const session = this.store.sessions.get(sessKey);
+    if (!session || session.merged_into_id) this.store.failNotFound('会话不存在');
 
     const to = normalizeRecipients(cmd.to, this.store);
     const cc = normalizeRecipients(cmd.cc, this.store);
@@ -120,7 +110,7 @@ export class MemoryComposeAdapter implements ComposePort {
       this.store.failValidation('正文或附件不能为空');
     }
 
-    let threadId: string | null = null;
+    let inReplyTo: string | null = null;
     let subject = cmd.subject.trim();
 
     if (cmd.reply_to_message_id) {
@@ -132,7 +122,9 @@ export class MemoryComposeAdapter implements ComposePort {
       if (!replyMsg || replyMsg.sync_status === 'deleted_remote') {
         this.store.failNotFound('回复目标邮件不存在');
       }
-      threadId = replyMsg.thread_id ?? this.store.nextId('thread');
+      inReplyTo =
+        replyMsg.internet_message_id ??
+        `local:${replyMsg.id}`;
       if (!subject) subject = replySubject(replyMsg.subject);
     }
 
@@ -141,11 +133,11 @@ export class MemoryComposeAdapter implements ComposePort {
     const message: Message = {
       id: messageId,
       account_id: cmd.account_id,
+      session_id: cmd.session_id,
       graph_id: null,
-      thread_id: threadId,
       graph_change_key: null,
       internet_message_id: null,
-      conversation_index: null,
+      in_reply_to: inReplyTo,
       subject,
       body_preview: plain.slice(0, 160),
       body_content_type: 'html',
@@ -190,13 +182,8 @@ export class MemoryComposeAdapter implements ComposePort {
     const msgKey = this.store.messageKey(cmd.account_id, messageId);
     this.store.messages.set(msgKey, message);
     this.store.recipients.set(msgKey, recipients);
-
-    const ids = this.store.conversationMessages.get(convKey) ?? [];
-    ids.unshift(messageId);
-    this.store.conversationMessages.set(convKey, ids);
-    this.store.recomputeConversation(cmd.account_id, cmd.conversation_id);
-
-    this.drafts.delete(this.draftKey(cmd.account_id, cmd.conversation_id));
+    this.store.recomputeSession(cmd.account_id, cmd.session_id);
+    this.drafts.delete(this.draftKey(cmd.account_id, cmd.session_id));
 
     return { message, recipients };
   }

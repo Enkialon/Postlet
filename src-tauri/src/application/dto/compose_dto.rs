@@ -1,6 +1,6 @@
 //! 写信草稿 / 发送命令 DTO（与前端 domain/dto 同形）
 
-use crate::domain::value_objects::{AccountId, ConversationId, EmailAddress, MessageId, TimestampMs};
+use crate::domain::value_objects::{AccountId, EmailAddress, MessageId, SessionId, TimestampMs};
 
 /// 写信附件草稿（仅元数据）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -22,8 +22,8 @@ pub struct ComposeRecipientRef {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ComposeDraft {
     pub account_id: AccountId,
-    pub conversation_id: ConversationId,
-    /// 显式回复目标；None = 新邮件，不挂旧线程
+    pub session_id: SessionId,
+    /// 显式回复目标；None = 新邮件
     pub reply_to_message_id: Option<MessageId>,
     pub to: Vec<ComposeRecipientRef>,
     pub cc: Vec<ComposeRecipientRef>,
@@ -38,7 +38,7 @@ pub struct ComposeDraft {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SaveComposeDraftCommand {
     pub account_id: AccountId,
-    pub conversation_id: ConversationId,
+    pub session_id: SessionId,
     pub reply_to_message_id: Option<MessageId>,
     pub to: Vec<ComposeRecipientRef>,
     pub cc: Vec<ComposeRecipientRef>,
@@ -52,7 +52,7 @@ pub struct SaveComposeDraftCommand {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SendComposedMailCommand {
     pub account_id: AccountId,
-    pub conversation_id: ConversationId,
+    pub session_id: SessionId,
     pub reply_to_message_id: Option<MessageId>,
     pub to: Vec<ComposeRecipientRef>,
     pub cc: Vec<ComposeRecipientRef>,

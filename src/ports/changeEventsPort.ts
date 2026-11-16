@@ -11,7 +11,7 @@ export interface MailChangedEvent {
   account_id: string;
   generation: number;
   origin: ChangeOrigin;
-  conversation_ids: string[];
+  session_ids: string[];
   message_ids: string[];
   new_incoming_count: number;
 }

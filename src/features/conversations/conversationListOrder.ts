@@ -1,11 +1,14 @@
-import type { ConversationListItem } from '../../domain/dto';
+import type { SessionListItem } from '../../domain/dto';
 
 export const LIST_TOP_ENTER_PX = 60;
 export const LIST_TOP_LEAVE_PX = 100;
 
-export function conversationListKey(item: ConversationListItem): string {
-  return `${item.conversation.account_id}:${item.conversation.id}`;
+export function sessionListKey(item: SessionListItem): string {
+  return `${item.session.account_id}:${item.session.id}`;
 }
+
+/** @deprecated 兼容旧名 */
+export const conversationListKey = sessionListKey;
 
 export function isScrollAtTop(
   scrollTop: number,
@@ -19,25 +22,26 @@ export function isScrollAtTop(
 
 /** 保守：仅当最新消息 ID 变化且非 outbound 时视为「新来信活动」 */
 export function isLikelyNewIncomingActivity(
-  previous: ConversationListItem | undefined,
-  next: ConversationListItem,
+  previous: SessionListItem | undefined,
+  next: SessionListItem,
 ): boolean {
   const preview = next.last_message_preview;
   if (!preview || preview.is_outbound) return false;
-  const nextId = next.conversation.last_message_id;
+  const nextId = next.session.last_message_id;
   if (!nextId) return false;
   if (!previous) return true;
-  return previous.conversation.last_message_id !== nextId;
+  return previous.session.last_message_id !== nextId;
 }
 
-export function mergeConversationListItem(
-  existing: ConversationListItem | undefined,
-  next: ConversationListItem,
-): ConversationListItem {
+export function mergeSessionListItem(
+  existing: SessionListItem | undefined,
+  next: SessionListItem,
+): SessionListItem {
   if (!existing) {
     return {
       ...next,
-      conversation: { ...next.conversation },
+      session: { ...next.session },
+      display_name: next.display_name,
       last_message_preview: next.last_message_preview
         ? { ...next.last_message_preview }
         : null,
@@ -45,7 +49,8 @@ export function mergeConversationListItem(
       group_name: next.group_name,
     };
   }
-  Object.assign(existing.conversation, next.conversation);
+  Object.assign(existing.session, next.session);
+  existing.display_name = next.display_name;
   existing.contact_display_name = next.contact_display_name;
   existing.group_name = next.group_name;
   if (next.last_message_preview) {
@@ -60,9 +65,12 @@ export function mergeConversationListItem(
   return existing;
 }
 
-export interface ApplyConversationSnapshotInput {
-  snapshot: ConversationListItem[];
-  previousByKey: Map<string, ConversationListItem>;
+/** @deprecated 兼容旧名 */
+export const mergeConversationListItem = mergeSessionListItem;
+
+export interface ApplySessionSnapshotInput {
+  snapshot: SessionListItem[];
+  previousByKey: Map<string, SessionListItem>;
   previousCanonicalOrder: string[];
   previousDisplayOrder: string[];
   previousPendingActivityKeys: string[];
@@ -71,8 +79,8 @@ export interface ApplyConversationSnapshotInput {
   forceApplyOrder: boolean;
 }
 
-export interface ApplyConversationSnapshotResult {
-  byKey: Map<string, ConversationListItem>;
+export interface ApplySessionSnapshotResult {
+  byKey: Map<string, SessionListItem>;
   canonicalOrder: string[];
   displayOrder: string[];
   pendingActivityKeys: string[];
@@ -82,9 +90,9 @@ export interface ApplyConversationSnapshotResult {
 /**
  * 将后端会话页合并进前端状态：始终更新数据；按是否在顶部决定是否应用排序。
  */
-export function applyConversationSnapshot(
-  input: ApplyConversationSnapshotInput,
-): ApplyConversationSnapshotResult {
+export function applySessionSnapshot(
+  input: ApplySessionSnapshotInput,
+): ApplySessionSnapshotResult {
   const {
     snapshot,
     previousByKey,
@@ -95,15 +103,15 @@ export function applyConversationSnapshot(
     forceApplyOrder,
   } = input;
 
-  const canonicalOrder = snapshot.map(conversationListKey);
+  const canonicalOrder = snapshot.map(sessionListKey);
   const snapshotKeySet = new Set(canonicalOrder);
   const prevCanonicalSet = new Set(previousCanonicalOrder);
 
-  const byKey = new Map<string, ConversationListItem>();
+  const byKey = new Map<string, SessionListItem>();
   const activity: string[] = [];
 
   for (const item of snapshot) {
-    const key = conversationListKey(item);
+    const key = sessionListKey(item);
     const prev = previousByKey.get(key);
     if (
       !forceApplyOrder &&
@@ -112,14 +120,13 @@ export function applyConversationSnapshot(
     ) {
       activity.push(key);
     }
-    byKey.set(key, mergeConversationListItem(prev, item));
+    byKey.set(key, mergeSessionListItem(prev, item));
   }
 
-  // 冻结时保留 loadMore 带入、且仍在 previousByKey 中的项
   if (!forceApplyOrder && !atTop) {
     for (const key of previousDisplayOrder) {
       if (byKey.has(key) || snapshotKeySet.has(key)) continue;
-      if (prevCanonicalSet.has(key)) continue; // 曾在首页、现已不在 → 删除
+      if (prevCanonicalSet.has(key)) continue;
       const kept = previousByKey.get(key);
       if (kept) byKey.set(key, kept);
     }
@@ -154,13 +161,16 @@ export function applyConversationSnapshot(
   };
 }
 
-export function appendConversationPage(
-  previousByKey: Map<string, ConversationListItem>,
+/** @deprecated 兼容旧名 */
+export const applyConversationSnapshot = applySessionSnapshot;
+
+export function appendSessionPage(
+  previousByKey: Map<string, SessionListItem>,
   previousDisplayOrder: string[],
   previousCanonicalOrder: string[],
-  pageItems: ConversationListItem[],
+  pageItems: SessionListItem[],
 ): {
-  byKey: Map<string, ConversationListItem>;
+  byKey: Map<string, SessionListItem>;
   displayOrder: string[];
   canonicalOrder: string[];
 } {
@@ -169,8 +179,8 @@ export function appendConversationPage(
   const seen = new Set(displayOrder);
 
   for (const item of pageItems) {
-    const key = conversationListKey(item);
-    byKey.set(key, mergeConversationListItem(byKey.get(key), item));
+    const key = sessionListKey(item);
+    byKey.set(key, mergeSessionListItem(byKey.get(key), item));
     if (!seen.has(key)) {
       displayOrder.push(key);
       seen.add(key);
@@ -184,11 +194,14 @@ export function appendConversationPage(
   };
 }
 
+/** @deprecated 兼容旧名 */
+export const appendConversationPage = appendSessionPage;
+
 export function itemsFromDisplayOrder(
-  byKey: Map<string, ConversationListItem>,
+  byKey: Map<string, SessionListItem>,
   displayOrder: string[],
-): ConversationListItem[] {
-  const out: ConversationListItem[] = [];
+): SessionListItem[] {
+  const out: SessionListItem[] = [];
   for (const key of displayOrder) {
     const item = byKey.get(key);
     if (item) out.push(item);

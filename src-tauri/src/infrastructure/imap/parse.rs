@@ -20,7 +20,10 @@ pub fn parse_rfc822(
     let headers = &parsed.headers;
     let subject = headers.get_first_value("Subject").unwrap_or_default();
     let message_id = headers.get_first_value("Message-ID");
-    let in_reply_to = headers.get_first_value("In-Reply-To");
+    let in_reply_to = headers
+        .get_first_value("In-Reply-To")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let from_raw = headers.get_first_value("From").unwrap_or_default();
     let (from_name, from_address) = split_mailbox(&from_raw);
 
@@ -47,12 +50,9 @@ pub fn parse_rfc822(
 
     Ok(RemoteMessage {
         graph_id: remote_id(folder, uid),
-        thread_id: in_reply_to
-            .as_deref()
-            .map(|s| crate::domain::value_objects::ThreadId::new(s.trim().to_string())),
         graph_change_key: Some(format!("uid:{uid}")),
         internet_message_id: message_id,
-        conversation_index: None,
+        in_reply_to,
         subject,
         body_preview: preview,
         body_content_type,

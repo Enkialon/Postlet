@@ -1,20 +1,18 @@
-//! 聚合后台用例：领取 jobs → decide_aggregation → 写投影 → complete。
+//! 聚合后台用例：领取 jobs → decide_aggregation → 写 session_id → complete。
 
 use crate::application::dto::{AggregateClaim, ChangeOrigin, ChangeSet};
 use crate::application::error::AppError;
-use crate::domain::entities::{
-    Contact, Conversation, ConversationMessageLink, Group, GroupParticipant, GroupThread,
-    MessageWithRecipients,
-};
+use crate::domain::entities::{Contact, Group, GroupParticipant, MessageWithRecipients};
 use crate::domain::services::{
     decide_aggregation, resolve_self_addresses, AggregationContext, AggregationPlan, GroupTarget,
+    SessionTarget,
 };
 use crate::domain::value_objects::{
-    AccountId, AggregateJobStatus, AggregationOutcome, ContactId, ConversationId, ConversationKind,
-    EmailAddress, GroupId, GroupSource, MessageSyncStatus, TimestampMs,
+    AccountId, AggregateJobStatus, AggregationOutcome, ContactId, EmailAddress, GroupId,
+    GroupSource, MessageSyncStatus, SessionId, TimestampMs,
 };
 use crate::infrastructure::repository::{
-    accounts, contacts, conversations, groups, jobs, messages,
+    accounts, contacts, groups, jobs, messages, sessions,
 };
 use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
@@ -103,7 +101,7 @@ pub async fn process_available_jobs(
                         match &mut changeset_acc {
                             Some(acc) => {
                                 acc.message_ids.extend(cs.message_ids);
-                                acc.conversation_ids.extend(cs.conversation_ids);
+                                acc.session_ids.extend(cs.session_ids);
                                 acc.new_incoming_ids.extend(cs.new_incoming_ids);
                             }
                             None => changeset_acc = Some(cs),
@@ -111,7 +109,6 @@ pub async fn process_available_jobs(
                     }
                 }
                 Err(e) => {
-                    // aggregate_message 内部已写 retry/fail；此处仅继续
                     let _ = e;
                 }
             }
@@ -120,7 +117,7 @@ pub async fn process_available_jobs(
 
     if let (Some(dispatcher), Some(mut cs)) = (changes, changeset_acc) {
         let mut seen = HashSet::new();
-        cs.conversation_ids.retain(|c| seen.insert(c.clone()));
+        cs.session_ids.retain(|c| seen.insert(c.clone()));
         if !cs.is_empty() {
             dispatcher.dispatch(cs);
         }
@@ -137,9 +134,8 @@ pub async fn aggregate_message(
 ) -> Result<(AggregationOutcome, Option<ChangeSet>), AppError> {
     let mut tx = db.begin().await?;
 
-    // 校验仍持有该代次租约
     let row = sqlx::query_as::<_, (i64, String, Option<String>)>(
-        "SELECT generation, status, lease_token FROM conversation_aggregate_jobs
+        "SELECT generation, status, lease_token FROM session_aggregate_jobs
          WHERE account_id = ? AND message_id = ?",
     )
     .bind(claim.account_id.as_str())
@@ -199,29 +195,14 @@ pub async fn aggregate_message(
         return Ok((AggregationOutcome::Skipped, None));
     }
 
-    let thread_group = if let Some(tid) = &bundle.message.thread_id {
-        if let Some(link) = groups::get_thread_link(&mut tx, &claim.account_id, tid)
-            .await
-            .map_err(AppError::from)?
-        {
-            groups::resolve_root(&mut tx, &claim.account_id, &link.group_id)
-                .await
-                .map_err(AppError::from)?
-                .map(|g| g.id)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let parent_session_id =
+        resolve_parent_session(&mut tx, &claim.account_id, &bundle).await?;
 
     let self_set = resolve_self_addresses(&account);
     let plan = match decide_aggregation(&AggregationContext {
         message: bundle.clone(),
         self_set,
-        thread_group,
-        show_group_messages_in_contact_conversation: account
-            .show_group_messages_in_contact_conversation,
+        parent_session_id,
     }) {
         Ok(p) => p,
         Err(e) => {
@@ -250,7 +231,6 @@ pub async fn aggregate_message(
             Ok((plan.outcome, Some(cs)))
         }
         Err(e) => {
-            // 可恢复 → retry；否则永久失败
             let retryable = matches!(
                 e.code,
                 crate::application::error::AppErrorCode::Network
@@ -282,6 +262,40 @@ pub async fn aggregate_message(
     }
 }
 
+/// in_reply_to → internet_message_id → session resolve_root
+async fn resolve_parent_session(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    bundle: &MessageWithRecipients,
+) -> Result<Option<SessionId>, AppError> {
+    let Some(irt) = bundle
+        .message
+        .in_reply_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    // In-Reply-To 可能含多个 id；取第一个
+    let first = irt
+        .split_whitespace()
+        .next()
+        .unwrap_or(irt)
+        .trim()
+        .to_string();
+    let Some(parent) = messages::find_by_internet_message_id(conn, account_id, &first)
+        .await
+        .map_err(AppError::from)?
+    else {
+        return Ok(None);
+    };
+    let root = sessions::resolve_root(conn, account_id, &parent.message.session_id)
+        .await
+        .map_err(AppError::from)?;
+    Ok(root.map(|s| s.id))
+}
+
 async fn apply_plan(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
@@ -290,131 +304,96 @@ async fn apply_plan(
 ) -> Result<ChangeSet, AppError> {
     let now = now_ms();
     let message_id = &bundle.message.id;
+    let old_session_id = bundle.message.session_id.clone();
     let mut touched: HashSet<String> = HashSet::new();
-    let mut desired: HashSet<String> = HashSet::new();
+    touched.insert(old_session_id.as_str().to_string());
 
-    // --- 联系人会话 ---
-    for addr in &plan.contact_addresses {
-        let observed_name = plan
-            .observed_participants
-            .iter()
-            .find(|(a, _)| a == addr)
-            .map(|(_, n)| n.as_str());
-        let cid =
-            ensure_contact_conversation(conn, account_id, addr, observed_name, now).await?;
-        desired.insert(cid.as_str().to_string());
-        conversations::attach_messages(
-            conn,
-            &[ConversationMessageLink {
-                account_id: account_id.clone(),
-                conversation_id: cid.clone(),
-                message_id: message_id.clone(),
-                attached_at: now,
-            }],
-        )
-        .await
-        .map_err(AppError::from)?;
-        touched.insert(cid.into_inner());
-    }
+    let Some(target) = &plan.session_target else {
+        // Skipped：保持原 session，仍重算投影
+        sessions::recompute_projection(conn, account_id, &old_session_id)
+            .await
+            .map_err(AppError::from)?;
+        return Ok(ChangeSet {
+            account_id: account_id.clone(),
+            session_ids: vec![old_session_id],
+            message_ids: vec![message_id.clone()],
+            new_incoming_ids: Vec::new(),
+            origin: ChangeOrigin::Rebuild,
+        });
+    };
 
-    // --- 群组会话 ---
-    if let Some(target) = &plan.group_target {
-        let group_id = match target {
-            GroupTarget::Existing(id) => {
-                groups::resolve_root(conn, account_id, id)
-                    .await
-                    .map_err(AppError::from)?
-                    .map(|g| g.id)
-                    .ok_or_else(|| AppError::not_found(format!("群组不存在: {id}")))?
-            }
-            GroupTarget::Create { members } => {
-                create_auto_group(conn, account_id, members, &plan.observed_participants, now)
-                    .await?
-            }
-        };
-
-        if let Some(tid) = &bundle.message.thread_id {
-            groups::upsert_thread_link(
-                conn,
-                &GroupThread {
+    let session_id = match target {
+        SessionTarget::Existing(sid) => {
+            let root = sessions::resolve_root(conn, account_id, sid)
+                .await
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::not_found(format!("会话不存在: {sid}")))?;
+            root.id
+        }
+        SessionTarget::Private { address } => {
+            let observed_name = plan
+                .observed_participants
+                .iter()
+                .find(|(a, _)| a == address)
+                .map(|(_, n)| n.as_str());
+            ensure_private_session(conn, account_id, address, observed_name, now).await?
+        }
+        SessionTarget::Group { target } => {
+            let group_id = match target {
+                GroupTarget::Existing(id) => id.clone(),
+                GroupTarget::Create { members } => {
+                    create_auto_group(conn, account_id, members, &plan.observed_participants, now)
+                        .await?
+                }
+            };
+            // 观测成员
+            let mut parts = Vec::new();
+            for (addr, name) in &plan.observed_participants {
+                parts.push(GroupParticipant {
                     account_id: account_id.clone(),
                     group_id: group_id.clone(),
-                    thread_id: tid.clone(),
-                    linked_at: now,
-                },
-            )
+                    normalized_address: addr.clone(),
+                    display_name: name.clone(),
+                    is_observed: true,
+                    is_send_member: false,
+                    first_seen_at: now,
+                    last_seen_at: now,
+                });
+            }
+            if !parts.is_empty() {
+                groups::upsert_participants(conn, &parts)
+                    .await
+                    .map_err(AppError::from)?;
+            }
+            ensure_group_session(conn, account_id, &group_id, now).await?
+        }
+    };
+
+    if session_id != old_session_id {
+        messages::set_session_id(conn, account_id, message_id, &session_id)
             .await
             .map_err(AppError::from)?;
-        }
-
-        // 观测成员
-        let mut parts = Vec::new();
-        for (addr, name) in &plan.observed_participants {
-            parts.push(GroupParticipant {
-                account_id: account_id.clone(),
-                group_id: group_id.clone(),
-                normalized_address: addr.clone(),
-                display_name: name.clone(),
-                is_observed: true,
-                is_send_member: false,
-                first_seen_at: now,
-                last_seen_at: now,
-            });
-        }
-        if !parts.is_empty() {
-            groups::upsert_participants(conn, &parts)
-                .await
-                .map_err(AppError::from)?;
-        }
-
-        let gconv = ensure_group_conversation(conn, account_id, &group_id, now).await?;
-        desired.insert(gconv.as_str().to_string());
-        conversations::attach_messages(
-            conn,
-            &[ConversationMessageLink {
-                account_id: account_id.clone(),
-                conversation_id: gconv.clone(),
-                message_id: message_id.clone(),
-                attached_at: now,
-            }],
-        )
-        .await
-        .map_err(AppError::from)?;
-        touched.insert(gconv.into_inner());
     }
+    touched.insert(session_id.as_str().to_string());
 
-    // 脱离不在期望集合中的会话附着
-    let current = conversations::find_conversation_ids_by_message(conn, account_id, message_id)
-        .await
-        .map_err(AppError::from)?;
-    for cid in current {
-        if !desired.contains(cid.as_str()) {
-            conversations::detach_messages(conn, account_id, &cid, &[message_id.clone()])
-                .await
-                .map_err(AppError::from)?;
-            touched.insert(cid.into_inner());
-        }
-    }
-
-    let mut conversation_ids = Vec::new();
-    for cid in &touched {
-        let id = ConversationId::new(cid.clone());
-        conversations::recompute_projection(conn, account_id, &id)
+    let mut session_ids = Vec::new();
+    for sid in &touched {
+        let id = SessionId::new(sid.clone());
+        sessions::recompute_projection(conn, account_id, &id)
             .await
             .map_err(AppError::from)?;
-        conversation_ids.push(id);
+        session_ids.push(id);
     }
 
     Ok(ChangeSet {
         account_id: account_id.clone(),
-        conversation_ids,
+        session_ids,
         message_ids: vec![message_id.clone()],
         new_incoming_ids: Vec::new(),
         origin: ChangeOrigin::Rebuild,
     })
 }
 
-/// 邮件里的展示名是否比「邮箱占位」更适合作为联系人昵称。
 fn usable_contact_display_name(name: &str, address: &EmailAddress) -> bool {
     let n = name.trim();
     if n.is_empty() {
@@ -423,22 +402,30 @@ fn usable_contact_display_name(name: &str, address: &EmailAddress) -> bool {
     !n.eq_ignore_ascii_case(address.as_str())
 }
 
-async fn ensure_contact_conversation(
+async fn ensure_private_session(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     peer: &EmailAddress,
     observed_name: Option<&str>,
     now: TimestampMs,
-) -> Result<ConversationId, AppError> {
+) -> Result<SessionId, AppError> {
     let better_name = observed_name
         .map(str::trim)
         .filter(|n| usable_contact_display_name(n, peer));
 
-    if let Some(existing) = conversations::get_contact_conversation(conn, account_id, peer)
+    if let Some(existing) = sessions::get_private_by_address(conn, account_id, peer)
         .await
         .map_err(AppError::from)?
     {
-        if let (Some(name), Some(cid)) = (better_name, existing.contact_id.as_ref()) {
+        let root = if existing.merged_into_id.is_some() {
+            sessions::resolve_root(conn, account_id, &existing.id)
+                .await
+                .map_err(AppError::from)?
+                .unwrap_or(existing)
+        } else {
+            existing
+        };
+        if let (Some(name), Some(cid)) = (better_name, root.contact_id.as_ref()) {
             if let Some(mut contact) = contacts::get(conn, account_id, cid)
                 .await
                 .map_err(AppError::from)?
@@ -452,8 +439,9 @@ async fn ensure_contact_conversation(
                 }
             }
         }
-        return Ok(existing.id);
+        return Ok(root.id);
     }
+
     let contact = if let Some(mut c) = contacts::get_by_address(conn, account_id, peer)
         .await
         .map_err(AppError::from)?
@@ -473,9 +461,7 @@ async fn ensure_contact_conversation(
             id: ContactId::new(Uuid::new_v4().to_string()),
             account_id: account_id.clone(),
             graph_id: None,
-            display_name: better_name
-                .unwrap_or(peer.as_str())
-                .to_owned(),
+            display_name: better_name.unwrap_or(peer.as_str()).to_owned(),
             normalized_address: peer.clone(),
             created_at: now,
             updated_at: now,
@@ -483,62 +469,43 @@ async fn ensure_contact_conversation(
         contacts::upsert(conn, &c).await.map_err(AppError::from)?;
         c
     };
-    let cid = ConversationId::new(format!("conv-{}", Uuid::new_v4()));
-    conversations::upsert(
-        conn,
-        &Conversation {
-            id: cid.clone(),
-            account_id: account_id.clone(),
-            kind: ConversationKind::Contact,
-            normalized_address: Some(peer.clone()),
-            contact_id: Some(contact.id),
-            group_id: None,
-            last_message_at: None,
-            last_message_id: None,
-            unread_count: 0,
-            hidden_at: None,
-            created_at: now,
-            updated_at: now,
-        },
-    )
-    .await
-    .map_err(AppError::from)?;
-    Ok(cid)
+
+    let session = sessions::new_private(
+        account_id.clone(),
+        peer.clone(),
+        Some(contact.id),
+        now,
+    );
+    sessions::upsert(conn, &session)
+        .await
+        .map_err(AppError::from)?;
+    Ok(session.id)
 }
 
-async fn ensure_group_conversation(
+async fn ensure_group_session(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     group_id: &GroupId,
     now: TimestampMs,
-) -> Result<ConversationId, AppError> {
-    if let Some(existing) = conversations::get_group_conversation(conn, account_id, group_id)
+) -> Result<SessionId, AppError> {
+    if let Some(existing) = sessions::get_group_by_group_id(conn, account_id, group_id)
         .await
         .map_err(AppError::from)?
     {
+        if existing.merged_into_id.is_some() {
+            let root = sessions::resolve_root(conn, account_id, &existing.id)
+                .await
+                .map_err(AppError::from)?
+                .unwrap_or(existing);
+            return Ok(root.id);
+        }
         return Ok(existing.id);
     }
-    let cid = ConversationId::new(format!("conv-{}", Uuid::new_v4()));
-    conversations::upsert(
-        conn,
-        &Conversation {
-            id: cid.clone(),
-            account_id: account_id.clone(),
-            kind: ConversationKind::Group,
-            normalized_address: None,
-            contact_id: None,
-            group_id: Some(group_id.clone()),
-            last_message_at: None,
-            last_message_id: None,
-            unread_count: 0,
-            hidden_at: None,
-            created_at: now,
-            updated_at: now,
-        },
-    )
-    .await
-    .map_err(AppError::from)?;
-    Ok(cid)
+    let session = sessions::new_group(account_id.clone(), group_id.clone(), now);
+    sessions::upsert(conn, &session)
+        .await
+        .map_err(AppError::from)?;
+    Ok(session.id)
 }
 
 async fn create_auto_group(
@@ -565,7 +532,6 @@ async fn create_auto_group(
         name_is_manual: false,
         source: GroupSource::Auto,
         send_members_is_manual: false,
-        merged_into_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -597,7 +563,7 @@ async fn create_auto_group(
     Ok(group.id)
 }
 
-/// 将账户内邮件重新入队（显示配置变更后）。
+/// 将账户内邮件重新入队。
 pub async fn requeue_account_messages(
     db: &SqlitePool,
     account_id: &AccountId,
@@ -615,4 +581,14 @@ pub async fn requeue_account_messages(
     }
     tx.commit().await?;
     Ok(ids.len() as u32)
+}
+
+// 供同步路径创建临时私聊 Session
+pub async fn ensure_provisional_private(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    address: &EmailAddress,
+    now: TimestampMs,
+) -> Result<SessionId, AppError> {
+    ensure_private_session(conn, account_id, address, None, now).await
 }

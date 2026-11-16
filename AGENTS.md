@@ -48,7 +48,7 @@ src-tauri/
 1. **依赖方向**：`commands`（薄）→ `application` → `infrastructure`（具体模块函数）/ `domain`（纯规则）；`infrastructure` → `domain`。Application 允许使用 `SqlitePool` 与具体事务。
 2. **domain 零 IO**：不得依赖 `graph-rs-sdk`、IMAP/SMTP 库、`tauri`、文件系统、网络
 3. **Rust 用例与 Repository 使用模块函数**：不注入 Repository / TransactionManager / Policy trait 对象；用例接收 `&SqlitePool`，Repository 借用同一事务连接。Graph / IMAP / SMTP 调用只出现在 `infrastructure`。前端 Port 接口约定不变。
-4. **会话优先模型**：领域核心是 `Contact` / `Conversation` / `Message`，文件夹只是可选投影，不是主导航模型
+4. **会话优先模型**：领域核心是 `Session`（一等公民）；`Contact` / `Group` 是会话关联投影；`Message` 只属一个 `session_id`；文件夹不是主导航
 5. **协议扩展**：在 `infrastructure` 增加对等模块函数（与现有 `graph::mail` 同形），由 application 按账号协议路由；避免重复造第二套同步/存储/调度
 6. 新增能力顺序：领域概念与纯规则 → Repository 模块函数契约 → Application 编排与基础设施实现 →（如需）Tauri command 胶水；跨仓储写入由 Application 控制同一数据库事务。
 7. **不设 `interfaces/`**：真正的入站在前端；Rust `commands/` 只做 IPC，不算业务入站层
@@ -67,7 +67,7 @@ adapters（实现类：调用 RS 桥 / invoke）
 
 强制顺序：
 
-1. **先写接口**（如 `MailPort`、`ContactPort`、`ConversationPort`）
+1. **先写接口**（如 `MailPort`、`ContactPort`、`SessionPort`）
 2. **再写实现类**（如 `TauriMailAdapter`），内部调用 RS 桥
 3. UI / hooks / stores **只依赖接口**，通过 DI / 工厂注入实现
 

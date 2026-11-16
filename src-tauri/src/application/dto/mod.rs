@@ -3,15 +3,15 @@
 mod change_set;
 mod commands;
 mod compose_dto;
-mod conversation_dto;
 mod page;
+mod session_dto;
 mod sync_dto;
 
 pub use change_set::{ChangeOrigin, ChangeSet, MailChangedEvent};
 pub use commands::*;
 pub use compose_dto::*;
-pub use conversation_dto::*;
 pub use page::CursorPage;
+pub use session_dto::*;
 pub use sync_dto::*;
 
 pub mod remote_models;

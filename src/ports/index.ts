@@ -1,7 +1,7 @@
 export type { AccountPort } from './accountPort';
 export type { SyncPort } from './syncPort';
 export type { ContactPort } from './contactPort';
-export type { ConversationPort } from './conversationPort';
+export type { SessionPort } from './sessionPort';
 export type { MessagePort } from './messagePort';
 export type { ComposePort } from './composePort';
 export type { GroupPort } from './groupPort';
@@ -15,7 +15,7 @@ export type {
 import type { AccountPort } from './accountPort';
 import type { SyncPort } from './syncPort';
 import type { ContactPort } from './contactPort';
-import type { ConversationPort } from './conversationPort';
+import type { SessionPort } from './sessionPort';
 import type { MessagePort } from './messagePort';
 import type { ComposePort } from './composePort';
 import type { GroupPort } from './groupPort';
@@ -27,7 +27,7 @@ export interface AppPorts {
   account: AccountPort;
   sync: SyncPort;
   contact: ContactPort;
-  conversation: ConversationPort;
+  session: SessionPort;
   message: MessagePort;
   compose: ComposePort;
   group: GroupPort;

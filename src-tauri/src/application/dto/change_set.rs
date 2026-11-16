@@ -1,12 +1,12 @@
 //! 事务提交后的本地变更摘要：数据范围 + 业务语义（origin）
 
-use crate::domain::value_objects::{AccountId, ConversationId, MessageId};
+use crate::domain::value_objects::{AccountId, MessageId, SessionId};
 
 /// 一次成功提交产生的本地变更（在 commit 之后分发）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeSet {
     pub account_id: AccountId,
-    pub conversation_ids: Vec<ConversationId>,
+    pub session_ids: Vec<SessionId>,
     pub message_ids: Vec<MessageId>,
     /// 本轮真正新增的入站邮件；重复 upsert / outbound / 已读变更不得填入
     pub new_incoming_ids: Vec<MessageId>,
@@ -31,7 +31,7 @@ impl ChangeSet {
     pub fn empty(account_id: AccountId, origin: ChangeOrigin) -> Self {
         Self {
             account_id,
-            conversation_ids: Vec::new(),
+            session_ids: Vec::new(),
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
             origin,
@@ -39,7 +39,7 @@ impl ChangeSet {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.conversation_ids.is_empty()
+        self.session_ids.is_empty()
             && self.message_ids.is_empty()
             && self.new_incoming_ids.is_empty()
     }
@@ -52,7 +52,7 @@ pub struct MailChangedEvent {
     /// 进程内单调；前端丢弃过期 generation
     pub generation: u64,
     pub origin: ChangeOrigin,
-    pub conversation_ids: Vec<String>,
+    pub session_ids: Vec<String>,
     pub message_ids: Vec<String>,
     pub new_incoming_count: usize,
 }
@@ -63,8 +63,8 @@ impl MailChangedEvent {
             account_id: changes.account_id.as_str().to_owned(),
             generation,
             origin: changes.origin,
-            conversation_ids: changes
-                .conversation_ids
+            session_ids: changes
+                .session_ids
                 .iter()
                 .map(|id| id.as_str().to_owned())
                 .collect(),

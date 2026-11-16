@@ -113,9 +113,8 @@ pub async fn upsert_identity(
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
-            include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+            mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
@@ -136,7 +135,6 @@ pub async fn upsert_identity(
     .bind(account.contact_synced_at)
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
-    .bind(account.show_group_messages_in_contact_conversation)
     .bind(account.created_at)
     .bind(account.updated_at)
     .execute(&mut *conn)
@@ -159,9 +157,8 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
-            include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
@@ -173,7 +170,6 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
             contact_synced_at=excluded.contact_synced_at,
             mail_sync_status=excluded.mail_sync_status,
             mail_sync_error=excluded.mail_sync_error,
-            show_group_messages_in_contact_conversation=excluded.show_group_messages_in_contact_conversation,
             is_signed_in=1,
             include_in_all=excluded.include_in_all,
             updated_at=excluded.updated_at",
@@ -189,7 +185,6 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     .bind(account.contact_synced_at)
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
-    .bind(account.show_group_messages_in_contact_conversation)
     .bind(account.include_in_all)
     .bind(account.created_at)
     .bind(account.updated_at)
@@ -297,7 +292,6 @@ pub async fn update_contact_sync_meta(
 pub async fn update_display_settings(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-    show_group_messages_in_contact_conversation: bool,
     include_in_all: bool,
 ) -> Result<(), PortError> {
     let now = std::time::SystemTime::now()
@@ -305,9 +299,8 @@ pub async fn update_display_settings(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let result = sqlx::query(
-        "UPDATE accounts SET show_group_messages_in_contact_conversation = ?, include_in_all = ?, updated_at = ? WHERE id = ?",
+        "UPDATE accounts SET include_in_all = ?, updated_at = ? WHERE id = ?",
     )
-    .bind(show_group_messages_in_contact_conversation)
     .bind(include_in_all)
     .bind(now)
     .bind(account_id.as_str())

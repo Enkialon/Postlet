@@ -219,7 +219,6 @@ export function useSettings() {
   async function updateAccountSettings(
     accountId: AccountId,
     patch: {
-      show_group_messages_in_contact_conversation?: boolean;
       include_in_all?: boolean;
     },
   ): Promise<void> {
@@ -227,9 +226,6 @@ export function useSettings() {
     if (!account || savingId.value) return;
 
     const next = {
-      show_group_messages_in_contact_conversation:
-        patch.show_group_messages_in_contact_conversation ??
-        account.show_group_messages_in_contact_conversation,
       include_in_all: patch.include_in_all ?? account.include_in_all,
     };
     const optimistic: Account = { ...account, ...next };

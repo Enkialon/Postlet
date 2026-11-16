@@ -2,7 +2,7 @@
 
 use crate::domain::value_objects::{
     BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole,
-    ThreadId, TimestampMs,
+    TimestampMs,
 };
 
 /// Delta 未提供的字段：区分「未返回」与「明确清空」
@@ -25,10 +25,10 @@ pub struct RemoteRecipient {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteMessage {
     pub graph_id: GraphImmutableId,
-    pub thread_id: Option<ThreadId>,
     pub graph_change_key: Option<String>,
     pub internet_message_id: Option<String>,
-    pub conversation_index: Option<Vec<u8>>,
+    /// RFC In-Reply-To（若协议可得）
+    pub in_reply_to: Option<String>,
     pub subject: String,
     pub body_preview: String,
     pub body_content_type: BodyContentType,
@@ -106,7 +106,6 @@ pub struct RemoteAccount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteMessagePatch {
     pub graph_id: GraphImmutableId,
-    pub thread_id: RemoteField<Option<ThreadId>>,
     pub subject: RemoteField<String>,
     pub body_preview: RemoteField<String>,
     pub is_read: RemoteField<bool>,

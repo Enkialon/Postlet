@@ -18,7 +18,7 @@ import {
   truncateText,
 } from '../../shared/formatting/format';
 import {
-  conversationListKey,
+  sessionListKey,
   isScrollAtTop,
 } from './conversationListOrder';
 import Avatar from '../../shared/ui/Avatar.vue';
@@ -28,8 +28,8 @@ import ContextMenu, {
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
-import type { ConversationKindFilter } from '../../app/navigation';
-import type { ConversationListItem } from '../../domain/dto';
+import type { SessionKindFilter } from '../../app/navigation';
+import type { SessionListItem } from '../../domain/dto';
 
 const ROW_SIZE = 70;
 
@@ -51,7 +51,7 @@ const {
 const menuOpen = ref(false);
 const menuX = ref(0);
 const menuY = ref(0);
-const menuTarget = ref<ConversationListItem | null>(null);
+const menuTarget = ref<SessionListItem | null>(null);
 const menuItems: ContextMenuItem[] = [{ id: 'hide', label: '隐藏会话' }];
 
 const showAccountHint = computed(() => accounts.value.length > 1);
@@ -63,24 +63,25 @@ const kindWrapRef = ref<HTMLElement | null>(null);
 let boundScrollEl: HTMLElement | null = null;
 let lastAtTop = true;
 
-const kindOptions: { id: ConversationKindFilter; label: string }[] = [
+const kindOptions: { id: SessionKindFilter; label: string }[] = [
   { id: 'all', label: '全部' },
-  { id: 'contact', label: '联系人' },
+  { id: 'private', label: '私聊' },
   { id: 'group', label: '群组' },
 ];
 
 const kindLabel = computed(
   () =>
-    kindOptions.find((o) => o.id === nav.conversationKind.value)?.label ??
+    kindOptions.find((o) => o.id === nav.sessionKind.value)?.label ??
     '全部',
 );
 
 function titleOf(item: (typeof listState.items)[number]): string {
-  if (item.conversation.kind === 'group') {
+  const resolved = item.display_name?.trim();
+  if (resolved) return resolved;
+  if (item.session.kind === 'group') {
     return item.group_name?.trim() || '未命名群组';
   }
-  const addr = item.conversation.normalized_address;
-  // contact 常被建档成邮箱；邮件 from_name（如「Google 安全中心」）作回退
+  const addr = item.session.normalized_address;
   const fromMail =
     item.last_message_preview && !item.last_message_preview.is_outbound
       ? item.last_message_preview.from_name
@@ -106,7 +107,7 @@ const filteredItems = computed(() => {
   if (!q) return listState.items;
   return listState.items.filter((item) => {
     const title = titleOf(item).toLowerCase();
-    const addr = (item.conversation.normalized_address || '').toLowerCase();
+    const addr = (item.session.normalized_address || '').toLowerCase();
     const preview = previewOf(item).toLowerCase();
     return title.includes(q) || addr.includes(q) || preview.includes(q);
   });
@@ -201,8 +202,8 @@ function toggleKindMenu(): void {
   kindOpen.value = !kindOpen.value;
 }
 
-function selectKind(id: ConversationKindFilter): void {
-  nav.setConversationKind(id);
+function selectKind(id: SessionKindFilter): void {
+  nav.setSessionKind(id);
   kindOpen.value = false;
 }
 
@@ -240,22 +241,22 @@ onUnmounted(() => {
   }
 });
 
-function isActive(item: ConversationListItem): boolean {
+function isActive(item: SessionListItem): boolean {
   return (
-    nav.conversationId.value === item.conversation.id &&
-    nav.accountId.value === item.conversation.account_id
+    nav.sessionId.value === item.session.id &&
+    nav.accountId.value === item.session.account_id
   );
 }
 
-function rowKey(item: ConversationListItem | undefined, fallback: string): string {
-  return item ? conversationListKey(item) : fallback;
+function rowKey(item: SessionListItem | undefined, fallback: string): string {
+  return item ? sessionListKey(item) : fallback;
 }
 
-function onSelect(item: ConversationListItem) {
-  void openConversation(item.conversation.account_id, item.conversation.id);
+function onSelect(item: SessionListItem) {
+  void openConversation(item.session.account_id, item.session.id);
 }
 
-function openRowMenu(e: MouseEvent, item: ConversationListItem): void {
+function openRowMenu(e: MouseEvent, item: SessionListItem): void {
   e.preventDefault();
   menuX.value = e.clientX;
   menuY.value = e.clientY;
@@ -273,7 +274,7 @@ function onMenuSelect(id: string): void {
   }
 }
 
-function onKeySelect(e: KeyboardEvent, item: ConversationListItem) {
+function onKeySelect(e: KeyboardEvent, item: SessionListItem) {
   if (e.key === 'Enter') onSelect(item);
 }
 
@@ -341,11 +342,11 @@ function itemClass(active: boolean): string {
             role="option"
             class="block w-full cursor-pointer border-0 bg-transparent px-3 py-1.5 text-left text-[12px] transition-colors duration-150 hover:bg-surface-sidebar-hover"
             :class="
-              nav.conversationKind.value === opt.id
+              nav.sessionKind.value === opt.id
                 ? 'font-medium text-text-primary'
                 : 'text-text-secondary'
             "
-            :aria-selected="nav.conversationKind.value === opt.id"
+            :aria-selected="nav.sessionKind.value === opt.id"
             @click="selectKind(opt.id)"
           >
             {{ opt.label }}
@@ -439,7 +440,7 @@ function itemClass(active: boolean): string {
             <Avatar
               :name="titleOf(filteredItems[row.index]!)"
               :kind="
-                filteredItems[row.index]!.conversation.kind === 'group'
+                filteredItems[row.index]!.session.kind === 'group'
                   ? 'group'
                   : 'contact'
               "
@@ -454,17 +455,17 @@ function itemClass(active: boolean): string {
                   >{{ titleOf(filteredItems[row.index]!) }}</strong
                 >
                 <time
-                  v-if="filteredItems[row.index]!.conversation.last_message_at"
+                  v-if="filteredItems[row.index]!.session.last_message_at"
                   class="shrink-0 text-[11px] tabular-nums text-text-tertiary"
                   :datetime="
                     String(
-                      filteredItems[row.index]!.conversation.last_message_at,
+                      filteredItems[row.index]!.session.last_message_at,
                     )
                   "
                 >
                   {{
                     formatChatTime(
-                      filteredItems[row.index]!.conversation.last_message_at,
+                      filteredItems[row.index]!.session.last_message_at,
                     )
                   }}
                 </time>
@@ -479,14 +480,14 @@ function itemClass(active: boolean): string {
                 </p>
                 <span
                   v-if="
-                    filteredItems[row.index]!.conversation.unread_count > 0
+                    filteredItems[row.index]!.session.unread_count > 0
                   "
                   class="min-w-[1.05rem] shrink-0 rounded-pill bg-unread px-1.5 py-px text-center text-[11px] leading-snug font-medium text-white"
-                  :aria-label="`未读 ${filteredItems[row.index]!.conversation.unread_count}`"
+                  :aria-label="`未读 ${filteredItems[row.index]!.session.unread_count}`"
                 >
                   {{
                     formatUnreadBadge(
-                      filteredItems[row.index]!.conversation.unread_count,
+                      filteredItems[row.index]!.session.unread_count,
                     )
                   }}
                 </span>
@@ -496,14 +497,14 @@ function itemClass(active: boolean): string {
                 class="m-0 truncate text-[10px] leading-none text-text-tertiary"
                 :title="
                   accountLabel(
-                    filteredItems[row.index]!.conversation.account_id,
+                    filteredItems[row.index]!.session.account_id,
                   )
                 "
                 v-no-i18n
               >
                 {{
                   accountLabel(
-                    filteredItems[row.index]!.conversation.account_id,
+                    filteredItems[row.index]!.session.account_id,
                   )
                 }}
               </p>

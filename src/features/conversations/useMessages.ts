@@ -46,8 +46,8 @@ export function useMessages() {
 
   async function loadInitial(): Promise<void> {
     const accountId = nav.accountId.value;
-    const conversationId = nav.conversationId.value;
-    if (!accountId || !conversationId) {
+    const sessionId = nav.sessionId.value;
+    if (!accountId || !sessionId) {
       Object.assign(messageState, createEmptyPageState());
       expandedIds.value = new Set();
       return;
@@ -59,9 +59,9 @@ export function useMessages() {
     expandedIds.value = new Set();
     suppressAutoRead.value = new Set();
     try {
-      const page = await ports.conversation.listMessages({
+      const page = await ports.session.listMessages({
         account_id: accountId,
-        conversation_id: conversationId,
+        session_id: sessionId,
         cursor: null,
         limit: PAGE_SIZE,
         direction: 'older',
@@ -69,12 +69,11 @@ export function useMessages() {
       if (
         version !== messageState.requestVersion ||
         session !== nav.sessionVersion.value ||
-        conversationId !== nav.conversationId.value
+        sessionId !== nav.sessionId.value
       ) {
         return;
       }
       for (const item of page.items) upsertCache(accountId, item);
-      // Port 返回新→旧；聊天列表要旧→新，打开后滚到底部看最新
       messageState.items = [...page.items].reverse();
       messageState.nextCursor = page.next_cursor;
       messageState.hasMore = page.has_more;
@@ -100,10 +99,10 @@ export function useMessages() {
    */
   async function loadMore(): Promise<number> {
     const accountId = nav.accountId.value;
-    const conversationId = nav.conversationId.value;
+    const sessionId = nav.sessionId.value;
     if (
       !accountId ||
-      !conversationId ||
+      !sessionId ||
       !messageState.hasMore ||
       messageState.loading !== 'idle'
     ) {
@@ -113,9 +112,9 @@ export function useMessages() {
     const session = nav.sessionVersion.value;
     messageState.loading = 'more';
     try {
-      const page = await ports.conversation.listMessages({
+      const page = await ports.session.listMessages({
         account_id: accountId,
-        conversation_id: conversationId,
+        session_id: sessionId,
         cursor: messageState.nextCursor,
         limit: PAGE_SIZE,
         direction: 'older',
@@ -123,13 +122,12 @@ export function useMessages() {
       if (
         version !== messageState.requestVersion ||
         session !== nav.sessionVersion.value ||
-        conversationId !== nav.conversationId.value
+        sessionId !== nav.sessionId.value
       ) {
         return 0;
       }
       for (const item of page.items) upsertCache(accountId, item);
       const existing = new Set(messageState.items.map((i) => i.message.id));
-      // page 仍是新→旧；翻成旧→新后插到顶部
       const older = [...page.items]
         .reverse()
         .filter((i) => !existing.has(i.message.id));
@@ -203,14 +201,12 @@ export function useMessages() {
         if (!isRead) {
           suppressAutoRead.value = new Set(suppressAutoRead.value).add(id);
         } else {
-          // 自动/手动标已读后允许后续再抑制
           const next = new Set(suppressAutoRead.value);
           next.delete(id);
           suppressAutoRead.value = next;
         }
       }
       applyCacheToList(accountId);
-      // 成功后立即刷新会话列表与选中项未读（规格：提交后再刷新）
       await conversations.refreshSoft();
     });
     await markQueue.value;
@@ -245,10 +241,6 @@ export function useMessages() {
     await markQueue.value;
   }
 
-  /**
-   * 在右侧阅读区打开一封邮件：拉取正文，并在可读后自动标已读。
-   * 不再在消息气泡下方展开。
-   */
   async function openMessage(messageId: MessageId): Promise<void> {
     expandedIds.value = new Set([messageId]);
     const suppressed = new Set(suppressAutoRead.value);
@@ -279,11 +271,10 @@ export function useMessages() {
     watch(
       () => [
         nav.accountId.value,
-        nav.conversationId.value,
+        nav.sessionId.value,
         nav.sessionVersion.value,
       ],
       () => {
-        // 立刻清空旧线程，避免切换时仍显示上一会话气泡
         messageState.requestVersion += 1;
         messageState.items = [];
         messageState.nextCursor = null;

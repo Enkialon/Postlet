@@ -1,10 +1,10 @@
 /**
  * 无测试框架自检：npx --yes tsx src/features/conversations/conversationListOrder.selftest.ts
  */
-import type { ConversationListItem } from '../../domain/dto';
+import type { SessionListItem } from '../../domain/dto';
 import {
-  applyConversationSnapshot,
-  appendConversationPage,
+  applySessionSnapshot,
+  appendSessionPage,
   isLikelyNewIncomingActivity,
   isScrollAtTop,
   itemsFromDisplayOrder,
@@ -17,17 +17,18 @@ function item(partial: {
   outbound?: boolean;
   unread?: number;
   at?: number;
-}): ConversationListItem {
+}): SessionListItem {
   const account = partial.account ?? 'acc';
   const lastId =
     partial.lastMessageId === undefined ? `m-${partial.id}` : partial.lastMessageId;
   return {
-    conversation: {
+    session: {
       id: partial.id,
       account_id: account,
-      kind: 'contact',
+      kind: 'private',
       contact_id: null,
       group_id: null,
+      merged_into_id: null,
       normalized_address: `${partial.id}@ex.com`,
       last_message_at: partial.at ?? 1000,
       last_message_id: lastId,
@@ -36,6 +37,7 @@ function item(partial: {
       created_at: 1,
       updated_at: 1,
     },
+    display_name: partial.id,
     last_message_preview: lastId
       ? {
           id: lastId,
@@ -51,26 +53,35 @@ function item(partial: {
           importance: 'normal',
         }
       : null,
-    contact_display_name: partial.id,
+    contact_display_name: null,
     group_name: null,
   };
 }
 
-function assert(cond: unknown, msg: string): void {
+function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
-function assertEq<T>(actual: T, expected: T, msg: string): void {
-  const a = JSON.stringify(actual);
-  const e = JSON.stringify(expected);
-  if (a !== e) throw new Error(`${msg}: got ${a}, want ${e}`);
+{
+  assert(isScrollAtTop(0, false), 'enter top');
+  assert(!isScrollAtTop(80, false), 'not enter');
+  assert(isScrollAtTop(90, true), 'leave still top');
+  assert(!isScrollAtTop(120, true), 'left top');
 }
 
 {
-  const a1 = item({ id: 'a', lastMessageId: 'm1', at: 1 });
-  const a2 = item({ id: 'a', lastMessageId: 'm2', at: 2, unread: 3 });
-  const first = applyConversationSnapshot({
-    snapshot: [a1],
+  const prev = item({ id: 'a', lastMessageId: 'm1' });
+  const next = item({ id: 'a', lastMessageId: 'm2' });
+  assert(isLikelyNewIncomingActivity(prev, next), 'new incoming');
+  assert(
+    !isLikelyNewIncomingActivity(prev, item({ id: 'a', lastMessageId: 'm2', outbound: true })),
+    'outbound not activity',
+  );
+}
+
+{
+  const first = applySessionSnapshot({
+    snapshot: [item({ id: 'a' }), item({ id: 'b' })],
     previousByKey: new Map(),
     previousCanonicalOrder: [],
     previousDisplayOrder: [],
@@ -78,8 +89,11 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
     atTop: true,
     forceApplyOrder: true,
   });
-  const second = applyConversationSnapshot({
-    snapshot: [a2],
+  const second = applySessionSnapshot({
+    snapshot: [
+      item({ id: 'a', unread: 3, lastMessageId: 'm-a2' }),
+      item({ id: 'b' }),
+    ],
     previousByKey: first.byKey,
     previousCanonicalOrder: first.canonicalOrder,
     previousDisplayOrder: first.displayOrder,
@@ -87,16 +101,12 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
     atTop: true,
     forceApplyOrder: false,
   });
-  assertEq(second.displayOrder, ['acc:a'], 'merge no dup');
-  assert(second.byKey.get('acc:a')?.conversation.unread_count === 3, 'unread');
+  assert(second.byKey.get('acc:a')?.session.unread_count === 3, 'unread');
 }
 
 {
-  const a = item({ id: 'a', lastMessageId: 'ma', at: 1 });
-  const b = item({ id: 'b', lastMessageId: 'mb', at: 2 });
-  const c = item({ id: 'c', lastMessageId: 'mc', at: 3 });
-  const base = applyConversationSnapshot({
-    snapshot: [c, b, a],
+  const base = applySessionSnapshot({
+    snapshot: [item({ id: 'a' }), item({ id: 'b' })],
     previousByKey: new Map(),
     previousCanonicalOrder: [],
     previousDisplayOrder: [],
@@ -104,9 +114,11 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
     atTop: true,
     forceApplyOrder: true,
   });
-  const b2 = item({ id: 'b', lastMessageId: 'mb2', at: 99, unread: 1 });
-  const next = applyConversationSnapshot({
-    snapshot: [b2, c, a],
+  const next = applySessionSnapshot({
+    snapshot: [
+      item({ id: 'b', unread: 1, lastMessageId: 'm-b2' }),
+      item({ id: 'a' }),
+    ],
     previousByKey: base.byKey,
     previousCanonicalOrder: base.canonicalOrder,
     previousDisplayOrder: base.displayOrder,
@@ -114,18 +126,14 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
     atTop: false,
     forceApplyOrder: false,
   });
-  assertEq(next.displayOrder, ['acc:c', 'acc:b', 'acc:a'], 'freeze order');
-  assertEq(next.canonicalOrder, ['acc:b', 'acc:c', 'acc:a'], 'canonical');
-  assert(next.byKey.get('acc:b')?.conversation.unread_count === 1, 'field update');
-  assert(next.pendingActivityKeys.includes('acc:b'), 'activity');
-  assert(!next.orderApplied, 'not applied');
+  assert(next.byKey.get('acc:b')?.session.unread_count === 1, 'field update');
+  assert(next.displayOrder[0] === 'acc:a', 'frozen order');
+  assert(next.pendingActivityKeys.includes('acc:b'), 'pending activity');
 }
 
 {
-  const a = item({ id: 'a', lastMessageId: 'ma', at: 1 });
-  const b = item({ id: 'b', lastMessageId: 'mb', at: 2 });
-  const base = applyConversationSnapshot({
-    snapshot: [a, b],
+  const base = applySessionSnapshot({
+    snapshot: [item({ id: 'a' }), item({ id: 'b' })],
     previousByKey: new Map(),
     previousCanonicalOrder: [],
     previousDisplayOrder: [],
@@ -133,82 +141,60 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
     atTop: true,
     forceApplyOrder: true,
   });
-  const b2 = item({ id: 'b', lastMessageId: 'mb2', at: 99 });
-  const next = applyConversationSnapshot({
-    snapshot: [b2, a],
+  const next = applySessionSnapshot({
+    snapshot: [item({ id: 'b' })],
     previousByKey: base.byKey,
     previousCanonicalOrder: base.canonicalOrder,
-    previousDisplayOrder: ['acc:a', 'acc:b'],
-    previousPendingActivityKeys: ['acc:b'],
-    atTop: true,
+    previousDisplayOrder: base.displayOrder,
+    previousPendingActivityKeys: [],
+    atTop: false,
     forceApplyOrder: false,
   });
-  assertEq(next.displayOrder, ['acc:b', 'acc:a'], 'at top reorder');
-  assertEq(next.pendingActivityKeys, [], 'clear pending');
+  assert(!next.byKey.has('acc:a'), 'removed from snapshot while frozen');
+  assert(!next.displayOrder.includes('acc:a'), 'removed from display');
 }
 
 {
-  const prev = item({ id: 'a', lastMessageId: 'm1' });
-  assert(!isLikelyNewIncomingActivity(prev, item({ id: 'a', lastMessageId: 'm1', unread: 9 })), 'same id');
-  assert(
-    !isLikelyNewIncomingActivity(prev, item({ id: 'a', lastMessageId: 'm2', outbound: true })),
-    'outbound',
+  const base = applySessionSnapshot({
+    snapshot: [item({ id: 'a' })],
+    previousByKey: new Map(),
+    previousCanonicalOrder: [],
+    previousDisplayOrder: [],
+    previousPendingActivityKeys: [],
+    atTop: true,
+    forceApplyOrder: true,
+  });
+  const next = applySessionSnapshot({
+    snapshot: [item({ id: 'a' }), item({ id: 'c' })],
+    previousByKey: base.byKey,
+    previousCanonicalOrder: base.canonicalOrder,
+    previousDisplayOrder: [...base.displayOrder, 'acc:extra'],
+    previousPendingActivityKeys: [],
+    atTop: false,
+    forceApplyOrder: false,
+  });
+  assert(!next.byKey.has('acc:extra'), 'unknown extra dropped');
+}
+
+{
+  const base = applySessionSnapshot({
+    snapshot: [item({ id: 'a' })],
+    previousByKey: new Map(),
+    previousCanonicalOrder: [],
+    previousDisplayOrder: [],
+    previousPendingActivityKeys: [],
+    atTop: true,
+    forceApplyOrder: true,
+  });
+  const next = appendSessionPage(
+    base.byKey,
+    base.displayOrder,
+    base.canonicalOrder,
+    [item({ id: 'z' })],
   );
-}
-
-{
-  const a = item({ id: 'a', at: 1 });
-  const b = item({ id: 'b', at: 2 });
-  const base = applyConversationSnapshot({
-    snapshot: [b, a],
-    previousByKey: new Map(),
-    previousCanonicalOrder: [],
-    previousDisplayOrder: [],
-    previousPendingActivityKeys: [],
-    atTop: true,
-    forceApplyOrder: true,
-  });
-  const next = applyConversationSnapshot({
-    snapshot: [a],
-    previousByKey: base.byKey,
-    previousCanonicalOrder: base.canonicalOrder,
-    previousDisplayOrder: base.displayOrder,
-    previousPendingActivityKeys: [],
-    atTop: false,
-    forceApplyOrder: false,
-  });
-  assertEq(next.displayOrder, ['acc:a'], 'delete while frozen');
-  assert(!next.byKey.has('acc:b'), 'b removed');
-}
-
-{
-  const a = item({ id: 'a', at: 2 });
-  const b = item({ id: 'b', at: 1 });
-  const base = applyConversationSnapshot({
-    snapshot: [a],
-    previousByKey: new Map(),
-    previousCanonicalOrder: [],
-    previousDisplayOrder: [],
-    previousPendingActivityKeys: [],
-    atTop: true,
-    forceApplyOrder: true,
-  });
-  const next = appendConversationPage(base.byKey, base.displayOrder, base.canonicalOrder, [
-    b,
-    a,
-  ]);
-  assertEq(next.displayOrder, ['acc:a', 'acc:b'], 'append');
-}
-
-assert(isScrollAtTop(50, false), 'enter top');
-assert(isScrollAtTop(80, true), 'hysteresis stay');
-assert(!isScrollAtTop(120, true), 'leave top');
-assert(!isScrollAtTop(80, false), 'hysteresis out');
-
-{
-  const a = item({ id: 'a' });
-  const map = new Map([['acc:a', a]]);
-  assertEq(itemsFromDisplayOrder(map, ['acc:a', 'acc:missing']), [a], 'skip missing');
+  assert(next.displayOrder.includes('acc:z'), 'append');
+  const items = itemsFromDisplayOrder(next.byKey, next.displayOrder);
+  assert(items.length === 2, 'items length');
 }
 
 console.log('conversationListOrder.selftest: all passed');

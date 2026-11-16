@@ -1,5 +1,5 @@
 import { computed, reactive } from 'vue';
-import type { AccountId, ConversationId, MessageId } from '../domain/types';
+import type { AccountId, MessageId, SessionId } from '../domain/types';
 
 export type AppPage =
   | 'welcome'
@@ -8,7 +8,7 @@ export type AppPage =
   | 'groups'
   | 'settings';
 
-export type ConversationKindFilter = 'all' | 'contact' | 'group';
+export type SessionKindFilter = 'all' | 'private' | 'group';
 
 /** `all` = 列表不按账号过滤；具体 id = 只查该账号 */
 export type AccountFilter = AccountId | 'all';
@@ -23,9 +23,9 @@ export interface NavigationState {
   /** 当前读写上下文账号（会话/联系人归属；回复与发信跟这个走） */
   accountId: AccountId | null;
   page: AppPage;
-  conversationId: ConversationId | null;
+  sessionId: SessionId | null;
   messageId: MessageId | null;
-  conversationKind: ConversationKindFilter;
+  sessionKind: SessionKindFilter;
   /** 账户切换时递增，丢弃迟到响应 */
   sessionVersion: number;
   narrowShowList: boolean;
@@ -36,9 +36,9 @@ const state = reactive<NavigationState>({
   accountFilter: 'all',
   accountId: null,
   page: 'welcome',
-  conversationId: null,
+  sessionId: null,
   messageId: null,
-  conversationKind: 'all',
+  sessionKind: 'all',
   sessionVersion: 0,
   narrowShowList: true,
   detailOpen: false,
@@ -48,9 +48,9 @@ export function useNavigation() {
   const accountFilter = computed(() => state.accountFilter);
   const accountId = computed(() => state.accountId);
   const page = computed(() => state.page);
-  const conversationId = computed(() => state.conversationId);
+  const sessionId = computed(() => state.sessionId);
   const messageId = computed(() => state.messageId);
-  const conversationKind = computed(() => state.conversationKind);
+  const sessionKind = computed(() => state.sessionKind);
   const sessionVersion = computed(() => state.sessionVersion);
   const narrowShowList = computed(() => state.narrowShowList);
   const detailOpen = computed(() => state.detailOpen);
@@ -93,7 +93,7 @@ export function useNavigation() {
 
   function goWelcome(): void {
     state.page = 'welcome';
-    state.conversationId = null;
+    state.sessionId = null;
     state.messageId = null;
     state.detailOpen = false;
   }
@@ -105,8 +105,8 @@ export function useNavigation() {
     }
   }
 
-  function selectConversation(id: ConversationId | null): void {
-    state.conversationId = id;
+  function selectSession(id: SessionId | null): void {
+    state.sessionId = id;
     state.messageId = null;
     state.detailOpen = false;
     state.narrowShowList = id == null;
@@ -117,8 +117,8 @@ export function useNavigation() {
     state.messageId = id;
   }
 
-  function setConversationKind(kind: ConversationKindFilter): void {
-    state.conversationKind = kind;
+  function setSessionKind(kind: SessionKindFilter): void {
+    state.sessionKind = kind;
   }
 
   function setNarrowShowList(show: boolean): void {
@@ -130,7 +130,7 @@ export function useNavigation() {
   }
 
   function clearReading(): void {
-    state.conversationId = null;
+    state.sessionId = null;
     state.messageId = null;
     state.detailOpen = false;
   }
@@ -141,9 +141,9 @@ export function useNavigation() {
     accountId,
     listAccountId,
     page,
-    conversationId,
+    sessionId,
     messageId,
-    conversationKind,
+    sessionKind,
     sessionVersion,
     narrowShowList,
     detailOpen,
@@ -154,9 +154,9 @@ export function useNavigation() {
     readAccountFilter,
     goWelcome,
     goPage,
-    selectConversation,
+    selectSession,
     selectMessage,
-    setConversationKind,
+    setSessionKind,
     setNarrowShowList,
     setDetailOpen,
     clearReading,

@@ -115,18 +115,18 @@ impl GroupSource {
     }
 }
 
-/// 会话种类
+/// 会话种类（一张 sessions 表内区分）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConversationKind {
-    Contact,
+pub enum SessionKind {
+    Private,
     Group,
 }
 
-impl ConversationKind {
+impl SessionKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Contact => "contact",
+            Self::Private => "private",
             Self::Group => "group",
         }
     }

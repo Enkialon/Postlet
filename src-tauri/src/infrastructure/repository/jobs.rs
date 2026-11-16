@@ -1,14 +1,14 @@
-//! SQLite conversation_aggregate_jobs；连接与事务由调用方持有。
+//! SQLite session_aggregate_jobs；连接与事务由调用方持有。
 
 use crate::application::dto::AggregateClaim;
 use crate::application::error::PortError;
-use crate::domain::entities::ConversationAggregateJob;
+use crate::domain::entities::SessionAggregateJob;
 use crate::domain::value_objects::{
     AccountId, AggregateJobStatus, AggregationOutcome, MessageId, TimestampMs,
 };
 use sqlx::{Row, SqliteConnection};
 
-fn map_job(row: &sqlx::sqlite::SqliteRow) -> Result<ConversationAggregateJob, PortError> {
+fn map_job(row: &sqlx::sqlite::SqliteRow) -> Result<SessionAggregateJob, PortError> {
     let status_raw: String = row.try_get("status")?;
     let status = AggregateJobStatus::parse(&status_raw).ok_or_else(|| PortError::Storage {
         message: format!("无效 job status: {status_raw}"),
@@ -21,7 +21,7 @@ fn map_job(row: &sqlx::sqlite::SqliteRow) -> Result<ConversationAggregateJob, Po
             })
         })
         .transpose()?;
-    Ok(ConversationAggregateJob {
+    Ok(SessionAggregateJob {
         account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
         message_id: MessageId::new(row.try_get::<String, _>("message_id")?),
         generation: row.try_get("generation")?,
@@ -45,12 +45,12 @@ pub async fn enqueue_or_reset(
 ) -> Result<(), PortError> {
     let now = available_at;
     sqlx::query(
-        "INSERT INTO conversation_aggregate_jobs (
+        "INSERT INTO session_aggregate_jobs (
             message_id, account_id, generation, outcome, status, attempts,
             last_error, available_at, updated_at, lease_token, lease_expires_at
          ) VALUES (?, ?, 1, NULL, 'pending', 0, NULL, ?, ?, NULL, NULL)
          ON CONFLICT(account_id, message_id) DO UPDATE SET
-            generation = conversation_aggregate_jobs.generation + 1,
+            generation = session_aggregate_jobs.generation + 1,
             outcome = NULL,
             status = 'pending',
             attempts = 0,
@@ -76,19 +76,19 @@ pub async fn claim_batch(
     lease_token: &str,
     lease_expires_at: TimestampMs,
     limit: u32,
-) -> Result<Vec<ConversationAggregateJob>, PortError> {
+) -> Result<Vec<SessionAggregateJob>, PortError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
     let updated = sqlx::query(
-        "UPDATE conversation_aggregate_jobs
+        "UPDATE session_aggregate_jobs
          SET status = 'processing',
              lease_token = ?,
              lease_expires_at = ?,
              attempts = attempts + 1,
              updated_at = ?
          WHERE rowid IN (
-            SELECT rowid FROM conversation_aggregate_jobs
+            SELECT rowid FROM session_aggregate_jobs
             WHERE account_id = ?
               AND status IN ('pending', 'retry')
               AND available_at <= ?
@@ -111,7 +111,7 @@ pub async fn claim_batch(
     }
 
     let rows = sqlx::query(
-        "SELECT * FROM conversation_aggregate_jobs
+        "SELECT * FROM session_aggregate_jobs
          WHERE account_id = ? AND lease_token = ? AND status = 'processing'
          ORDER BY available_at ASC",
     )
@@ -135,7 +135,7 @@ pub async fn complete(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let result = sqlx::query(
-        "UPDATE conversation_aggregate_jobs
+        "UPDATE session_aggregate_jobs
          SET status = 'completed',
              outcome = ?,
              last_error = NULL,
@@ -178,7 +178,7 @@ pub async fn fail_for_retry(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let result = sqlx::query(
-        "UPDATE conversation_aggregate_jobs
+        "UPDATE session_aggregate_jobs
          SET status = 'retry',
              last_error = ?,
              available_at = ?,
@@ -218,7 +218,7 @@ pub async fn fail_permanently(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     let result = sqlx::query(
-        "UPDATE conversation_aggregate_jobs
+        "UPDATE session_aggregate_jobs
          SET status = 'failed',
              last_error = ?,
              lease_token = NULL,
@@ -252,7 +252,7 @@ pub async fn release_expired_leases(
     now: TimestampMs,
 ) -> Result<u32, PortError> {
     let result = sqlx::query(
-        "UPDATE conversation_aggregate_jobs
+        "UPDATE session_aggregate_jobs
          SET status = 'retry',
              lease_token = NULL,
              lease_expires_at = NULL,

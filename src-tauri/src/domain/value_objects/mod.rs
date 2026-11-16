@@ -6,11 +6,10 @@ mod ids;
 
 pub use email::{EmailAddress, SelfAddressSet};
 pub use enums::{
-    AggregationOutcome, AggregateJobStatus, BodyContentType, ConversationKind, GroupSource,
-    Importance, MailAuthKind, MailTlsMode, MessageSyncStatus, PageDirection, ReceiveProtocol,
-    RecipientRole, SendProtocol, SyncStatus, TimestampMs,
+    AggregateJobStatus, AggregationOutcome, BodyContentType, GroupSource, Importance, MailAuthKind,
+    MailTlsMode, MessageSyncStatus, PageDirection, ReceiveProtocol, RecipientRole, SendProtocol,
+    SessionKind, SyncStatus, TimestampMs,
 };
 pub use ids::{
-    AccountId, ContactId, ConversationId, FolderId, GraphImmutableId, GroupId, MessageId,
-    ThreadId,
+    AccountId, ContactId, FolderId, GraphImmutableId, GroupId, MessageId, SessionId,
 };

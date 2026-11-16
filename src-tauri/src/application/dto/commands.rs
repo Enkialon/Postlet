@@ -1,7 +1,7 @@
 //! 写入命令与列表查询命令
 
 use crate::domain::value_objects::{
-    AccountId, EmailAddress, GroupId, MailAuthKind, MailTlsMode, MessageId, ThreadId,
+    AccountId, EmailAddress, GroupId, MailAuthKind, MailTlsMode, MessageId, SessionId,
 };
 
 /// 登录后落库 / 刷新账户资料
@@ -19,7 +19,6 @@ pub struct UpsertAccountCommand {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpdateAccountDisplaySettingsCommand {
     pub account_id: AccountId,
-    pub show_group_messages_in_contact_conversation: bool,
     /// 是否纳入「全部账号」跨账号列表
     pub include_in_all: bool,
 }
@@ -74,19 +73,19 @@ pub struct RenameGroupCommand {
     pub name: String,
 }
 
-/// 合并群组：source 吸收进 target（存活根）
+/// 合并群聊 Session：source → target（消息迁入 + soft-link）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct MergeGroupsCommand {
+pub struct MergeSessionsCommand {
     pub account_id: AccountId,
-    pub source_group_id: GroupId,
-    pub target_group_id: GroupId,
+    pub source_session_id: SessionId,
+    pub target_session_id: SessionId,
 }
 
-/// 把线程挪到另一群组（同事务迁移附着与两侧投影）
+/// 将选中消息改挂到目标群聊 Session
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct MoveThreadToGroupCommand {
+pub struct ReassignMessagesToGroupCommand {
     pub account_id: AccountId,
-    pub thread_id: ThreadId,
+    pub message_ids: Vec<MessageId>,
     pub target_group_id: GroupId,
 }
 
@@ -100,17 +99,17 @@ pub struct UpdateGroupSendMembersCommand {
     pub is_manual: bool,
 }
 
-/// 确保存在联系人会话（可顺带占位联系人）
+/// 确保存在私聊 Session（可顺带占位联系人）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EnsureContactConversationCommand {
+pub struct EnsurePrivateSessionCommand {
     pub account_id: AccountId,
     pub normalized_address: EmailAddress,
     pub display_name: Option<String>,
 }
 
-/// 确保存在群组会话（解析到存活根群组）
+/// 确保存在群聊 Session
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct EnsureGroupConversationCommand {
+pub struct EnsureGroupSessionCommand {
     pub account_id: AccountId,
     pub group_id: GroupId,
 }
@@ -131,6 +130,4 @@ pub struct GroupListQuery {
     pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
-    /// 默认 false：只返回根群组（merged_into_id 为空）
-    pub include_merged: bool,
 }

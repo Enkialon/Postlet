@@ -13,7 +13,7 @@ import ContextMenu, {
 const props = defineProps<{
   item: MessageWithRecipients;
   selected?: boolean;
-  allowMoveThread?: boolean;
+  allowReassign?: boolean;
   /** 会话联系人昵称；邮件 from_name 缺失或等于邮箱时回退 */
   preferredName?: string | null;
 }>();
@@ -23,7 +23,7 @@ const emit = defineEmits<{
   reply: [];
   markUnread: [];
   delete: [];
-  moveThread: [threadId: string];
+  reassign: [messageId: string];
 }>();
 
 const menuOpen = ref(false);
@@ -40,8 +40,8 @@ const menuItems = computed<ContextMenuItem[]>(() => {
       disabled: !props.item.message.is_read,
     },
   ];
-  if (props.allowMoveThread && props.item.message.thread_id) {
-    items.push({ id: 'moveThread', label: '迁移到其他群组' });
+  if (props.allowReassign) {
+    items.push({ id: 'reassign', label: '迁移到其他群组' });
   }
   if (props.item.message.sync_status !== 'deleted_remote') {
     items.push({ id: 'delete', label: '删除邮件', danger: true });
@@ -98,8 +98,8 @@ function onMenuSelect(id: string): void {
     emit('delete');
     return;
   }
-  if (id === 'moveThread' && props.item.message.thread_id) {
-    emit('moveThread', props.item.message.thread_id);
+  if (id === 'reassign') {
+    emit('reassign', props.item.message.id);
   }
 }
 </script>
@@ -121,7 +121,6 @@ function onMenuSelect(id: string): void {
       class="grid min-w-0 max-w-[min(520px,70vw)] gap-1.5"
       :class="outbound ? 'justify-items-end' : 'justify-items-start'"
     >
-      <!-- 与头像顶对齐：昵称/邮箱 + 时间 -->
       <div
         class="flex max-w-full min-w-0 items-center gap-2 px-0.5"
         :class="outbound ? 'flex-row-reverse' : ''"

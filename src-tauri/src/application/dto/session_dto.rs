@@ -1,26 +1,26 @@
 //! 会话列表查询与读模型
 
-use crate::domain::entities::Conversation;
+use crate::domain::entities::Session;
 use crate::domain::value_objects::{
-    AccountId, ConversationId, ConversationKind, EmailAddress, Importance, MessageId,
-    PageDirection, TimestampMs,
+    AccountId, EmailAddress, Importance, MessageId, PageDirection, SessionId, SessionKind,
+    TimestampMs,
 };
 
 /// 会话列表查询；`account_id` 为空时跨账号
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ConversationListQuery {
+pub struct SessionListQuery {
     pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
-    /// 可选：仅 contact / 仅 group
-    pub kind: Option<ConversationKind>,
+    /// 可选：仅 private / 仅 group
+    pub kind: Option<SessionKind>,
 }
 
 /// 会话内消息查询
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ConversationMessagesQuery {
+pub struct SessionMessagesQuery {
     pub account_id: AccountId,
-    pub conversation_id: ConversationId,
+    pub session_id: SessionId,
     pub cursor: Option<String>,
     pub limit: u32,
     /// 默认 Older
@@ -43,10 +43,12 @@ pub struct MessagePreview {
     pub importance: Importance,
 }
 
-/// 会话列表项（含预览派生）
+/// 会话列表项（含预览与显示名）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ConversationListItem {
-    pub conversation: Conversation,
+pub struct SessionListItem {
+    pub session: Session,
+    /// 读时解析：私聊=联系人名或地址；群聊=群名
+    pub display_name: String,
     /// 列表预览；软删消息不出现
     pub last_message_preview: Option<MessagePreview>,
     pub contact_display_name: Option<String>,

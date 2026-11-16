@@ -35,7 +35,6 @@ export class MemoryAccountAdapter implements AccountPort {
       contact_synced_at: null,
       mail_sync_status: 'idle',
       mail_sync_error: null,
-      show_group_messages_in_contact_conversation: false,
       include_in_all: true,
       created_at: t,
       updated_at: t,
@@ -84,7 +83,6 @@ export class MemoryAccountAdapter implements AccountPort {
       contact_synced_at: null,
       mail_sync_status: 'idle',
       mail_sync_error: null,
-      show_group_messages_in_contact_conversation: false,
       include_in_all: true,
       created_at: t,
       updated_at: t,
@@ -97,7 +95,6 @@ export class MemoryAccountAdapter implements AccountPort {
 
   async signOut(accountId: AccountId): Promise<void> {
     this.store.requireAccount(accountId);
-    // 只结束会话；账户行与邮件保留，再登录可复用
     this.store.markSignedOut(accountId);
   }
 
@@ -105,13 +102,9 @@ export class MemoryAccountAdapter implements AccountPort {
     cmd: UpdateAccountDisplaySettingsCommand,
   ): Promise<Account> {
     const account = this.store.requireAccount(cmd.account_id);
-    account.show_group_messages_in_contact_conversation =
-      cmd.show_group_messages_in_contact_conversation;
     account.include_in_all = cmd.include_in_all;
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
-    this.store.recomputeAllConversations(cmd.account_id);
     return { ...account };
   }
-
 }

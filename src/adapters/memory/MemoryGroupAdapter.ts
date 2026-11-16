@@ -1,11 +1,11 @@
 import type { GroupPort } from '../../ports/groupPort';
-import type { Group, GroupParticipant } from '../../domain/entities';
+import type { Group, GroupParticipant, Session } from '../../domain/entities';
 import type {
   CreateManualGroupCommand,
   CursorPage,
   GroupListQuery,
-  MergeGroupsCommand,
-  MoveThreadToGroupCommand,
+  MergeSessionsCommand,
+  ReassignMessagesToGroupCommand,
   RenameGroupCommand,
   UpdateGroupSendMembersCommand,
 } from '../../domain/dto';
@@ -29,10 +29,7 @@ function paginate<T>(
   };
 }
 
-function uniqueEmails(
-  store: MemoryStore,
-  addresses: string[],
-): string[] {
+function uniqueEmails(store: MemoryStore, addresses: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of addresses) {
@@ -52,15 +49,13 @@ export class MemoryGroupAdapter implements GroupPort {
   async listGroups(query: GroupListQuery): Promise<CursorPage<Group>> {
     if (query.account_id) this.store.requireAccount(query.account_id);
     const allListIds = this.store.idsForAllLists();
-    let items = [...this.store.groups.values()].filter((g) =>
-      query.account_id
-        ? g.account_id === query.account_id
-        : allListIds.has(g.account_id),
-    );
-    if (!query.include_merged) {
-      items = items.filter((g) => g.merged_into_id === null);
-    }
-    items.sort((a, b) => a.name.localeCompare(b.name));
+    const items = [...this.store.groups.values()]
+      .filter((g) =>
+        query.account_id
+          ? g.account_id === query.account_id
+          : allListIds.has(g.account_id),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
     return paginate(items, query.cursor, Math.max(1, Math.min(query.limit, 200)));
   }
 
@@ -98,7 +93,6 @@ export class MemoryGroupAdapter implements GroupPort {
       name_is_manual: true,
       source: 'manual',
       send_members_is_manual: true,
-      merged_into_id: null,
       created_at: t,
       updated_at: t,
     };
@@ -116,8 +110,7 @@ export class MemoryGroupAdapter implements GroupPort {
         last_seen_at: t,
       })),
     );
-    // 手动建群同时建空群会话，便于群组页直接打开
-    this.store.ensureGroupConversationEntity(cmd.account_id, group.id);
+    this.store.ensureGroupSessionEntity(cmd.account_id, group.id);
     return { ...group };
   }
 
@@ -127,7 +120,6 @@ export class MemoryGroupAdapter implements GroupPort {
       this.store.groupKey(cmd.account_id, cmd.group_id),
     );
     if (!group) this.store.failNotFound('群组不存在');
-    if (group.merged_into_id) this.store.failConflict('不能重命名已合并群组');
     const name = cmd.name.trim();
     if (!name) this.store.failValidation('群组名称不能为空');
     group.name = name;
@@ -137,131 +129,76 @@ export class MemoryGroupAdapter implements GroupPort {
     return { ...group };
   }
 
-  async mergeGroups(cmd: MergeGroupsCommand): Promise<Group> {
+  async mergeSessions(cmd: MergeSessionsCommand): Promise<Session> {
     this.store.requireAccount(cmd.account_id);
-    if (cmd.source_group_id === cmd.target_group_id) {
-      this.store.failValidation('源群组与目标群组不能相同');
+    if (cmd.source_session_id === cmd.target_session_id) {
+      this.store.failValidation('源会话与目标会话不能相同');
     }
-    const source = this.store.findRootGroup(
+    const source = this.store.findRootSession(
       cmd.account_id,
-      cmd.source_group_id,
+      cmd.source_session_id,
     );
-    const target = this.store.findRootGroup(
+    const target = this.store.findRootSession(
       cmd.account_id,
-      cmd.target_group_id,
+      cmd.target_session_id,
     );
     if (source.id === target.id) {
-      this.store.failConflict('源与目标已是同一根群组');
+      this.store.failConflict('源与目标已是同一根会话');
+    }
+    if (source.kind !== 'group' || target.kind !== 'group') {
+      this.store.failValidation('仅支持合并群聊会话');
     }
 
-    source.merged_into_id = target.id;
-    source.updated_at = Date.now();
-    this.store.groups.set(this.store.groupKey(cmd.account_id, source.id), source);
-
-    const sourceParts =
-      this.store.participants.get(
-        this.store.groupKey(cmd.account_id, source.id),
-      ) ?? [];
-    const targetParts = [
-      ...(this.store.participants.get(
-        this.store.groupKey(cmd.account_id, target.id),
-      ) ?? []),
-    ];
-    for (const p of sourceParts) {
+    const t = Date.now();
+    for (const msg of this.store.messages.values()) {
       if (
-        !targetParts.some(
-          (t) => t.normalized_address === p.normalized_address,
-        )
+        msg.account_id === cmd.account_id &&
+        msg.session_id === source.id
       ) {
-        targetParts.push({ ...p, group_id: target.id });
-      }
-    }
-    this.store.participants.set(
-      this.store.groupKey(cmd.account_id, target.id),
-      targetParts,
-    );
-
-    for (const conv of this.store.conversations.values()) {
-      if (
-        conv.account_id === cmd.account_id &&
-        conv.kind === 'group' &&
-        conv.group_id === source.id
-      ) {
-        conv.group_id = target.id;
-        conv.updated_at = Date.now();
-        this.store.conversations.set(
-          this.store.conversationKey(cmd.account_id, conv.id),
-          conv,
+        msg.session_id = target.id;
+        msg.local_updated_at = t;
+        this.store.messages.set(
+          this.store.messageKey(cmd.account_id, msg.id),
+          msg,
         );
       }
     }
 
-    target.updated_at = Date.now();
-    this.store.groups.set(this.store.groupKey(cmd.account_id, target.id), target);
+    source.merged_into_id = target.id;
+    source.updated_at = t;
+    this.store.sessions.set(
+      this.store.sessionKey(cmd.account_id, source.id),
+      source,
+    );
+    this.store.recomputeSession(cmd.account_id, target.id);
     return { ...target };
   }
 
-  async moveThreadToGroup(cmd: MoveThreadToGroupCommand): Promise<void> {
+  async reassignMessagesToGroup(
+    cmd: ReassignMessagesToGroupCommand,
+  ): Promise<void> {
     this.store.requireAccount(cmd.account_id);
-    const target = this.store.findRootGroup(
+    if (cmd.message_ids.length === 0) return;
+    const target = this.store.ensureGroupSessionEntity(
       cmd.account_id,
       cmd.target_group_id,
     );
-    const messages = this.store.messagesForThread(
-      cmd.account_id,
-      cmd.thread_id,
-    );
-    if (messages.length === 0) this.store.failNotFound('线程不存在');
-
-    let targetConv = [...this.store.conversations.values()].find(
-      (c) =>
-        c.account_id === cmd.account_id &&
-        c.kind === 'group' &&
-        c.group_id === target.id,
-    );
-    if (!targetConv) {
-      const t = Date.now();
-      targetConv = {
-        id: this.store.nextId('conv'),
-        account_id: cmd.account_id,
-        kind: 'group',
-        normalized_address: null,
-        contact_id: null,
-        group_id: target.id,
-        last_message_at: null,
-        last_message_id: null,
-        unread_count: 0,
-        hidden_at: null,
-        created_at: t,
-        updated_at: t,
-      };
-      this.store.conversations.set(
-        this.store.conversationKey(cmd.account_id, targetConv.id),
-        targetConv,
-      );
-      this.store.conversationMessages.set(
-        this.store.conversationKey(cmd.account_id, targetConv.id),
-        [],
-      );
+    const t = Date.now();
+    const touched = new Set<string>([target.id]);
+    for (const messageId of cmd.message_ids) {
+      const key = this.store.messageKey(cmd.account_id, messageId);
+      const message = this.store.messages.get(key);
+      if (!message || message.sync_status === 'deleted_remote') {
+        this.store.failNotFound('邮件不存在');
+      }
+      touched.add(message.session_id);
+      message.session_id = target.id;
+      message.local_updated_at = t;
+      this.store.messages.set(key, message);
     }
-
-    const messageIds = new Set(messages.map((m) => m.id));
-    for (const [convKey, ids] of this.store.conversationMessages) {
-      if (!convKey.startsWith(`${cmd.account_id}:`)) continue;
-      const next = ids.filter((id) => !messageIds.has(id));
-      this.store.conversationMessages.set(convKey, next);
-      const conversationId = convKey.slice(cmd.account_id.length + 1);
-      this.store.recomputeConversation(cmd.account_id, conversationId);
+    for (const sessionId of touched) {
+      this.store.recomputeSession(cmd.account_id, sessionId);
     }
-
-    const targetKey = this.store.conversationKey(
-      cmd.account_id,
-      targetConv.id,
-    );
-    const existing = this.store.conversationMessages.get(targetKey) ?? [];
-    const merged = [...new Set([...existing, ...messageIds])];
-    this.store.conversationMessages.set(targetKey, merged);
-    this.store.recomputeConversation(cmd.account_id, targetConv.id);
   }
 
   async updateSendMembers(
@@ -272,7 +209,6 @@ export class MemoryGroupAdapter implements GroupPort {
       this.store.groupKey(cmd.account_id, cmd.group_id),
     );
     if (!group) this.store.failNotFound('群组不存在');
-    if (group.merged_into_id) this.store.failConflict('不能编辑已合并群组');
 
     const emails = uniqueEmails(this.store, cmd.send_member_addresses);
     const t = Date.now();

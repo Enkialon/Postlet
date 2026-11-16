@@ -1,26 +1,23 @@
 //! Tauri IPC 薄胶水：参数 → 用例 → DTO；不含 Graph / 业务规则。
 
 use crate::application::dto::{
-    ComposeDraft, ContactListQuery, ContactSyncProgress, ConversationListItem,
-    ConversationListQuery, ConversationMessagesQuery, CreateManualGroupCommand, CursorPage,
-    EnsureContactConversationCommand, EnsureGroupConversationCommand, GroupListQuery,
-    DeleteMessagesCommand, MailSyncProgress, MarkMessagesReadCommand, MergeGroupsCommand,
-    MoveThreadToGroupCommand,
-    RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand,
-    SetFolderSyncEnabledCommand, TriggerContactSyncCommand, TriggerMailSyncCommand,
-    UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
+    ComposeDraft, ContactListQuery, ContactSyncProgress, CreateManualGroupCommand, CursorPage,
+    DeleteMessagesCommand, EnsureGroupSessionCommand, EnsurePrivateSessionCommand, GroupListQuery,
+    MailSyncProgress, MarkMessagesReadCommand, MergeSessionsCommand, ReassignMessagesToGroupCommand,
+    RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,
+    SessionListQuery, SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
+    TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
     UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
-    account_use_case, compose_use_case, contact_use_case, conversation_use_case, group_use_case,
-    mail_account_use_case, message_use_case, sync_use_case,
+    account_use_case, compose_use_case, contact_use_case, group_use_case, mail_account_use_case,
+    message_use_case, session_use_case, sync_use_case,
 };
 use crate::domain::entities::{
-    Account, Contact, Conversation, Group, GroupParticipant, MailFolderSyncState,
-    MessageWithRecipients,
+    Account, Contact, Group, GroupParticipant, MailFolderSyncState, MessageWithRecipients, Session,
 };
-use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
+use crate::domain::value_objects::{AccountId, ContactId, GroupId, MessageId, SessionId};
 use crate::AppState;
 use tauri::State;
 
@@ -93,45 +90,45 @@ pub async fn get_contact_by_address(
 }
 
 #[tauri::command]
-pub async fn list_conversations(
+pub async fn list_sessions(
     state: State<'_, AppState>,
-    query: ConversationListQuery,
-) -> Result<CursorPage<ConversationListItem>, AppError> {
-    conversation_use_case::list_conversations(&state.db, query).await
+    query: SessionListQuery,
+) -> Result<CursorPage<SessionListItem>, AppError> {
+    session_use_case::list_sessions(&state.db, query).await
 }
 
 #[tauri::command]
-pub async fn get_conversation(
+pub async fn get_session(
     state: State<'_, AppState>,
     account_id: String,
-    conversation_id: String,
-) -> Result<ConversationListItem, AppError> {
-    conversation_use_case::get_conversation(
+    session_id: String,
+) -> Result<SessionListItem, AppError> {
+    session_use_case::get_session(
         &state.db,
         &AccountId::new(account_id),
-        &ConversationId::new(conversation_id),
+        &SessionId::new(session_id),
     )
     .await
 }
 
 #[tauri::command]
-pub async fn list_conversation_messages(
+pub async fn list_session_messages(
     state: State<'_, AppState>,
-    query: ConversationMessagesQuery,
+    query: SessionMessagesQuery,
 ) -> Result<CursorPage<MessageWithRecipients>, AppError> {
-    conversation_use_case::list_messages(&state.db, query).await
+    session_use_case::list_messages(&state.db, query).await
 }
 
 #[tauri::command]
-pub async fn hide_conversation(
+pub async fn hide_session(
     state: State<'_, AppState>,
     account_id: String,
-    conversation_id: String,
+    session_id: String,
 ) -> Result<(), AppError> {
-    conversation_use_case::hide_conversation(
+    session_use_case::hide_session(
         &state.db,
         &AccountId::new(account_id),
-        &ConversationId::new(conversation_id),
+        &SessionId::new(session_id),
     )
     .await
 }
@@ -234,7 +231,6 @@ pub async fn trigger_mail_sync(
     state: State<'_, AppState>,
     cmd: TriggerMailSyncCommand,
 ) -> Result<(), AppError> {
-    // 立即返回；实际同步在后台跑，前端靠 get_mail_sync_progress 轮询
     let db = state.db.clone();
     let paths = state.paths.clone();
     let changes = state.changes.clone();
@@ -291,19 +287,19 @@ pub async fn get_contact_sync_progress(
 }
 
 #[tauri::command]
-pub async fn ensure_contact_conversation(
+pub async fn ensure_private_session(
     state: State<'_, AppState>,
-    cmd: EnsureContactConversationCommand,
-) -> Result<Conversation, AppError> {
-    conversation_use_case::ensure_contact_conversation(&state.db, cmd).await
+    cmd: EnsurePrivateSessionCommand,
+) -> Result<Session, AppError> {
+    session_use_case::ensure_private_session(&state.db, cmd).await
 }
 
 #[tauri::command]
-pub async fn ensure_group_conversation(
+pub async fn ensure_group_session(
     state: State<'_, AppState>,
-    cmd: EnsureGroupConversationCommand,
-) -> Result<Conversation, AppError> {
-    conversation_use_case::ensure_group_conversation(&state.db, cmd).await
+    cmd: EnsureGroupSessionCommand,
+) -> Result<Session, AppError> {
+    session_use_case::ensure_group_session(&state.db, cmd).await
 }
 
 #[tauri::command]
@@ -323,19 +319,19 @@ pub async fn rename_group(
 }
 
 #[tauri::command]
-pub async fn merge_groups(
+pub async fn merge_sessions(
     state: State<'_, AppState>,
-    cmd: MergeGroupsCommand,
-) -> Result<Group, AppError> {
-    group_use_case::merge_groups(&state.db, cmd).await
+    cmd: MergeSessionsCommand,
+) -> Result<Session, AppError> {
+    group_use_case::merge_group_sessions(&state.db, cmd).await
 }
 
 #[tauri::command]
-pub async fn move_thread_to_group(
+pub async fn reassign_messages_to_group(
     state: State<'_, AppState>,
-    cmd: MoveThreadToGroupCommand,
+    cmd: ReassignMessagesToGroupCommand,
 ) -> Result<(), AppError> {
-    group_use_case::move_thread_to_group(&state.db, cmd).await
+    group_use_case::reassign_messages_to_group(&state.db, cmd).await
 }
 
 #[tauri::command]
@@ -350,12 +346,12 @@ pub async fn update_group_send_members(
 pub async fn compose_get_draft(
     state: State<'_, AppState>,
     account_id: String,
-    conversation_id: String,
+    session_id: String,
 ) -> Result<Option<ComposeDraft>, AppError> {
     compose_use_case::get_draft(
         &state,
         &AccountId::new(account_id),
-        &ConversationId::new(conversation_id),
+        &SessionId::new(session_id),
     )
 }
 
@@ -371,12 +367,12 @@ pub async fn compose_save_draft(
 pub async fn compose_clear_draft(
     state: State<'_, AppState>,
     account_id: String,
-    conversation_id: String,
+    session_id: String,
 ) -> Result<(), AppError> {
     compose_use_case::clear_draft(
         &state,
         &AccountId::new(account_id),
-        &ConversationId::new(conversation_id),
+        &SessionId::new(session_id),
     )
 }
 

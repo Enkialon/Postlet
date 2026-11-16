@@ -1,8 +1,8 @@
 //! SQLite messages 模块函数；连接与事务由调用方持有。
 
 use crate::application::error::PortError;
-use crate::domain::entities::{Message, MessageWithRecipients};
-use crate::domain::value_objects::{AccountId, GraphImmutableId, MessageId, ThreadId};
+use crate::domain::entities::MessageWithRecipients;
+use crate::domain::value_objects::{AccountId, GraphImmutableId, MessageId, SessionId};
 use sqlx::SqliteConnection;
 
 pub async fn get(
@@ -19,16 +19,7 @@ pub async fn get(
         return Ok(None);
     };
     let message = super::rows::message(&row)?;
-    let recipients = sqlx::query(
-        "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
-    )
-    .bind(account_id.as_str())
-    .bind(id.as_str())
-    .fetch_all(&mut *conn)
-    .await?
-    .iter()
-    .map(super::rows::messagerecipient)
-    .collect::<Result<Vec<_>, _>>()?;
+    let recipients = load_recipients(conn, account_id, &message.id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
@@ -50,20 +41,57 @@ pub async fn get_by_graph_id(
     };
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
-    let recipients = sqlx::query(
-        "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
-    )
-    .bind(account_id.as_str())
-    .bind(id.as_str())
-    .fetch_all(&mut *conn)
-    .await?
-    .iter()
-    .map(super::rows::messagerecipient)
-    .collect::<Result<Vec<_>, _>>()?;
+    let recipients = load_recipients(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
     }))
+}
+
+pub async fn find_by_internet_message_id(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    internet_message_id: &str,
+) -> Result<Option<MessageWithRecipients>, PortError> {
+    let trimmed = internet_message_id.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let row = sqlx::query(
+        "SELECT * FROM messages WHERE account_id = ? AND internet_message_id = ? LIMIT 1",
+    )
+    .bind(account_id.as_str())
+    .bind(trimmed)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let message = super::rows::message(&row)?;
+    let id = message.id.clone();
+    let recipients = load_recipients(conn, account_id, &id).await?;
+    Ok(Some(MessageWithRecipients {
+        message,
+        recipients,
+    }))
+}
+
+async fn load_recipients(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<Vec<crate::domain::entities::MessageRecipient>, PortError> {
+    sqlx::query(
+        "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
+    )
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::messagerecipient)
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(Into::into)
 }
 
 pub async fn upsert_with_recipients(
@@ -73,18 +101,18 @@ pub async fn upsert_with_recipients(
     let m = &bundle.message;
     sqlx::query(
         "INSERT INTO messages (
-            id, account_id, graph_id, thread_id, graph_change_key, internet_message_id,
-            conversation_index, subject, body_preview, body_content_type, body_content,
+            id, account_id, session_id, graph_id, graph_change_key, internet_message_id,
+            in_reply_to, subject, body_preview, body_content_type, body_content,
             from_address, from_name, received_at, sent_at, created_at_graph,
             is_read, is_draft, is_outbound, has_attachments, importance,
             folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
+            session_id=excluded.session_id,
             graph_id=excluded.graph_id,
-            thread_id=excluded.thread_id,
             graph_change_key=excluded.graph_change_key,
             internet_message_id=excluded.internet_message_id,
-            conversation_index=excluded.conversation_index,
+            in_reply_to=excluded.in_reply_to,
             subject=excluded.subject,
             body_preview=excluded.body_preview,
             body_content_type=excluded.body_content_type,
@@ -107,11 +135,11 @@ pub async fn upsert_with_recipients(
     )
     .bind(m.id.as_str())
     .bind(m.account_id.as_str())
+    .bind(m.session_id.as_str())
     .bind(m.graph_id.as_ref().map(|g| g.as_str()))
-    .bind(m.thread_id.as_ref().map(|t| t.as_str()))
     .bind(&m.graph_change_key)
     .bind(&m.internet_message_id)
-    .bind(&m.conversation_index)
+    .bind(&m.in_reply_to)
     .bind(&m.subject)
     .bind(&m.body_preview)
     .bind(m.body_content_type.as_str())
@@ -155,6 +183,29 @@ pub async fn upsert_with_recipients(
         .execute(&mut *conn)
         .await?;
     }
+    Ok(())
+}
+
+pub async fn set_session_id(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+    session_id: &SessionId,
+) -> Result<(), PortError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    sqlx::query(
+        "UPDATE messages SET session_id = ?, local_updated_at = ?
+         WHERE account_id = ? AND id = ?",
+    )
+    .bind(session_id.as_str())
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -226,21 +277,26 @@ pub async fn delete_physical(
     Ok(())
 }
 
-pub async fn list_by_thread(
+/// 列出消息所属 session_id（去重）
+pub async fn list_session_ids(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-    thread_id: &ThreadId,
-) -> Result<Vec<Message>, PortError> {
-    sqlx::query(
-        "SELECT * FROM messages WHERE account_id = ? AND thread_id = ? AND sync_status != 'deleted_remote'
-         ORDER BY received_at DESC, id DESC",
-    )
-    .bind(account_id.as_str())
-    .bind(thread_id.as_str())
-    .fetch_all(&mut *conn)
-    .await?
-    .iter()
-    .map(super::rows::message)
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(Into::into)
+    message_ids: &[MessageId],
+) -> Result<Vec<SessionId>, PortError> {
+    let mut out = Vec::new();
+    for id in message_ids {
+        let sid: Option<String> = sqlx::query_scalar(
+            "SELECT session_id FROM messages WHERE account_id = ? AND id = ?",
+        )
+        .bind(account_id.as_str())
+        .bind(id.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(s) = sid {
+            out.push(SessionId::new(s));
+        }
+    }
+    out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    out.dedup();
+    Ok(out)
 }

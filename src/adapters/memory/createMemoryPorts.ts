@@ -3,7 +3,7 @@ import { MemoryStore } from './memoryStore';
 import { MemoryAccountAdapter } from './MemoryAccountAdapter';
 import { MemorySyncAdapter } from './MemorySyncAdapter';
 import { MemoryContactAdapter } from './MemoryContactAdapter';
-import { MemoryConversationAdapter } from './MemoryConversationAdapter';
+import { MemorySessionAdapter } from './MemorySessionAdapter';
 import { MemoryMessageAdapter } from './MemoryMessageAdapter';
 import { MemoryComposeAdapter } from './MemoryComposeAdapter';
 import { MemoryGroupAdapter } from './MemoryGroupAdapter';
@@ -16,7 +16,7 @@ export function createMemoryPorts(store = new MemoryStore()): AppPorts {
     account: new MemoryAccountAdapter(store),
     sync: new MemorySyncAdapter(store),
     contact: new MemoryContactAdapter(store),
-    conversation: new MemoryConversationAdapter(store),
+    session: new MemorySessionAdapter(store),
     message: new MemoryMessageAdapter(store),
     compose: new MemoryComposeAdapter(store),
     group: new MemoryGroupAdapter(store),

@@ -54,8 +54,7 @@ macro_rules! string_id {
 string_id!(AccountId, "账户 ID");
 string_id!(ContactId, "联系人本地 ID");
 string_id!(MessageId, "邮件本地 ID（稳定；与 graph_id 分离）");
-string_id!(GroupId, "业务群组 ID");
-string_id!(ConversationId, "会话列表缓存 ID");
-string_id!(ThreadId, "Graph conversationId / 线程 ID");
+string_id!(GroupId, "群档案 ID（群聊 Session 关联投影）");
+string_id!(SessionId, "会话 ID（一等公民）");
 string_id!(GraphImmutableId, "Graph ImmutableId");
 string_id!(FolderId, "Graph 邮件文件夹 ID（仅同步投影，非导航主轴）");

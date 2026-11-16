@@ -1,10 +1,8 @@
-//! 群组相关实体
+//! 群组投影实体（关联群聊 Session；非消息上级）
 
-use crate::domain::value_objects::{
-    AccountId, EmailAddress, GroupId, GroupSource, ThreadId, TimestampMs,
-};
+use crate::domain::value_objects::{AccountId, EmailAddress, GroupId, GroupSource, TimestampMs};
 
-/// 业务群组（自动 / 手动）
+/// 群档案：名称与成员；聊天状态在 Session
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Group {
     pub id: GroupId,
@@ -15,19 +13,8 @@ pub struct Group {
     pub source: GroupSource,
     /// 发信成员是否手动锁定
     pub send_members_is_manual: bool,
-    /// 被吸收时指向存活根群组
-    pub merged_into_id: Option<GroupId>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
-}
-
-/// 线程 → 群组主归属（账户内每个 thread 最多一行）
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct GroupThread {
-    pub account_id: AccountId,
-    pub group_id: GroupId,
-    pub thread_id: ThreadId,
-    pub linked_at: TimestampMs,
 }
 
 /// 群组成员投影（观测 + 发信）

@@ -10,19 +10,19 @@ alwaysApply: false
 
 ```ts
 // 1. 先接口
-export interface ConversationPort {
-  listByContact(contactId: string): Promise<Conversation[]>;
+export interface SessionPort {
+  listSessions(query: SessionListQuery): Promise<CursorPage<SessionListItem>>;
 }
 
 // 2. 再实现：只在这里调 RS 桥
-export class TauriConversationAdapter implements ConversationPort {
-  async listByContact(contactId: string) {
-    return invoke<Conversation[]>('list_conversations_by_contact', { contactId });
+export class TauriSessionAdapter implements SessionPort {
+  async listSessions(query: SessionListQuery) {
+    return invoke('list_sessions', { query });
   }
 }
 
 // ❌ BAD — UI 直接 invoke
-await invoke('list_conversations_by_contact', { contactId });
+await invoke('list_sessions', { query });
 ```
 
 - Feature / hooks / stores 只依赖 Port

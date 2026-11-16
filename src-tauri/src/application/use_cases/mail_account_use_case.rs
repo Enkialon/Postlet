@@ -65,7 +65,6 @@ pub async fn upsert_imap_smtp_account(
             contact_synced_at: None,
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
-            show_group_messages_in_contact_conversation: false,
             include_in_all: true,
             created_at: now,
             updated_at: now,

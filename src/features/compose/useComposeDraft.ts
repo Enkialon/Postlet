@@ -38,12 +38,12 @@ export function useComposeDraft() {
   const sending = ref(false);
   const saving = ref(false);
   const error = ref<string | null>(null);
-  const loadedConversationId = ref<string | null>(null);
+  const loadedSessionId = ref<string | null>(null);
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   const accountId = computed(() => nav.accountId.value);
-  const conversationId = computed(() => nav.conversationId.value);
+  const sessionId = computed(() => nav.sessionId.value);
 
   async function defaultToRecipients(): Promise<ComposeRecipientRef[]> {
     const item = selected.value;
@@ -51,10 +51,10 @@ export function useComposeDraft() {
     if (!item || !aid) return [];
 
     if (
-      item.conversation.kind === 'contact' &&
-      item.conversation.normalized_address
+      item.session.kind === 'private' &&
+      item.session.normalized_address
     ) {
-      const address = item.conversation.normalized_address;
+      const address = item.session.normalized_address;
       const name =
         item.contact_display_name?.trim() ||
         (await ports.contact
@@ -65,11 +65,11 @@ export function useComposeDraft() {
       return [{ address, display_name: name }];
     }
 
-    if (item.conversation.kind === 'group' && item.conversation.group_id) {
+    if (item.session.kind === 'group' && item.session.group_id) {
       try {
         const participants = await ports.group.listParticipants(
           aid,
-          item.conversation.group_id,
+          item.session.group_id,
         );
         const sendMembers = participants.filter((p) => p.is_send_member);
         const source = sendMembers.length > 0 ? sendMembers : participants;
@@ -113,29 +113,29 @@ export function useComposeDraft() {
 
   async function loadForConversation(): Promise<string> {
     const aid = accountId.value;
-    const cid = conversationId.value;
-    if (!aid || !cid) {
+    const sid = sessionId.value;
+    if (!aid || !sid) {
       await applyDraft(null);
-      loadedConversationId.value = null;
+      loadedSessionId.value = null;
       return '';
     }
     try {
-      const draft = await ports.compose.getDraft(aid, cid);
+      const draft = await ports.compose.getDraft(aid, sid);
       await applyDraft(draft);
-      loadedConversationId.value = cid;
+      loadedSessionId.value = sid;
       return draft?.body_html ?? '';
     } catch (e) {
       error.value = asAppError(e).message;
       await applyDraft(null);
-      loadedConversationId.value = cid;
+      loadedSessionId.value = sid;
       return '';
     }
   }
 
   function scheduleSave(bodyHtml: string): void {
     const aid = accountId.value;
-    const cid = conversationId.value;
-    if (!aid || !cid) return;
+    const sid = sessionId.value;
+    if (!aid || !sid) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       void persist(bodyHtml);
@@ -144,13 +144,13 @@ export function useComposeDraft() {
 
   async function persist(bodyHtml: string): Promise<void> {
     const aid = accountId.value;
-    const cid = conversationId.value;
-    if (!aid || !cid) return;
+    const sid = sessionId.value;
+    if (!aid || !sid) return;
     saving.value = true;
     try {
       await ports.compose.saveDraft({
         account_id: aid,
-        conversation_id: cid,
+        session_id: sid,
         reply_to_message_id: fields.replyToMessageId,
         to: cloneRecipients(fields.to),
         cc: cloneRecipients(fields.cc),
@@ -210,8 +210,8 @@ export function useComposeDraft() {
 
   async function send(bodyHtml: string): Promise<MessageWithRecipients | null> {
     const aid = accountId.value;
-    const cid = conversationId.value;
-    if (!aid || !cid) return null;
+    const sid = sessionId.value;
+    if (!aid || !sid) return null;
 
     let to = cloneRecipients(fields.to);
     if (to.length === 0) to = await defaultToRecipients();
@@ -221,7 +221,7 @@ export function useComposeDraft() {
     try {
       const result = await ports.compose.send({
         account_id: aid,
-        conversation_id: cid,
+        session_id: sid,
         reply_to_message_id: fields.replyToMessageId,
         to,
         cc: cloneRecipients(fields.cc),
@@ -242,7 +242,7 @@ export function useComposeDraft() {
   }
 
   watch(
-    () => [accountId.value, conversationId.value] as const,
+    () => [accountId.value, sessionId.value] as const,
     () => {
       if (saveTimer) {
         clearTimeout(saveTimer);
@@ -256,7 +256,8 @@ export function useComposeDraft() {
     sending,
     saving,
     error,
-    loadedConversationId,
+    loadedSessionId,
+    loadedConversationId: loadedSessionId,
     loadForConversation,
     scheduleSave,
     persist,

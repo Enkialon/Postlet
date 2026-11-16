@@ -66,7 +66,7 @@ const {
   mailDetail.value ? 'mail' : 'detail',
 );
 /** 切换会话后只自动贴底一次，避免加载更多时又被拽到底 */
-const pendingStickBottom = ref(Boolean(nav.conversationId.value));
+const pendingStickBottom = ref(Boolean(nav.sessionId.value));
 let loadingOlder = false;
 
 /** 后端返回含已删；默认前端隐藏 */
@@ -102,7 +102,7 @@ function scrollToLatest(): void {
 }
 
 watch(
-  () => nav.conversationId.value,
+  () => nav.sessionId.value,
   () => {
     pendingStickBottom.value = true;
   },
@@ -113,7 +113,7 @@ watch(
     [
       messageState.loading,
       displayMessages.value.length,
-      nav.conversationId.value,
+      nav.sessionId.value,
     ] as const,
   async ([loading, len, conversationId]) => {
     if (!pendingStickBottom.value || !conversationId) return;
@@ -157,11 +157,11 @@ async function loadOlderPreservingScroll(): Promise<void> {
   }
 }
 
-const moveOpen = ref(false);
-const moveThreadId = ref<string | null>(null);
-const moveTargets = ref<Group[]>([]);
-const moveTargetId = ref('');
-const moveBusy = ref(false);
+const reassignOpen = ref(false);
+const reassignMessageId = ref<string | null>(null);
+const reassignTargets = ref<Group[]>([]);
+const reassignTargetId = ref('');
+const reassignBusy = ref(false);
 
 const detailContact = ref<Contact | null>(null);
 const detailGroup = ref<Group | null>(null);
@@ -177,7 +177,9 @@ const showingMailDetail = computed(
 const title = computed(() => {
   const item = selected.value;
   if (!item) return '';
-  if (item.conversation.kind === 'group') {
+  const resolved = item.display_name?.trim();
+  if (resolved) return resolved;
+  if (item.session.kind === 'group') {
     return item.group_name?.trim() || '未命名群组';
   }
   const fromMail =
@@ -187,7 +189,7 @@ const title = computed(() => {
   return (
     displayNameOrAddress(
       item.contact_display_name,
-      item.conversation.normalized_address,
+      item.session.normalized_address,
       fromMail,
     ) || '会话'
   );
@@ -195,17 +197,17 @@ const title = computed(() => {
 
 const ownerAccountLabel = computed(() => {
   if (accounts.value.length < 2) return null;
-  const id = selected.value?.conversation.account_id;
+  const id = selected.value?.session.account_id;
   return id ? accountLabel(id) : null;
 });
 
 const showEmptyHint = computed(
-  () => !nav.conversationId.value && messageState.loading === 'idle',
+  () => !nav.sessionId.value && messageState.loading === 'idle',
 );
 
 const showEmptyThread = computed(
   () =>
-    Boolean(nav.conversationId.value) &&
+    Boolean(nav.sessionId.value) &&
     messageState.loading === 'idle' &&
     !messageState.error &&
     displayMessages.value.length === 0,
@@ -226,24 +228,24 @@ async function loadDetail(): Promise<void> {
   detailLoading.value = true;
   detailError.value = null;
   try {
-    if (item.conversation.kind === 'contact' && item.conversation.contact_id) {
+    if (item.session.kind === 'private' && item.session.contact_id) {
       detailContact.value = await ports.contact.getContact(
         accountId,
-        item.conversation.contact_id,
+        item.session.contact_id,
       );
       detailGroup.value = null;
       detailParticipants.value = [];
     } else if (
-      item.conversation.kind === 'group' &&
-      item.conversation.group_id
+      item.session.kind === 'group' &&
+      item.session.group_id
     ) {
       detailGroup.value = await ports.group.getGroup(
         accountId,
-        item.conversation.group_id,
+        item.session.group_id,
       );
       detailParticipants.value = await ports.group.listParticipants(
         accountId,
-        item.conversation.group_id,
+        item.session.group_id,
       );
       detailContact.value = null;
     } else {
@@ -252,7 +254,7 @@ async function loadDetail(): Promise<void> {
       detailParticipants.value = [];
     }
 
-    const lastId = item.conversation.last_message_id;
+    const lastId = item.session.last_message_id;
     if (lastId) {
       detailLastMessage.value = await ports.message.getMessage(
         accountId,
@@ -271,32 +273,41 @@ async function loadDetail(): Promise<void> {
 watch(
   () => [
     nav.detailOpen.value,
-    nav.conversationId.value,
-    selected.value?.conversation.updated_at,
-    selected.value?.conversation.unread_count,
-    selected.value?.conversation.last_message_id,
+    nav.sessionId.value,
+    selected.value?.session.updated_at,
+    selected.value?.session.unread_count,
+    selected.value?.session.last_message_id,
   ],
   () => {
     void loadDetail();
   },
 );
 
-async function openMove(threadId: string) {
-  moveThreadId.value = threadId;
-  moveTargets.value = (await groups.loadAllRootGroups()).filter(
-    (g) => g.id !== selected.value?.conversation.group_id,
+async function openReassign(messageId: string) {
+  reassignMessageId.value = messageId;
+  reassignTargets.value = (await groups.loadAllRootGroups()).filter(
+    (g) => g.id !== selected.value?.session.group_id,
   );
-  moveTargetId.value = moveTargets.value[0]?.id ?? '';
-  moveOpen.value = true;
+  reassignTargetId.value = reassignTargets.value[0]?.id ?? '';
+  reassignOpen.value = true;
 }
 
-async function confirmMove() {
-  if (!moveThreadId.value || !moveTargetId.value || moveBusy.value) return;
-  moveBusy.value = true;
-  const ok = await groups.moveThread(moveThreadId.value, moveTargetId.value);
-  moveBusy.value = false;
+async function confirmReassign() {
+  if (
+    !reassignMessageId.value ||
+    !reassignTargetId.value ||
+    reassignBusy.value
+  ) {
+    return;
+  }
+  reassignBusy.value = true;
+  const ok = await groups.reassignMessages(
+    [reassignMessageId.value],
+    reassignTargetId.value,
+  );
+  reassignBusy.value = false;
   if (ok) {
-    moveOpen.value = false;
+    reassignOpen.value = false;
     await loadInitial();
   }
 }
@@ -372,7 +383,7 @@ const mailBodyError = computed(() => {
 });
 
 watch(
-  () => nav.conversationId.value,
+  () => nav.sessionId.value,
   () => {
     mailDetail.value = null;
   },
@@ -397,7 +408,7 @@ watch(
       description="左侧会话列表像微信聊天一样组织往来"
     />
 
-    <template v-else-if="nav.conversationId.value">
+    <template v-else-if="nav.sessionId.value">
       <header
         class="flex h-[52px] shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-header px-5"
       >
@@ -479,7 +490,7 @@ watch(
                     displayMessages[row.index]!.message.id
                   "
                   :preferred-name="selected?.contact_display_name"
-                  :allow-move-thread="selected?.conversation.kind === 'group'"
+                  :allow-reassign="selected?.session.kind === 'group'"
                   @select="openMailReading(displayMessages[row.index]!)"
                   @reply="onReplyMessage(displayMessages[row.index]!)"
                   @mark-unread="
@@ -488,7 +499,7 @@ watch(
                   @delete="
                     onDeleteMessage(displayMessages[row.index]!.message.id)
                   "
-                  @move-thread="openMove"
+                  @reassign="openReassign"
                 />
               </div>
             </div>
@@ -583,17 +594,17 @@ watch(
                 <dt class="text-text-secondary">种类</dt>
                 <dd class="m-0 break-words text-text-primary">
                   {{
-                    selected.conversation.kind === 'group' ? '群组' : '联系人'
+                    selected.session.kind === 'group' ? '群组' : '私聊'
                   }}
                 </dd>
               </div>
               <div
-                v-if="selected.conversation.normalized_address"
+                v-if="selected.session.normalized_address"
                 class="grid grid-cols-[3.5rem_1fr] items-start gap-2 text-[14px]"
               >
                 <dt class="text-text-secondary">地址</dt>
                 <dd class="m-0 break-words text-text-primary" v-no-i18n>
-                  {{ selected.conversation.normalized_address }}
+                  {{ selected.session.normalized_address }}
                 </dd>
               </div>
               <div
@@ -601,7 +612,7 @@ watch(
               >
                 <dt class="text-text-secondary">未读</dt>
                 <dd class="m-0 break-words text-text-primary">
-                  {{ selected.conversation.unread_count }}
+                  {{ selected.session.unread_count }}
                 </dd>
               </div>
               <div
@@ -666,13 +677,13 @@ watch(
 
             <div class="flex flex-wrap gap-2">
               <Button
-                v-if="selected.conversation.kind === 'contact'"
+                v-if="selected.session.kind === 'private'"
                 @click="goContactPage"
               >
                 查看联系人
               </Button>
               <Button
-                v-if="selected.conversation.kind === 'group'"
+                v-if="selected.session.kind === 'group'"
                 @click="goGroupPage"
               >
                 查看群组
@@ -686,7 +697,7 @@ watch(
         <MailComposer
           ref="composerRef"
           :require-recipients-for-send="
-            selected?.conversation.kind === 'group'
+            selected?.session.kind === 'group'
           "
           @sent="onMailSent"
           @mode-change="onComposeModeChange"
@@ -695,21 +706,21 @@ watch(
     </template>
 
     <Dialog
-      :open="moveOpen"
-      title="迁移线程到群组"
-      :confirming="moveBusy"
-      @close="moveOpen = false"
-      @confirm="confirmMove"
+      :open="reassignOpen"
+      title="迁移邮件到群组"
+      :confirming="reassignBusy"
+      @close="reassignOpen = false"
+      @confirm="confirmReassign"
     >
-      <p>将迁移该线程的全部邮件到目标根群组。</p>
+      <p>将该邮件改挂到目标群聊会话。</p>
       <label class="mt-3 grid gap-1.5 text-[13px]">
         目标群组
         <select
-          v-model="moveTargetId"
+          v-model="reassignTargetId"
           class="rounded-md border border-border-subtle bg-surface-input px-2.5 py-2 text-[14px]"
         >
           <option
-            v-for="g in moveTargets"
+            v-for="g in reassignTargets"
             :key="g.id"
             :value="g.id"
             v-no-i18n

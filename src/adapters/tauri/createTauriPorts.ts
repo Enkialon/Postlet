@@ -3,22 +3,22 @@ import type {
   ComposeDraft,
   ContactListQuery,
   ContactSyncProgress,
-  ConversationListItem,
-  ConversationListQuery,
-  ConversationMessagesQuery,
   CreateManualGroupCommand,
   CursorPage,
   DeleteMessagesCommand,
-  EnsureContactConversationCommand,
-  EnsureGroupConversationCommand,
+  EnsureGroupSessionCommand,
+  EnsurePrivateSessionCommand,
   GroupListQuery,
   MailSyncProgress,
   MarkMessagesReadCommand,
-  MergeGroupsCommand,
-  MoveThreadToGroupCommand,
+  MergeSessionsCommand,
+  ReassignMessagesToGroupCommand,
   RenameGroupCommand,
   SaveComposeDraftCommand,
   SendComposedMailCommand,
+  SessionListItem,
+  SessionListQuery,
+  SessionMessagesQuery,
   SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
@@ -29,19 +29,19 @@ import type {
 import type {
   Account,
   Contact,
-  Conversation,
   Group,
   GroupParticipant,
   MailFolderSyncState,
   MessageWithRecipients,
+  Session,
 } from '../../domain/entities';
 import type {
   AccountId,
   ContactId,
-  ConversationId,
   EmailAddress,
   GroupId,
   MessageId,
+  SessionId,
 } from '../../domain/types';
 import { invoke } from './invoke';
 import { normalizeAppError } from './normalizeError';
@@ -94,27 +94,21 @@ export function createTauriPorts(): AppPorts {
           address,
         }),
     },
-    conversation: {
-      listConversations: (query: ConversationListQuery) =>
-        invoke<CursorPage<ConversationListItem>>('list_conversations', {
+    session: {
+      listSessions: (query: SessionListQuery) =>
+        invoke<CursorPage<SessionListItem>>('list_sessions', { query }),
+      getSession: (accountId: AccountId, sessionId: SessionId) =>
+        invoke<SessionListItem>('get_session', { accountId, sessionId }),
+      listMessages: (query: SessionMessagesQuery) =>
+        invoke<CursorPage<MessageWithRecipients>>('list_session_messages', {
           query,
         }),
-      getConversation: (accountId: AccountId, conversationId: ConversationId) =>
-        invoke<ConversationListItem>('get_conversation', {
-          accountId,
-          conversationId,
-        }),
-      listMessages: (query: ConversationMessagesQuery) =>
-        invoke<CursorPage<MessageWithRecipients>>(
-          'list_conversation_messages',
-          { query },
-        ),
-      ensureContactConversation: (cmd: EnsureContactConversationCommand) =>
-        invoke<Conversation>('ensure_contact_conversation', { cmd }),
-      ensureGroupConversation: (cmd: EnsureGroupConversationCommand) =>
-        invoke<Conversation>('ensure_group_conversation', { cmd }),
-      hideConversation: (accountId: AccountId, conversationId: ConversationId) =>
-        invoke<void>('hide_conversation', { accountId, conversationId }),
+      ensurePrivateSession: (cmd: EnsurePrivateSessionCommand) =>
+        invoke<Session>('ensure_private_session', { cmd }),
+      ensureGroupSession: (cmd: EnsureGroupSessionCommand) =>
+        invoke<Session>('ensure_group_session', { cmd }),
+      hideSession: (accountId: AccountId, sessionId: SessionId) =>
+        invoke<void>('hide_session', { accountId, sessionId }),
     },
     message: {
       getMessage: (accountId: AccountId, messageId: MessageId) =>
@@ -133,18 +127,15 @@ export function createTauriPorts(): AppPorts {
         invoke<void>('delete_messages', { cmd }),
     },
     compose: {
-      getDraft: (accountId: AccountId, conversationId: ConversationId) =>
+      getDraft: (accountId: AccountId, sessionId: SessionId) =>
         invoke<ComposeDraft | null>('compose_get_draft', {
           accountId,
-          conversationId,
+          sessionId,
         }),
       saveDraft: (cmd: SaveComposeDraftCommand) =>
         invoke<ComposeDraft>('compose_save_draft', { cmd }),
-      clearDraft: (accountId: AccountId, conversationId: ConversationId) =>
-        invoke<void>('compose_clear_draft', {
-          accountId,
-          conversationId,
-        }),
+      clearDraft: (accountId: AccountId, sessionId: SessionId) =>
+        invoke<void>('compose_clear_draft', { accountId, sessionId }),
       send: (cmd: SendComposedMailCommand) =>
         invoke<MessageWithRecipients>('compose_send', { cmd }),
     },
@@ -162,10 +153,10 @@ export function createTauriPorts(): AppPorts {
         invoke<Group>('create_manual_group', { cmd }),
       renameGroup: (cmd: RenameGroupCommand) =>
         invoke<Group>('rename_group', { cmd }),
-      mergeGroups: (cmd: MergeGroupsCommand) =>
-        invoke<Group>('merge_groups', { cmd }),
-      moveThreadToGroup: (cmd: MoveThreadToGroupCommand) =>
-        invoke<void>('move_thread_to_group', { cmd }),
+      mergeSessions: (cmd: MergeSessionsCommand) =>
+        invoke<Session>('merge_sessions', { cmd }),
+      reassignMessagesToGroup: (cmd: ReassignMessagesToGroupCommand) =>
+        invoke<void>('reassign_messages_to_group', { cmd }),
       updateSendMembers: (cmd: UpdateGroupSendMembersCommand) =>
         invoke<GroupParticipant[]>('update_group_send_members', { cmd }),
     },

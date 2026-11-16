@@ -55,14 +55,15 @@ export class MemorySyncAdapter implements SyncPort {
     const account = this.store.accounts.get(accountId);
     if (!account) return;
 
-    let target = this.store.findContactConversation(
-      accountId,
-      'alice@example.com',
-    );
+    let target = this.store.findPrivateSession(accountId, 'alice@example.com');
     if (!target) {
-      for (const c of this.store.conversations.values()) {
-        if (c.account_id === accountId && c.kind === 'contact') {
-          target = c;
+      for (const s of this.store.sessions.values()) {
+        if (
+          s.account_id === accountId &&
+          s.kind === 'private' &&
+          s.merged_into_id == null
+        ) {
+          target = s;
           break;
         }
       }
@@ -75,11 +76,11 @@ export class MemorySyncAdapter implements SyncPort {
     const msg: Message = {
       id,
       account_id: accountId,
+      session_id: target.id,
       graph_id: `g-${id}`,
-      thread_id: `thr-sync-${this.syncGeneration}`,
       graph_change_key: null,
       internet_message_id: null,
-      conversation_index: null,
+      in_reply_to: null,
       subject: `同步到来信 #${this.syncGeneration}`,
       body_preview: '这是 Memory 假同步注入的新邮件。',
       body_content_type: 'text',
@@ -114,11 +115,7 @@ export class MemorySyncAdapter implements SyncPort {
         display_name: account.display_name,
       },
     ]);
-
-    const key = this.store.conversationKey(accountId, target.id);
-    const ids = this.store.conversationMessages.get(key) ?? [];
-    this.store.conversationMessages.set(key, [id, ...ids]);
-    this.store.recomputeConversation(accountId, target.id);
+    this.store.recomputeSession(accountId, target.id);
   }
 
   async triggerContactSync(cmd: TriggerContactSyncCommand): Promise<void> {

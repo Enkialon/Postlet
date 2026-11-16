@@ -1,6 +1,6 @@
 import { computed, inject, reactive, ref, watch } from 'vue';
-import type { ConversationListItem } from '../../domain/dto';
-import type { ConversationKind } from '../../domain/types';
+import type { SessionListItem } from '../../domain/dto';
+import type { SessionKind } from '../../domain/types';
 import { portsKey, navigationKey } from '../../app/provide';
 import {
   createEmptyPageState,
@@ -8,22 +8,20 @@ import {
 } from '../../shared/state/pageState';
 import { asAppError } from '../../shared/errors/asAppError';
 import {
-  appendConversationPage,
-  applyConversationSnapshot,
-  conversationListKey,
+  appendSessionPage,
+  applySessionSnapshot,
+  sessionListKey,
   itemsFromDisplayOrder,
 } from './conversationListOrder';
 
 const PAGE_SIZE = 50;
 
-const listState = reactive<PageState<ConversationListItem>>(
-  createEmptyPageState(),
-);
-const selected = ref<ConversationListItem | null>(null);
+const listState = reactive<PageState<SessionListItem>>(createEmptyPageState());
+const selected = ref<SessionListItem | null>(null);
 const staleWarning = ref(false);
 
 /** 最新会话数据（稳定 key → 对象，字段原地更新） */
-const conversationByKey = reactive(new Map<string, ConversationListItem>());
+const sessionByKey = reactive(new Map<string, SessionListItem>());
 const canonicalOrder = ref<string[]>([]);
 const displayOrder = ref<string[]>([]);
 /** 用户是否在会话列表顶部（由列表组件上报） */
@@ -38,14 +36,11 @@ const showNewActivityHint = computed(
 let watchBound = false;
 
 function syncListItemsFromDisplay(): void {
-  listState.items = itemsFromDisplayOrder(
-    conversationByKey,
-    displayOrder.value,
-  );
+  listState.items = itemsFromDisplayOrder(sessionByKey, displayOrder.value);
 }
 
 function resetOrderState(): void {
-  conversationByKey.clear();
+  sessionByKey.clear();
   canonicalOrder.value = [];
   displayOrder.value = [];
   pendingActivityKeys.value = [];
@@ -53,27 +48,27 @@ function resetOrderState(): void {
 }
 
 function applyPageToState(
-  pageItems: ConversationListItem[],
+  pageItems: SessionListItem[],
   options: { mode: 'replace' | 'append'; forceApplyOrder: boolean },
 ): void {
   if (options.mode === 'append') {
-    const next = appendConversationPage(
-      new Map(conversationByKey),
+    const next = appendSessionPage(
+      new Map(sessionByKey),
       displayOrder.value,
       canonicalOrder.value,
       pageItems,
     );
-    conversationByKey.clear();
-    for (const [k, v] of next.byKey) conversationByKey.set(k, v);
+    sessionByKey.clear();
+    for (const [k, v] of next.byKey) sessionByKey.set(k, v);
     displayOrder.value = next.displayOrder;
     canonicalOrder.value = next.canonicalOrder;
     syncListItemsFromDisplay();
     return;
   }
 
-  const result = applyConversationSnapshot({
+  const result = applySessionSnapshot({
     snapshot: pageItems,
-    previousByKey: new Map(conversationByKey),
+    previousByKey: new Map(sessionByKey),
     previousCanonicalOrder: canonicalOrder.value,
     previousDisplayOrder: displayOrder.value,
     previousPendingActivityKeys: pendingActivityKeys.value,
@@ -81,8 +76,8 @@ function applyPageToState(
     forceApplyOrder: options.forceApplyOrder,
   });
 
-  conversationByKey.clear();
-  for (const [k, v] of result.byKey) conversationByKey.set(k, v);
+  sessionByKey.clear();
+  for (const [k, v] of result.byKey) sessionByKey.set(k, v);
   canonicalOrder.value = result.canonicalOrder;
   displayOrder.value = result.displayOrder;
   pendingActivityKeys.value = result.pendingActivityKeys;
@@ -91,10 +86,9 @@ function applyPageToState(
 
 function applyCanonicalOrderNow(): void {
   displayOrder.value = [...canonicalOrder.value];
-  // 回顶应用排序时丢掉仅存在于 loadMore 的多余项
   const keep = new Set(canonicalOrder.value);
-  for (const key of [...conversationByKey.keys()]) {
-    if (!keep.has(key)) conversationByKey.delete(key);
+  for (const key of [...sessionByKey.keys()]) {
+    if (!keep.has(key)) sessionByKey.delete(key);
   }
   pendingActivityKeys.value = [];
   syncListItemsFromDisplay();
@@ -104,8 +98,8 @@ export function useConversations() {
   const ports = inject(portsKey)!;
   const nav = inject(navigationKey)!;
 
-  function kindParam(): ConversationKind | null {
-    const k = nav.conversationKind.value;
+  function kindParam(): SessionKind | null {
+    const k = nav.sessionKind.value;
     if (k === 'all') return null;
     return k;
   }
@@ -122,7 +116,7 @@ export function useConversations() {
     listState.error = null;
     staleWarning.value = false;
     try {
-      const page = await ports.conversation.listConversations({
+      const page = await ports.session.listSessions({
         account_id: listQueryAccountId(),
         cursor: null,
         limit: PAGE_SIZE,
@@ -169,7 +163,7 @@ export function useConversations() {
     const session = nav.sessionVersion.value;
     listState.loading = 'more';
     try {
-      const page = await ports.conversation.listConversations({
+      const page = await ports.session.listSessions({
         account_id: listQueryAccountId(),
         cursor: listState.nextCursor,
         limit: PAGE_SIZE,
@@ -207,7 +201,7 @@ export function useConversations() {
     const session = nav.sessionVersion.value;
     listState.loading = 'refresh';
     try {
-      const page = await ports.conversation.listConversations({
+      const page = await ports.session.listSessions({
         account_id: listQueryAccountId(),
         cursor: null,
         limit: PAGE_SIZE,
@@ -239,30 +233,28 @@ export function useConversations() {
   }
 
   async function restoreSelection(): Promise<void> {
-    const id = nav.conversationId.value;
+    const id = nav.sessionId.value;
     const accountId = nav.accountId.value;
     if (!id || !accountId) {
       selected.value = null;
       return;
     }
     const key = `${accountId}:${id}`;
-    const found = conversationByKey.get(key);
+    const found = sessionByKey.get(key);
     if (found) {
       selected.value = found;
       return;
     }
     const inList = listState.items.find(
-      (i) =>
-        i.conversation.id === id && i.conversation.account_id === accountId,
+      (i) => i.session.id === id && i.session.account_id === accountId,
     );
     if (inList) {
       selected.value = inList;
       return;
     }
-    // 仍指向当前选中则保留；勿再 IPC 拉回已不在筛选结果中的旧会话
     if (
-      selected.value?.conversation.id === id &&
-      selected.value.conversation.account_id === accountId
+      selected.value?.session.id === id &&
+      selected.value.session.account_id === accountId
     ) {
       return;
     }
@@ -271,19 +263,17 @@ export function useConversations() {
 
   async function openConversation(
     accountId: string,
-    conversationId: string,
+    sessionId: string,
   ): Promise<void> {
     nav.setAccount(accountId);
-    nav.selectConversation(conversationId);
+    nav.selectSession(sessionId);
 
-    // 先用本地列表项立刻切换，避免干等 getConversation IPC
-    const key = `${accountId}:${conversationId}`;
+    const key = `${accountId}:${sessionId}`;
     const cached =
-      conversationByKey.get(key) ??
+      sessionByKey.get(key) ??
       listState.items.find(
         (i) =>
-          i.conversation.id === conversationId &&
-          i.conversation.account_id === accountId,
+          i.session.id === sessionId && i.session.account_id === accountId,
       ) ??
       null;
     if (cached) {
@@ -291,21 +281,18 @@ export function useConversations() {
     }
 
     try {
-      const item = await ports.conversation.getConversation(
-        accountId,
-        conversationId,
-      );
-      // 用户已点到别的会话则丢弃迟到响应
+      const item = await ports.session.getSession(accountId, sessionId);
       if (
-        nav.conversationId.value !== conversationId ||
+        nav.sessionId.value !== sessionId ||
         nav.accountId.value !== accountId
       ) {
         return;
       }
-      const itemKey = conversationListKey(item);
-      const merged = conversationByKey.get(itemKey);
+      const itemKey = sessionListKey(item);
+      const merged = sessionByKey.get(itemKey);
       if (merged) {
-        Object.assign(merged.conversation, item.conversation);
+        Object.assign(merged.session, item.session);
+        merged.display_name = item.display_name;
         merged.contact_display_name = item.contact_display_name;
         merged.group_name = item.group_name;
         if (item.last_message_preview) {
@@ -321,12 +308,11 @@ export function useConversations() {
       }
     } catch (e) {
       if (
-        nav.conversationId.value !== conversationId ||
+        nav.sessionId.value !== sessionId ||
         nav.accountId.value !== accountId
       ) {
         return;
       }
-      // 列表里已有缓存时保留选中，只记错误
       if (!cached) {
         selected.value = null;
         listState.error = asAppError(e);
@@ -339,13 +325,13 @@ export function useConversations() {
   }
 
   /** 本地隐藏：从列表移除；不删邮件。选中中则清空阅读。 */
-  async function hideConversation(item: ConversationListItem): Promise<void> {
-    const accountId = item.conversation.account_id;
-    const conversationId = item.conversation.id;
-    const key = conversationListKey(item);
+  async function hideConversation(item: SessionListItem): Promise<void> {
+    const accountId = item.session.account_id;
+    const sessionId = item.session.id;
+    const key = sessionListKey(item);
     try {
-      await ports.conversation.hideConversation(accountId, conversationId);
-      conversationByKey.delete(key);
+      await ports.session.hideSession(accountId, sessionId);
+      sessionByKey.delete(key);
       canonicalOrder.value = canonicalOrder.value.filter((k) => k !== key);
       displayOrder.value = displayOrder.value.filter((k) => k !== key);
       pendingActivityKeys.value = pendingActivityKeys.value.filter(
@@ -353,7 +339,7 @@ export function useConversations() {
       );
       syncListItemsFromDisplay();
       if (
-        nav.conversationId.value === conversationId &&
+        nav.sessionId.value === sessionId &&
         nav.accountId.value === accountId
       ) {
         selected.value = null;
@@ -370,7 +356,6 @@ export function useConversations() {
     if (!wasTop && next && pendingActivityKeys.value.length > 0) {
       applyCanonicalOrderNow();
     } else if (!wasTop && next) {
-      // 回顶且无待处理活动：仍对齐 canonical，避免长期偏离
       if (
         displayOrder.value.length !== canonicalOrder.value.length ||
         displayOrder.value.some((k, i) => k !== canonicalOrder.value[i])
@@ -380,7 +365,6 @@ export function useConversations() {
     }
   }
 
-  /** 点击「返回顶部」提示：应用最新排序（滚动由列表组件负责） */
   function jumpToLatestOrder(): void {
     listAtTop.value = true;
     applyCanonicalOrderNow();
@@ -391,14 +375,12 @@ export function useConversations() {
     watch(
       () => [
         nav.accountFilter.value,
-        nav.conversationKind.value,
+        nav.sessionKind.value,
         nav.sessionVersion.value,
       ],
       () => {
-        // 筛选变化：清阅读上下文，避免 restoreSelection 把旧会话又拉回来
         selected.value = null;
         nav.clearReading();
-        // 作废在途请求，但绝不能把 requestVersion 重置为 0（否则新旧请求版本撞车）
         listState.requestVersion += 1;
         listState.items = [];
         listState.nextCursor = null;

@@ -1,8 +1,6 @@
 //! 邮件账户实体
 
-use crate::domain::value_objects::{
-    AccountId, EmailAddress, SyncStatus, TimestampMs,
-};
+use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
 
 /// 邮件账户（租户根；协议由 AccountMailTransport 配置）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -24,8 +22,6 @@ pub struct Account {
     pub mail_sync_status: SyncStatus,
     /// 最近一次失败原因；成功时清空
     pub mail_sync_error: Option<String>,
-    /// 群组消息是否同时出现在联系人会话投影（默认否）
-    pub show_group_messages_in_contact_conversation: bool,
     /// 是否纳入「全部账号」会话/联系人/群组查询（默认是；与是否已登录无关）
     pub include_in_all: bool,
     pub created_at: TimestampMs,

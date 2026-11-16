@@ -38,7 +38,6 @@ async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
         contact_synced_at: None,
         mail_sync_status: SyncStatus::Idle,
         mail_sync_error: None,
-        show_group_messages_in_contact_conversation: false,
         include_in_all: true,
         created_at: now,
         updated_at: now,

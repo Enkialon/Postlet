@@ -134,14 +134,7 @@ pub async fn delete(
     id: &ContactId,
 ) -> Result<(), PortError> {
     // 清空会话上的 contact_id 引用，避免悬挂外键语义
-    sqlx::query(
-        "UPDATE conversations SET contact_id = NULL
-         WHERE account_id = ? AND contact_id = ?",
-    )
-    .bind(account_id.as_str())
-    .bind(id.as_str())
-    .execute(&mut *conn)
-    .await?;
+    super::sessions::clear_contact_id_refs(conn, account_id, id).await?;
     sqlx::query("DELETE FROM contacts WHERE account_id = ? AND id = ?")
         .bind(account_id.as_str())
         .bind(id.as_str())

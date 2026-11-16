@@ -6,8 +6,7 @@ export type AccountId = string;
 export type ContactId = string;
 export type MessageId = string;
 export type GroupId = string;
-export type ConversationId = string;
-export type ThreadId = string;
+export type SessionId = string;
 export type GraphImmutableId = string;
 export type FolderId = string;
 
@@ -20,7 +19,8 @@ export type Importance = 'low' | 'normal' | 'high';
 export type RecipientRole = 'to' | 'cc' | 'bcc' | 'reply_to';
 /** 群组诞生方式 */
 export type GroupSource = 'auto' | 'manual';
-export type ConversationKind = 'contact' | 'group';
+/** 会话种类：一张 sessions 表内区分 */
+export type SessionKind = 'private' | 'group';
 export type AggregateJobStatus =
   | 'pending'
   | 'processing'

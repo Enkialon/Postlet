@@ -7,7 +7,7 @@ use crate::application::dto::remote_models::{
 };
 use crate::application::error::PortError;
 use crate::domain::value_objects::{
-    BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole, ThreadId,
+    BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole,
 };
 use chrono::{DateTime, Utc};
 use graph_rs_sdk::{GraphClient, ODataQuery};
@@ -17,9 +17,8 @@ use serde_json::{json, Value};
 const MESSAGE_SELECT: &[&str] = &[
     "id",
     "changeKey",
-    "conversationId",
     "internetMessageId",
-    "conversationIndex",
+    "internetMessageHeaders",
     "subject",
     "bodyPreview",
     "body",
@@ -607,19 +606,25 @@ fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<Re
         _ => Importance::Normal,
     };
 
-    let conversation_index = value
-        .get("conversationIndex")
-        .and_then(|v| v.as_str())
-        .and_then(|s| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s).ok()
+    let in_reply_to = value
+        .get("internetMessageHeaders")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find_map(|h| {
+                let name = h.get("name").and_then(|n| n.as_str())?;
+                if name.eq_ignore_ascii_case("In-Reply-To") {
+                    h.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                }
+            })
         });
 
     Ok(RemoteMessage {
         graph_id: GraphImmutableId::new(id.to_string()),
-        thread_id: value
-            .get("conversationId")
-            .and_then(|v| v.as_str())
-            .map(|s| ThreadId::new(s.to_string())),
         graph_change_key: value
             .get("changeKey")
             .and_then(|v| v.as_str())
@@ -628,7 +633,7 @@ fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<Re
             .get("internetMessageId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        conversation_index,
+        in_reply_to,
         subject,
         body_preview,
         body_content_type,
@@ -711,8 +716,10 @@ mod tests {
         let value = json!({
             "id": "AAMkAG",
             "changeKey": "ck",
-            "conversationId": "thread-1",
             "internetMessageId": "<a@b.com>",
+            "internetMessageHeaders": [
+                { "name": "In-Reply-To", "value": "<parent@b.com>" }
+            ],
             "subject": "Hello",
             "bodyPreview": "preview",
             "body": { "contentType": "HTML", "content": "<p>hi</p>" },
@@ -735,5 +742,6 @@ mod tests {
         assert_eq!(remote.recipients.len(), 1);
         assert_eq!(remote.importance, Importance::High);
         assert!(remote.is_read);
+        assert_eq!(remote.in_reply_to.as_deref(), Some("<parent@b.com>"));
     }
 }

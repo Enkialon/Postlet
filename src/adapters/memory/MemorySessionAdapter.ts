@@ -1,14 +1,14 @@
-import type { ConversationPort } from '../../ports/conversationPort';
-import type { Contact, Conversation, MessageWithRecipients } from '../../domain/entities';
+import type { SessionPort } from '../../ports/sessionPort';
+import type { Contact, MessageWithRecipients, Session } from '../../domain/entities';
 import type {
-  ConversationListItem,
-  ConversationListQuery,
-  ConversationMessagesQuery,
   CursorPage,
-  EnsureContactConversationCommand,
-  EnsureGroupConversationCommand,
+  EnsureGroupSessionCommand,
+  EnsurePrivateSessionCommand,
+  SessionListItem,
+  SessionListQuery,
+  SessionMessagesQuery,
 } from '../../domain/dto';
-import type { AccountId, ConversationId } from '../../domain/types';
+import type { AccountId, SessionId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
 function paginate<T>(
@@ -28,61 +28,59 @@ function paginate<T>(
   };
 }
 
-export class MemoryConversationAdapter implements ConversationPort {
+export class MemorySessionAdapter implements SessionPort {
   constructor(private readonly store: MemoryStore) {}
 
-  async listConversations(
-    query: ConversationListQuery,
-  ): Promise<CursorPage<ConversationListItem>> {
+  async listSessions(
+    query: SessionListQuery,
+  ): Promise<CursorPage<SessionListItem>> {
     if (query.account_id) this.store.requireAccount(query.account_id);
     const allListIds = this.store.idsForAllLists();
-    let items = [...this.store.conversations.values()]
-      .filter((c) =>
+    const items = [...this.store.sessions.values()]
+      .filter((s) => s.merged_into_id == null)
+      .filter((s) =>
         query.account_id
-          ? c.account_id === query.account_id
-          : allListIds.has(c.account_id),
+          ? s.account_id === query.account_id
+          : allListIds.has(s.account_id),
       )
-      .filter((c) => {
-        if (c.hidden_at == null) return true;
-        const live = this.store.effectiveMessagesForConversation(c);
+      .filter((s) => {
+        if (s.hidden_at == null) return true;
+        const live = this.store.effectiveMessagesForSession(s);
         const lastAt = live[0]?.received_at ?? live[0]?.sent_at ?? null;
-        if (lastAt != null && lastAt > c.hidden_at) {
-          c.hidden_at = null;
+        if (lastAt != null && lastAt > s.hidden_at) {
+          s.hidden_at = null;
           return true;
         }
         return false;
       })
-      .filter((c) => (query.kind ? c.kind === query.kind : true))
+      .filter((s) => (query.kind ? s.kind === query.kind : true))
       .sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0))
-      .map((c) => this.store.toListItem(c));
+      .map((s) => this.store.toListItem(s));
     return paginate(items, query.cursor, Math.max(1, Math.min(query.limit, 200)));
   }
 
-  async getConversation(
+  async getSession(
     accountId: AccountId,
-    conversationId: ConversationId,
-  ): Promise<ConversationListItem> {
+    sessionId: SessionId,
+  ): Promise<SessionListItem> {
     this.store.requireAccount(accountId);
-    const conversation = this.store.conversations.get(
-      this.store.conversationKey(accountId, conversationId),
+    const session = this.store.sessions.get(
+      this.store.sessionKey(accountId, sessionId),
     );
-    if (!conversation) this.store.failNotFound('会话不存在');
-    return this.store.toListItem(conversation);
+    if (!session || session.merged_into_id) this.store.failNotFound('会话不存在');
+    return this.store.toListItem(session);
   }
 
   async listMessages(
-    query: ConversationMessagesQuery,
+    query: SessionMessagesQuery,
   ): Promise<CursorPage<MessageWithRecipients>> {
     this.store.requireAccount(query.account_id);
-    const key = this.store.conversationKey(
-      query.account_id,
-      query.conversation_id,
-    );
-    const conversation = this.store.conversations.get(key);
-    if (!conversation) {
+    const key = this.store.sessionKey(query.account_id, query.session_id);
+    const session = this.store.sessions.get(key);
+    if (!session || session.merged_into_id) {
       this.store.failNotFound('会话不存在');
     }
-    const messages = this.store.threadMessagesForConversation(conversation);
+    const messages = this.store.threadMessagesForSession(session);
     const ordered =
       query.direction === 'newer' ? [...messages].reverse() : messages;
 
@@ -104,22 +102,22 @@ export class MemoryConversationAdapter implements ConversationPort {
     };
   }
 
-  async ensureContactConversation(
-    cmd: EnsureContactConversationCommand,
-  ): Promise<Conversation> {
+  async ensurePrivateSession(
+    cmd: EnsurePrivateSessionCommand,
+  ): Promise<Session> {
     this.store.requireAccount(cmd.account_id);
     const address = this.store.normalizeEmail(cmd.normalized_address);
     if (!address.includes('@')) {
       this.store.failValidation('邮箱格式无效');
     }
 
-    const existing = this.store.findContactConversation(cmd.account_id, address);
+    const existing = this.store.findPrivateSession(cmd.account_id, address);
     if (existing) {
       if (existing.hidden_at != null) {
         existing.hidden_at = null;
         existing.updated_at = Date.now();
-        this.store.conversations.set(
-          this.store.conversationKey(cmd.account_id, existing.id),
+        this.store.sessions.set(
+          this.store.sessionKey(cmd.account_id, existing.id),
           existing,
         );
       }
@@ -153,13 +151,14 @@ export class MemoryConversationAdapter implements ConversationPort {
       );
     }
 
-    const conversation: Conversation = {
-      id: this.store.nextId('conv'),
+    const session: Session = {
+      id: this.store.nextId('sess'),
       account_id: cmd.account_id,
-      kind: 'contact',
+      kind: 'private',
       normalized_address: address,
       contact_id: contact.id,
       group_id: null,
+      merged_into_id: null,
       last_message_at: null,
       last_message_id: null,
       unread_count: 0,
@@ -167,47 +166,38 @@ export class MemoryConversationAdapter implements ConversationPort {
       created_at: t,
       updated_at: t,
     };
-    this.store.conversations.set(
-      this.store.conversationKey(cmd.account_id, conversation.id),
-      conversation,
+    this.store.sessions.set(
+      this.store.sessionKey(cmd.account_id, session.id),
+      session,
     );
-    this.store.conversationMessages.set(
-      this.store.conversationKey(cmd.account_id, conversation.id),
-      [],
-    );
-    return { ...conversation };
+    return { ...session };
   }
 
-  async ensureGroupConversation(
-    cmd: EnsureGroupConversationCommand,
-  ): Promise<Conversation> {
+  async ensureGroupSession(cmd: EnsureGroupSessionCommand): Promise<Session> {
     this.store.requireAccount(cmd.account_id);
-    const conversation = this.store.ensureGroupConversationEntity(
+    const session = this.store.ensureGroupSessionEntity(
       cmd.account_id,
       cmd.group_id,
     );
-    if (conversation.hidden_at != null) {
-      conversation.hidden_at = null;
-      conversation.updated_at = Date.now();
-      this.store.conversations.set(
-        this.store.conversationKey(cmd.account_id, conversation.id),
-        conversation,
+    if (session.hidden_at != null) {
+      session.hidden_at = null;
+      session.updated_at = Date.now();
+      this.store.sessions.set(
+        this.store.sessionKey(cmd.account_id, session.id),
+        session,
       );
     }
-    return { ...conversation };
+    return { ...session };
   }
 
-  async hideConversation(
-    accountId: AccountId,
-    conversationId: ConversationId,
-  ): Promise<void> {
+  async hideSession(accountId: AccountId, sessionId: SessionId): Promise<void> {
     this.store.requireAccount(accountId);
-    const key = this.store.conversationKey(accountId, conversationId);
-    const conversation = this.store.conversations.get(key);
-    if (!conversation) this.store.failNotFound('会话不存在');
+    const key = this.store.sessionKey(accountId, sessionId);
+    const session = this.store.sessions.get(key);
+    if (!session || session.merged_into_id) this.store.failNotFound('会话不存在');
     const t = Date.now();
-    conversation.hidden_at = t;
-    conversation.updated_at = t;
-    this.store.conversations.set(key, conversation);
+    session.hidden_at = t;
+    session.updated_at = t;
+    this.store.sessions.set(key, session);
   }
 }

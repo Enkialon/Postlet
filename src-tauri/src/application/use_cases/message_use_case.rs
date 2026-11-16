@@ -6,7 +6,7 @@ use crate::application::dto::{
 use crate::application::error::{AppError, PortError};
 use crate::domain::entities::MessageWithRecipients;
 use crate::domain::value_objects::{
-    AccountId, ConversationId, MailAuthKind, MailTlsMode, MessageId, ReceiveProtocol, TimestampMs,
+    AccountId, MailAuthKind, MailTlsMode, MessageId, ReceiveProtocol, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
@@ -16,10 +16,9 @@ use crate::infrastructure::imap::{
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, conversations, mail_transports, messages, mutations,
+    accounts, mail_transports, messages, mutations, sessions,
 };
 use sqlx::SqlitePool;
-use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> TimestampMs {
@@ -107,19 +106,9 @@ pub async fn mark_read(
             .await
             .map_err(AppError::from)?;
     }
-    let mut touched: HashSet<String> = HashSet::new();
-    for mid in &changed {
-        for cid in conversations::find_conversation_ids_by_message(&mut tx, &cmd.account_id, mid)
-            .await?
-        {
-            touched.insert(cid.into_inner());
-        }
-    }
-    let mut conversation_ids = Vec::with_capacity(touched.len());
-    for cid in &touched {
-        let conversation_id = ConversationId::new(cid.clone());
-        conversations::recompute_projection(&mut tx, &cmd.account_id, &conversation_id).await?;
-        conversation_ids.push(conversation_id);
+    let session_ids = messages::list_session_ids(&mut tx, &cmd.account_id, &changed).await?;
+    for sid in &session_ids {
+        sessions::recompute_projection(&mut tx, &cmd.account_id, sid).await?;
     }
     tx.commit().await?;
 
@@ -127,7 +116,7 @@ pub async fn mark_read(
 
     Ok(ChangeSet {
         account_id: cmd.account_id,
-        conversation_ids,
+        session_ids,
         message_ids: changed,
         new_incoming_ids: Vec::new(),
         origin: ChangeOrigin::UserAction,
@@ -143,7 +132,7 @@ pub async fn delete_messages(
     if cmd.message_ids.is_empty() {
         return Ok(ChangeSet {
             account_id: cmd.account_id,
-            conversation_ids: Vec::new(),
+            session_ids: Vec::new(),
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
             origin: ChangeOrigin::UserAction,
@@ -173,19 +162,9 @@ pub async fn delete_messages(
         changed.push(mid.clone());
     }
 
-    let mut touched: HashSet<String> = HashSet::new();
-    for mid in &changed {
-        for cid in conversations::find_conversation_ids_by_message(&mut tx, &cmd.account_id, mid)
-            .await?
-        {
-            touched.insert(cid.into_inner());
-        }
-    }
-    let mut conversation_ids = Vec::with_capacity(touched.len());
-    for cid in &touched {
-        let conversation_id = ConversationId::new(cid.clone());
-        conversations::recompute_projection(&mut tx, &cmd.account_id, &conversation_id).await?;
-        conversation_ids.push(conversation_id);
+    let session_ids = messages::list_session_ids(&mut tx, &cmd.account_id, &changed).await?;
+    for sid in &session_ids {
+        sessions::recompute_projection(&mut tx, &cmd.account_id, sid).await?;
     }
     tx.commit().await?;
 
@@ -193,7 +172,7 @@ pub async fn delete_messages(
 
     Ok(ChangeSet {
         account_id: cmd.account_id,
-        conversation_ids,
+        session_ids,
         message_ids: changed,
         new_incoming_ids: Vec::new(),
         origin: ChangeOrigin::UserAction,

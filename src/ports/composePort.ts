@@ -3,20 +3,17 @@ import type {
   SaveComposeDraftCommand,
   SendComposedMailCommand,
 } from '../domain/dto';
-import type { AccountId, ConversationId } from '../domain/types';
+import type { AccountId, SessionId } from '../domain/types';
 import type { MessageWithRecipients } from '../domain/entities';
 
-/** 写信 / 草稿入站端口（本阶段 Memory Mock，不接 Graph） */
+/** 写信 / 草稿入站端口 */
 export interface ComposePort {
   getDraft(
     accountId: AccountId,
-    conversationId: ConversationId,
+    sessionId: SessionId,
   ): Promise<ComposeDraft | null>;
   saveDraft(cmd: SaveComposeDraftCommand): Promise<ComposeDraft>;
-  clearDraft(
-    accountId: AccountId,
-    conversationId: ConversationId,
-  ): Promise<void>;
+  clearDraft(accountId: AccountId, sessionId: SessionId): Promise<void>;
   /** 发送后返回新建的 outbound 邮件聚合 */
   send(cmd: SendComposedMailCommand): Promise<MessageWithRecipients>;
 }

@@ -2,8 +2,8 @@
 
 use crate::application::dto::{CursorPage, GroupListQuery};
 use crate::application::error::PortError;
-use crate::domain::entities::{Group, GroupParticipant, GroupThread};
-use crate::domain::value_objects::{AccountId, GroupId, ThreadId};
+use crate::domain::entities::{Group, GroupParticipant};
+use crate::domain::value_objects::{AccountId, GroupId};
 use crate::infrastructure::repository::accounts;
 use sqlx::{QueryBuilder, SqliteConnection};
 
@@ -21,26 +21,6 @@ pub async fn get(
         .map(super::rows::group)
         .transpose()
         .map_err(Into::into)
-}
-
-pub async fn resolve_root(
-    conn: &mut SqliteConnection,
-    account_id: &AccountId,
-    id: &GroupId,
-) -> Result<Option<Group>, PortError> {
-    let mut current = id.clone();
-    for _ in 0..32 {
-        let Some(group) = get(conn, account_id, &current).await? else {
-            return Ok(None);
-        };
-        match group.merged_into_id {
-            Some(next) => current = next,
-            None => return Ok(Some(group)),
-        }
-    }
-    Err(PortError::Conflict {
-        message: "群组合并链过深或成环".into(),
-    })
 }
 
 pub async fn list(
@@ -72,12 +52,6 @@ pub async fn list(
         qb.push_bind(cursor_id.as_deref());
         qb.push(")");
     }
-    qb.push(") AND (");
-    if query.include_merged {
-        qb.push("1 = 1");
-    } else {
-        qb.push("merged_into_id IS NULL");
-    }
     qb.push(") ORDER BY account_id ASC, id ASC LIMIT ");
     qb.push_bind(i64::from(query.limit) + 1);
 
@@ -106,8 +80,8 @@ pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     sqlx::query(
         "INSERT INTO groups (
             id, account_id, name, name_is_manual, source, send_members_is_manual,
-            merged_into_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(group.id.as_str())
     .bind(group.account_id.as_str())
@@ -115,7 +89,6 @@ pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     .bind(group.name_is_manual)
     .bind(group.source.as_str())
     .bind(group.send_members_is_manual)
-    .bind(group.merged_into_id.as_ref().map(|id| id.as_str()))
     .bind(group.created_at)
     .bind(group.updated_at)
     .execute(&mut *conn)
@@ -127,14 +100,13 @@ pub async fn upsert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     sqlx::query(
         "INSERT INTO groups (
             id, account_id, name, name_is_manual, source, send_members_is_manual,
-            merged_into_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             name=excluded.name,
             name_is_manual=excluded.name_is_manual,
             source=excluded.source,
             send_members_is_manual=excluded.send_members_is_manual,
-            merged_into_id=excluded.merged_into_id,
             updated_at=excluded.updated_at",
     )
     .bind(group.id.as_str())
@@ -143,7 +115,6 @@ pub async fn upsert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     .bind(group.name_is_manual)
     .bind(group.source.as_str())
     .bind(group.send_members_is_manual)
-    .bind(group.merged_into_id.as_ref().map(|id| id.as_str()))
     .bind(group.created_at)
     .bind(group.updated_at)
     .execute(&mut *conn)
@@ -155,14 +126,13 @@ pub async fn update(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     let result = sqlx::query(
         "UPDATE groups SET
             name = ?, name_is_manual = ?, source = ?, send_members_is_manual = ?,
-            merged_into_id = ?, updated_at = ?
+            updated_at = ?
          WHERE account_id = ? AND id = ?",
     )
     .bind(&group.name)
     .bind(group.name_is_manual)
     .bind(group.source.as_str())
     .bind(group.send_members_is_manual)
-    .bind(group.merged_into_id.as_ref().map(|id| id.as_str()))
     .bind(group.updated_at)
     .bind(group.account_id.as_str())
     .bind(group.id.as_str())
@@ -259,78 +229,6 @@ pub async fn replace_send_members(
     Ok(())
 }
 
-pub async fn get_thread_link(
-    conn: &mut SqliteConnection,
-    account_id: &AccountId,
-    thread_id: &ThreadId,
-) -> Result<Option<GroupThread>, PortError> {
-    let row = sqlx::query(
-        "SELECT account_id, group_id, thread_id, linked_at FROM group_thread
-         WHERE account_id = ? AND thread_id = ?",
-    )
-    .bind(account_id.as_str())
-    .bind(thread_id.as_str())
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    use sqlx::Row;
-    Ok(Some(GroupThread {
-        account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
-        group_id: GroupId::new(row.try_get::<String, _>("group_id")?),
-        thread_id: ThreadId::new(row.try_get::<String, _>("thread_id")?),
-        linked_at: row.try_get("linked_at")?,
-    }))
-}
-
-pub async fn upsert_thread_link(
-    conn: &mut SqliteConnection,
-    link: &GroupThread,
-) -> Result<(), PortError> {
-    sqlx::query(
-        "INSERT INTO group_thread (account_id, group_id, thread_id, linked_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(account_id, thread_id) DO UPDATE SET
-            group_id=excluded.group_id,
-            linked_at=excluded.linked_at",
-    )
-    .bind(link.account_id.as_str())
-    .bind(link.group_id.as_str())
-    .bind(link.thread_id.as_str())
-    .bind(link.linked_at)
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
-pub async fn list_threads_by_group(
-    conn: &mut SqliteConnection,
-    account_id: &AccountId,
-    group_id: &GroupId,
-) -> Result<Vec<GroupThread>, PortError> {
-    let rows = sqlx::query(
-        "SELECT account_id, group_id, thread_id, linked_at FROM group_thread
-         WHERE account_id = ? AND group_id = ? ORDER BY thread_id",
-    )
-    .bind(account_id.as_str())
-    .bind(group_id.as_str())
-    .fetch_all(&mut *conn)
-    .await?;
-    use sqlx::Row;
-    rows.iter()
-        .map(|row| {
-            Ok(GroupThread {
-                account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
-                group_id: GroupId::new(row.try_get::<String, _>("group_id")?),
-                thread_id: ThreadId::new(row.try_get::<String, _>("thread_id")?),
-                linked_at: row.try_get("linked_at")?,
-            })
-        })
-        .collect()
-}
-
-/// 游标 `account_id:id`；兼容旧纯 `id`
 fn parse_entity_cursor(
     cursor: Option<&str>,
 ) -> Result<(Option<String>, Option<String>), PortError> {

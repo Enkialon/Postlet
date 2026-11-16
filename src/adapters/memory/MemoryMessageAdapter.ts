@@ -27,7 +27,6 @@ export class MemoryMessageAdapter implements MessagePort {
     this.store.requireAccount(accountId);
     const key = this.store.messageKey(accountId, messageId);
     if (this.bodyInflight.has(key)) {
-      // 同一消息串行等待
       while (this.bodyInflight.has(key)) {
         await new Promise((r) => setTimeout(r, 20));
       }
@@ -58,6 +57,7 @@ export class MemoryMessageAdapter implements MessagePort {
 
   async markRead(cmd: MarkMessagesReadCommand): Promise<void> {
     this.store.requireAccount(cmd.account_id);
+    const touched = new Set<string>();
 
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
@@ -69,14 +69,17 @@ export class MemoryMessageAdapter implements MessagePort {
       message.sync_status = 'pending_local';
       message.local_updated_at = Date.now();
       this.store.messages.set(key, message);
+      touched.add(message.session_id);
     }
 
-    // 投影开关开启时联系人会话未读依赖群组附着，统一重算账户下全部会话
-    this.store.recomputeAllConversations(cmd.account_id);
+    for (const sessionId of touched) {
+      this.store.recomputeSession(cmd.account_id, sessionId);
+    }
   }
 
   async deleteMessages(cmd: DeleteMessagesCommand): Promise<void> {
     this.store.requireAccount(cmd.account_id);
+    const touched = new Set<string>();
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
       const message = this.store.messages.get(key);
@@ -84,7 +87,10 @@ export class MemoryMessageAdapter implements MessagePort {
       message.sync_status = 'deleted_remote';
       message.local_updated_at = Date.now();
       this.store.messages.set(key, message);
+      touched.add(message.session_id);
     }
-    this.store.recomputeAllConversations(cmd.account_id);
+    for (const sessionId of touched) {
+      this.store.recomputeSession(cmd.account_id, sessionId);
+    }
   }
 }

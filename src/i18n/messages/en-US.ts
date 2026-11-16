@@ -32,6 +32,4 @@ export const enUS: Record<MessageKey, string> = {
   欢迎使用_Postlet: 'Welcome to Postlet',
   欢迎说明:
     'An Outlook mail client organized around contacts and conversations.',
-  '在联系人会话中同时显示群组邮件':
-    'Also show group messages in contact conversations',
 };

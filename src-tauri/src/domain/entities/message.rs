@@ -2,22 +2,22 @@
 
 use crate::domain::value_objects::{
     AccountId, BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, MessageId,
-    MessageSyncStatus, RecipientRole, ThreadId, TimestampMs,
+    MessageSyncStatus, RecipientRole, SessionId, TimestampMs,
 };
 
-/// 邮件真相（Graph 同步落库）；会话归属不改写本实体
+/// 邮件真相；归属唯一 Session（session_id）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: MessageId,
     pub account_id: AccountId,
+    pub session_id: SessionId,
     /// Graph ImmutableId；本地草稿可空
     pub graph_id: Option<GraphImmutableId>,
-    /// Graph conversationId；联系人投影不要求非空，线程归组要求非空
-    pub thread_id: Option<ThreadId>,
     pub graph_change_key: Option<String>,
     /// RFC Message-ID
     pub internet_message_id: Option<String>,
-    pub conversation_index: Option<Vec<u8>>,
+    /// RFC In-Reply-To（用于找父信进同一 Session）
+    pub in_reply_to: Option<String>,
     pub subject: String,
     pub body_preview: String,
     pub body_content_type: BodyContentType,

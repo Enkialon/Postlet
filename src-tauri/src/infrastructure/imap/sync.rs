@@ -125,10 +125,9 @@ pub fn sync_folder(
 fn flag_only_remote(folder: &str, uid: u32, is_read: bool) -> RemoteMessage {
     RemoteMessage {
         graph_id: remote_id(folder, uid),
-        thread_id: None,
         graph_change_key: Some(format!("uid:{uid}")),
         internet_message_id: None,
-        conversation_index: None,
+        in_reply_to: None,
         subject: String::new(),
         body_preview: String::new(),
         body_content_type: crate::domain::value_objects::BodyContentType::Text,

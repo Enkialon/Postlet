@@ -11,7 +11,9 @@
 - 布尔用 `INTEGER` + `CHECK(... IN (0, 1))`。
 - 邮箱地址规范化：`trim + lowercase`；比较列使用 `COLLATE NOCASE`。
 
-依赖顺序（建表）：`accounts` → `mail_folder_sync_state` / `contacts` → `messages` → `message_recipients` / `groups` → `group_*` / `conversations` → `conversation_*` / jobs。
+依赖顺序（建表）：`accounts` → `account_mail_transport` / `mail_folder_sync_state` / `contacts` / `groups` → `sessions` → `messages` → `message_recipients` / `group_participants` / jobs。
+
+权威 DDL：`src-tauri/migrations/001_init.sql`（V1 直接改正确形状，清本地库）。
 
 ---
 
@@ -19,19 +21,20 @@
 
 | 表 | 职责 |
 |---|---|
-| `accounts` | Outlook 账户（租户根；含 self 别名 JSON） |
-| `mail_folder_sync_state` | 按账户、文件夹保存邮件增量游标及同步状态 |
-| `contacts` | 通讯录缓存 |
-| `messages` | 邮件真相（Graph 同步落库） |
-| `message_recipients` | 邮件收件人拆行 |
-| `groups` | 业务群组（自动/手动） |
-| `group_thread` | 线程 → 群组主归属 |
-| `group_participants` | 群组成员投影 |
-| `conversations` | 会话列表缓存（contact / group） |
-| `conversation_messages` | 消息 ↔ 会话多对多附着 |
-| `conversation_aggregate_jobs` | 聚合任务（失败恢复） |
+| `accounts` | 邮件账户（租户根；含 self 别名 JSON） |
+| `account_mail_transport` | 收发协议与端点 |
+| `mail_folder_sync_state` | 文件夹同步游标与是否纳入同步 |
+| `contacts` | 私聊 Session 的关联投影（人） |
+| `groups` | 群聊 Session 的关联投影（群档案/成员） |
+| `group_participants` | 群成员 |
+| `sessions` | **会话一等公民**（`private` / `group`；合并 `merged_into_id`） |
+| `messages` | 邮件真相；**只属一个** `session_id` |
+| `message_recipients` | 收件人拆行 |
+| `session_aggregate_jobs` | 聚合任务 |
+| `pending_message_mutations` | 已读/删除待推远端 |
+| `message_locate_pending` | Graph Remove 核对 |
 
-归属真相：`group_thread` + `conversation_messages`。`conversations` 只缓存列表派生字段。
+归属真相：`messages.session_id`。Contact / Group 不是消息上级；合并在 `sessions.merged_into_id`。
 
 ---
 

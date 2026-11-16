@@ -6,7 +6,7 @@ use crate::domain::value_objects::{
 
 /// 聚合任务（失败恢复 / 租约）
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConversationAggregateJob {
+pub struct SessionAggregateJob {
     pub account_id: AccountId,
     pub message_id: MessageId,
     /// 每次有效消息变更重新入队时单调递增

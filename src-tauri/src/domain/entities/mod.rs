@@ -3,17 +3,17 @@
 mod account;
 mod aggregate_job;
 mod contact;
-mod conversation;
 mod group;
 mod mail_transport;
 mod message;
+mod session;
 mod sync_state;
 
 pub use account::Account;
-pub use aggregate_job::ConversationAggregateJob;
+pub use aggregate_job::SessionAggregateJob;
 pub use contact::Contact;
-pub use conversation::{Conversation, ConversationMessageLink};
-pub use group::{Group, GroupParticipant, GroupThread};
+pub use group::{Group, GroupParticipant};
 pub use mail_transport::AccountMailTransport;
 pub use message::{Message, MessageRecipient, MessageWithRecipients};
+pub use session::Session;
 pub use sync_state::MailFolderSyncState;

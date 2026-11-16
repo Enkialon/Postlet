@@ -1,25 +1,21 @@
 import type {
   Account,
   Contact,
-  Conversation,
   Group,
   GroupParticipant,
   MailFolderSyncState,
   Message,
   MessageRecipient,
   MessageWithRecipients,
+  Session,
 } from '../../domain/entities';
-import type {
-  ConversationListItem,
-  MessagePreview,
-} from '../../domain/dto';
+import type { MessagePreview, SessionListItem } from '../../domain/dto';
 import type {
   AccountId,
-  ConversationId,
   EmailAddress,
   GroupId,
   MessageId,
-  ThreadId,
+  SessionId,
 } from '../../domain/types';
 import type { AppError } from '../../domain/errors';
 
@@ -41,8 +37,7 @@ export class MemoryStore {
   /** 已登录会话；退出后账户行仍在，列表只认此集合 */
   signedInIds = new Set<AccountId>();
   contacts = new Map<string, Contact>();
-  conversations = new Map<string, Conversation>();
-  conversationMessages = new Map<string, MessageId[]>();
+  sessions = new Map<string, Session>();
   messages = new Map<string, Message>();
   recipients = new Map<string, MessageRecipient[]>();
   groups = new Map<string, Group>();
@@ -55,8 +50,8 @@ export class MemoryStore {
     return `${accountId}:${contactId}`;
   }
 
-  conversationKey(accountId: AccountId, conversationId: string): string {
-    return `${accountId}:${conversationId}`;
+  sessionKey(accountId: AccountId, sessionId: string): string {
+    return `${accountId}:${sessionId}`;
   }
 
   messageKey(accountId: AccountId, messageId: string): string {
@@ -101,12 +96,33 @@ export class MemoryStore {
     };
   }
 
-  toListItem(conversation: Conversation): ConversationListItem {
-    // 读路径按投影开关即时计算，避免列表与详情未读漂移
-    const live = this.effectiveMessagesForConversation(conversation);
+  resolveDisplayName(session: Session): string {
+    if (session.kind === 'group') {
+      if (session.group_id) {
+        const group = this.groups.get(
+          this.groupKey(session.account_id, session.group_id),
+        );
+        if (group?.name.trim()) return group.name.trim();
+      }
+      return '未命名群组';
+    }
+    let contactName: string | null = null;
+    if (session.contact_id) {
+      contactName =
+        this.contacts.get(
+          this.contactKey(session.account_id, session.contact_id),
+        )?.display_name ?? null;
+    }
+    const name = contactName?.trim();
+    if (name) return name;
+    return session.normalized_address?.trim() || '未知联系人';
+  }
+
+  toListItem(session: Session): SessionListItem {
+    const live = this.effectiveMessagesForSession(session);
     const last = live[0] ?? null;
-    const snapshot: Conversation = {
-      ...conversation,
+    const snapshot: Session = {
+      ...session,
       unread_count: live.filter((m) => !m.is_read).length,
       last_message_id: last?.id ?? null,
       last_message_at: last?.received_at ?? last?.sent_at ?? null,
@@ -129,7 +145,8 @@ export class MemoryStore {
     }
 
     return {
-      conversation: snapshot,
+      session: snapshot,
+      display_name: this.resolveDisplayName(snapshot),
       last_message_preview: last ? this.toPreview(last) : null,
       contact_display_name,
       group_name,
@@ -150,95 +167,24 @@ export class MemoryStore {
     };
   }
 
-  messageInvolvesAddress(accountId: AccountId, messageId: MessageId, address: EmailAddress): boolean {
-    const msg = this.messages.get(this.messageKey(accountId, messageId));
-    if (!msg || msg.sync_status === 'deleted_remote') return false;
-    if (msg.from_address === address) return true;
-    const recipients = this.recipients.get(this.messageKey(accountId, messageId)) ?? [];
-    return recipients.some((r) => r.normalized_address === address);
-  }
-
-  /** 联系人会话在开关开启时合并群组投影邮件 */
-  effectiveMessagesForConversation(conversation: Conversation): Message[] {
-    const accountId = conversation.account_id;
-    const key = this.conversationKey(accountId, conversation.id);
-    const ids = new Set(this.conversationMessages.get(key) ?? []);
-
-    const account = this.accounts.get(accountId);
-    if (
-      account?.show_group_messages_in_contact_conversation &&
-      conversation.kind === 'contact' &&
-      conversation.normalized_address
-    ) {
-      const address = conversation.normalized_address;
-      for (const conv of this.conversations.values()) {
-        if (
-          conv.account_id !== accountId ||
-          conv.kind !== 'group' ||
-          !conv.group_id
-        ) {
-          continue;
-        }
-        const groupIds =
-          this.conversationMessages.get(
-            this.conversationKey(accountId, conv.id),
-          ) ?? [];
-        for (const id of groupIds) {
-          if (this.messageInvolvesAddress(accountId, id, address)) {
-            ids.add(id);
-          }
-        }
-      }
-    }
-
-    return this.messagesFromIds(accountId, ids, false);
+  /** 列表预览：仅本 Session 非软删消息 */
+  effectiveMessagesForSession(session: Session): Message[] {
+    return this.messagesForSession(session.account_id, session.id, false);
   }
 
   /** 聊天线程列表：含已删，是否展示由前端决定 */
-  threadMessagesForConversation(conversation: Conversation): Message[] {
-    const accountId = conversation.account_id;
-    const key = this.conversationKey(accountId, conversation.id);
-    const ids = new Set(this.conversationMessages.get(key) ?? []);
-
-    const account = this.accounts.get(accountId);
-    if (
-      account?.show_group_messages_in_contact_conversation &&
-      conversation.kind === 'contact' &&
-      conversation.normalized_address
-    ) {
-      const address = conversation.normalized_address;
-      for (const conv of this.conversations.values()) {
-        if (
-          conv.account_id !== accountId ||
-          conv.kind !== 'group' ||
-          !conv.group_id
-        ) {
-          continue;
-        }
-        const groupIds =
-          this.conversationMessages.get(
-            this.conversationKey(accountId, conv.id),
-          ) ?? [];
-        for (const id of groupIds) {
-          if (this.messageInvolvesAddress(accountId, id, address)) {
-            ids.add(id);
-          }
-        }
-      }
-    }
-
-    return this.messagesFromIds(accountId, ids, true);
+  threadMessagesForSession(session: Session): Message[] {
+    return this.messagesForSession(session.account_id, session.id, true);
   }
 
-  private messagesFromIds(
+  private messagesForSession(
     accountId: AccountId,
-    ids: Set<MessageId>,
+    sessionId: SessionId,
     includeDeleted: boolean,
   ): Message[] {
     const live: Message[] = [];
-    for (const id of ids) {
-      const msg = this.messages.get(this.messageKey(accountId, id));
-      if (!msg) continue;
+    for (const msg of this.messages.values()) {
+      if (msg.account_id !== accountId || msg.session_id !== sessionId) continue;
       if (!includeDeleted && msg.sync_status === 'deleted_remote') continue;
       live.push(msg);
     }
@@ -250,61 +196,81 @@ export class MemoryStore {
     return live;
   }
 
-  recomputeConversation(accountId: AccountId, conversationId: ConversationId): void {
-    const key = this.conversationKey(accountId, conversationId);
-    const conversation = this.conversations.get(key);
-    if (!conversation) return;
+  recomputeSession(accountId: AccountId, sessionId: SessionId): void {
+    const key = this.sessionKey(accountId, sessionId);
+    const session = this.sessions.get(key);
+    if (!session) return;
+    if (session.merged_into_id) return;
 
-    const live = this.effectiveMessagesForConversation(conversation);
-    conversation.unread_count = live.filter((m) => !m.is_read).length;
-    conversation.last_message_id = live[0]?.id ?? null;
-    conversation.last_message_at =
+    const live = this.effectiveMessagesForSession(session);
+    session.unread_count = live.filter((m) => !m.is_read).length;
+    session.last_message_id = live[0]?.id ?? null;
+    session.last_message_at =
       live[0]?.received_at ?? live[0]?.sent_at ?? null;
-    conversation.updated_at = now();
-    this.conversations.set(key, conversation);
+    session.updated_at = now();
+    this.sessions.set(key, session);
   }
 
-  recomputeAllConversations(accountId: AccountId): void {
-    for (const conv of this.conversations.values()) {
-      if (conv.account_id === accountId) {
-        this.recomputeConversation(accountId, conv.id);
+  recomputeAllSessions(accountId: AccountId): void {
+    for (const session of this.sessions.values()) {
+      if (session.account_id === accountId) {
+        this.recomputeSession(accountId, session.id);
       }
     }
   }
 
-  findGroupConversation(
+  findRootSession(accountId: AccountId, sessionId: SessionId): Session {
+    let current = this.sessions.get(this.sessionKey(accountId, sessionId));
+    if (!current) this.failNotFound('会话不存在');
+    const seen = new Set<string>();
+    while (current.merged_into_id) {
+      if (seen.has(current.id)) this.failConflict('会话合并环');
+      seen.add(current.id);
+      const next = this.sessions.get(
+        this.sessionKey(accountId, current.merged_into_id),
+      );
+      if (!next) this.failNotFound('合并目标不存在');
+      current = next;
+    }
+    return current;
+  }
+
+  findGroupSession(
     accountId: AccountId,
     groupId: GroupId,
-  ): Conversation | undefined {
-    const root = this.findRootGroup(accountId, groupId);
-    for (const c of this.conversations.values()) {
+  ): Session | undefined {
+    for (const s of this.sessions.values()) {
       if (
-        c.account_id === accountId &&
-        c.kind === 'group' &&
-        c.group_id === root.id
+        s.account_id === accountId &&
+        s.kind === 'group' &&
+        s.group_id === groupId &&
+        s.merged_into_id == null
       ) {
-        return c;
+        return s;
       }
     }
     return undefined;
   }
 
-  ensureGroupConversationEntity(
+  ensureGroupSessionEntity(
     accountId: AccountId,
     groupId: GroupId,
-  ): Conversation {
-    const root = this.findRootGroup(accountId, groupId);
-    const existing = this.findGroupConversation(accountId, root.id);
+  ): Session {
+    if (!this.groups.has(this.groupKey(accountId, groupId))) {
+      this.failNotFound('群组不存在');
+    }
+    const existing = this.findGroupSession(accountId, groupId);
     if (existing) return existing;
 
     const t = now();
-    const conversation: Conversation = {
-      id: this.nextId('conv'),
+    const session: Session = {
+      id: this.nextId('sess'),
       account_id: accountId,
       kind: 'group',
       normalized_address: null,
       contact_id: null,
-      group_id: root.id,
+      group_id: groupId,
+      merged_into_id: null,
       last_message_at: null,
       last_message_id: null,
       unread_count: 0,
@@ -312,15 +278,8 @@ export class MemoryStore {
       created_at: t,
       updated_at: t,
     };
-    this.conversations.set(
-      this.conversationKey(accountId, conversation.id),
-      conversation,
-    );
-    this.conversationMessages.set(
-      this.conversationKey(accountId, conversation.id),
-      [],
-    );
-    return conversation;
+    this.sessions.set(this.sessionKey(accountId, session.id), session);
+    return session;
   }
 
   markSignedIn(accountId: AccountId): void {
@@ -344,17 +303,18 @@ export class MemoryStore {
     return address.trim().toLowerCase();
   }
 
-  findContactConversation(
+  findPrivateSession(
     accountId: AccountId,
     address: EmailAddress,
-  ): Conversation | undefined {
-    for (const c of this.conversations.values()) {
+  ): Session | undefined {
+    for (const s of this.sessions.values()) {
       if (
-        c.account_id === accountId &&
-        c.kind === 'contact' &&
-        c.normalized_address === address
+        s.account_id === accountId &&
+        s.kind === 'private' &&
+        s.normalized_address === address &&
+        s.merged_into_id == null
       ) {
-        return c;
+        return s;
       }
     }
     return undefined;
@@ -362,33 +322,5 @@ export class MemoryStore {
 
   nextId(prefix: string): string {
     return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  findRootGroup(accountId: AccountId, groupId: GroupId): Group {
-    let current = this.groups.get(this.groupKey(accountId, groupId));
-    if (!current) this.failNotFound('群组不存在');
-    const seen = new Set<string>();
-    while (current.merged_into_id) {
-      if (seen.has(current.id)) this.failConflict('群组合并环');
-      seen.add(current.id);
-      const next = this.groups.get(
-        this.groupKey(accountId, current.merged_into_id),
-      );
-      if (!next) this.failNotFound('合并目标不存在');
-      current = next;
-    }
-    return current;
-  }
-
-  messagesForThread(
-    accountId: AccountId,
-    threadId: ThreadId,
-  ): Message[] {
-    return [...this.messages.values()].filter(
-      (m) =>
-        m.account_id === accountId &&
-        m.thread_id === threadId &&
-        m.sync_status !== 'deleted_remote',
-    );
   }
 }

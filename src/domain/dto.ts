@@ -1,8 +1,6 @@
-import type { Conversation, MailFolderSyncState } from './entities';
+import type { MailFolderSyncState, Session } from './entities';
 import type {
   AccountId,
-  ConversationId,
-  ConversationKind,
   EmailAddress,
   FolderId,
   GroupId,
@@ -11,8 +9,9 @@ import type {
   MailTlsMode,
   MessageId,
   PageDirection,
+  SessionId,
+  SessionKind,
   SyncStatus,
-  ThreadId,
   TimestampMs,
 } from './types';
 
@@ -24,18 +23,18 @@ export interface CursorPage<T> {
 }
 
 /** 会话列表查询；account_id 为空时跨账号 */
-export interface ConversationListQuery {
+export interface SessionListQuery {
   account_id: AccountId | null;
   cursor: string | null;
   limit: number;
-  /** 可选：仅 contact / 仅 group */
-  kind: ConversationKind | null;
+  /** 可选：仅 private / 仅 group */
+  kind: SessionKind | null;
 }
 
 /** 会话内消息查询 */
-export interface ConversationMessagesQuery {
+export interface SessionMessagesQuery {
   account_id: AccountId;
-  conversation_id: ConversationId;
+  session_id: SessionId;
   cursor: string | null;
   limit: number;
   /** 默认 older */
@@ -56,8 +55,6 @@ export interface GroupListQuery {
   account_id: AccountId | null;
   cursor: string | null;
   limit: number;
-  /** 默认 false：只返回根群组（merged_into_id 为空） */
-  include_merged: boolean;
 }
 
 /** 列表用消息摘要 */
@@ -75,9 +72,11 @@ export interface MessagePreview {
   importance: Importance;
 }
 
-/** 会话列表项（含预览派生） */
-export interface ConversationListItem {
-  conversation: Conversation;
+/** 会话列表项（含预览与显示名） */
+export interface SessionListItem {
+  session: Session;
+  /** 读时解析：私聊=联系人名或地址；群聊=群名 */
+  display_name: string;
   /** 列表预览；软删消息不出现 */
   last_message_preview: MessagePreview | null;
   contact_display_name: string | null;
@@ -97,7 +96,6 @@ export interface UpsertAccountCommand {
 /** 更新账户显示配置 */
 export interface UpdateAccountDisplaySettingsCommand {
   account_id: AccountId;
-  show_group_messages_in_contact_conversation: boolean;
   /** 是否纳入「全部账号」跨账号列表 */
   include_in_all: boolean;
 }
@@ -147,17 +145,17 @@ export interface RenameGroupCommand {
   name: string;
 }
 
-/** 合并群组：source 吸收进 target（存活根） */
-export interface MergeGroupsCommand {
+/** 合并群聊 Session：source → target（消息迁入 + soft-link） */
+export interface MergeSessionsCommand {
   account_id: AccountId;
-  source_group_id: GroupId;
-  target_group_id: GroupId;
+  source_session_id: SessionId;
+  target_session_id: SessionId;
 }
 
-/** 把线程挪到另一群组 */
-export interface MoveThreadToGroupCommand {
+/** 将选中消息改挂到目标群聊 Session */
+export interface ReassignMessagesToGroupCommand {
   account_id: AccountId;
-  thread_id: ThreadId;
+  message_ids: MessageId[];
   target_group_id: GroupId;
 }
 
@@ -170,15 +168,15 @@ export interface UpdateGroupSendMembersCommand {
   is_manual: boolean;
 }
 
-/** 确保存在联系人会话（可顺带占位联系人） */
-export interface EnsureContactConversationCommand {
+/** 确保存在私聊 Session（可顺带占位联系人） */
+export interface EnsurePrivateSessionCommand {
   account_id: AccountId;
   normalized_address: EmailAddress;
   display_name: string | null;
 }
 
-/** 确保存在群组会话（解析到存活根群组） */
-export interface EnsureGroupConversationCommand {
+/** 确保存在群聊 Session */
+export interface EnsureGroupSessionCommand {
   account_id: AccountId;
   group_id: GroupId;
 }
@@ -235,7 +233,7 @@ export interface ComposeRecipientRef {
 /** 会话级写信草稿 */
 export interface ComposeDraft {
   account_id: AccountId;
-  conversation_id: ConversationId;
+  session_id: SessionId;
   /** 显式回复目标；null = 新邮件，不挂旧线程 */
   reply_to_message_id: MessageId | null;
   to: ComposeRecipientRef[];
@@ -250,7 +248,7 @@ export interface ComposeDraft {
 /** 保存写信草稿 */
 export interface SaveComposeDraftCommand {
   account_id: AccountId;
-  conversation_id: ConversationId;
+  session_id: SessionId;
   reply_to_message_id: MessageId | null;
   to: ComposeRecipientRef[];
   cc: ComposeRecipientRef[];
@@ -263,7 +261,7 @@ export interface SaveComposeDraftCommand {
 /** 发送写信内容 */
 export interface SendComposedMailCommand {
   account_id: AccountId;
-  conversation_id: ConversationId;
+  session_id: SessionId;
   reply_to_message_id: MessageId | null;
   to: ComposeRecipientRef[];
   cc: ComposeRecipientRef[];

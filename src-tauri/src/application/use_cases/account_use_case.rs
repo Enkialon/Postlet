@@ -70,8 +70,6 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             contact_synced_at: existing.contact_synced_at,
             mail_sync_status: existing.mail_sync_status,
             mail_sync_error: existing.mail_sync_error,
-            show_group_messages_in_contact_conversation: existing
-                .show_group_messages_in_contact_conversation,
             include_in_all: existing.include_in_all,
             created_at: existing.created_at,
             updated_at: now,
@@ -89,7 +87,6 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             contact_synced_at: None,
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
-            show_group_messages_in_contact_conversation: false,
             include_in_all: true,
             created_at: now,
             updated_at: now,
@@ -135,31 +132,19 @@ pub async fn sign_out(
     Ok(())
 }
 
-/// 更新群组邮件是否同时显示在联系人会话中的账户配置，并返回账户资料。
+/// 更新账户显示配置（是否纳入「全部账号」列表）。
 pub async fn update_display_settings(
     db: &SqlitePool,
     cmd: UpdateAccountDisplaySettingsCommand,
 ) -> Result<Account, AppError> {
     let mut tx = db.begin().await?;
-    accounts::update_display_settings(
-        &mut tx,
-        &cmd.account_id,
-        cmd.show_group_messages_in_contact_conversation,
-        cmd.include_in_all,
-    )
-    .await
-    .map_err(AppError::from)?;
+    accounts::update_display_settings(&mut tx, &cmd.account_id, cmd.include_in_all)
+        .await
+        .map_err(AppError::from)?;
     let account = accounts::get(&mut tx, &cmd.account_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
     tx.commit().await?;
-    // 显示开关影响联系人/群组投影：受影响邮件重新入队
-    let _ = crate::application::use_cases::aggregate_worker_use_case::requeue_account_messages(
-        db,
-        &cmd.account_id,
-        5_000,
-    )
-    .await;
     Ok(account)
 }
 

@@ -107,13 +107,13 @@ export function useContacts() {
     opening.value = true;
     try {
       nav.setAccount(contact.account_id);
-      const conversation = await ports.conversation.ensureContactConversation({
+      const session = await ports.session.ensurePrivateSession({
         account_id: contact.account_id,
         normalized_address: contact.normalized_address,
         display_name: contact.display_name || null,
       });
       nav.goPage('conversations');
-      nav.selectConversation(conversation.id);
+      nav.selectSession(session.id);
     } catch (e) {
       listState.error = asAppError(e);
     } finally {
