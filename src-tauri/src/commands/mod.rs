@@ -122,6 +122,20 @@ pub async fn list_conversation_messages(
 }
 
 #[tauri::command]
+pub async fn hide_conversation(
+    state: State<'_, AppState>,
+    account_id: String,
+    conversation_id: String,
+) -> Result<(), AppError> {
+    conversation_use_case::hide_conversation(
+        &state.db,
+        &AccountId::new(account_id),
+        &ConversationId::new(conversation_id),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn get_message(
     state: State<'_, AppState>,
     account_id: String,

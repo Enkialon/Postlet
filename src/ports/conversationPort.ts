@@ -27,4 +27,9 @@ export interface ConversationPort {
   ensureGroupConversation(
     cmd: EnsureGroupConversationCommand,
   ): Promise<Conversation>;
+  /** 本地隐藏会话（不删邮件）；有更新邮件后会再出现 */
+  hideConversation(
+    accountId: AccountId,
+    conversationId: ConversationId,
+  ): Promise<void>;
 }

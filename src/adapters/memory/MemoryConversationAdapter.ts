@@ -42,6 +42,16 @@ export class MemoryConversationAdapter implements ConversationPort {
           ? c.account_id === query.account_id
           : allListIds.has(c.account_id),
       )
+      .filter((c) => {
+        if (c.hidden_at == null) return true;
+        const live = this.store.effectiveMessagesForConversation(c);
+        const lastAt = live[0]?.received_at ?? live[0]?.sent_at ?? null;
+        if (lastAt != null && lastAt > c.hidden_at) {
+          c.hidden_at = null;
+          return true;
+        }
+        return false;
+      })
       .filter((c) => (query.kind ? c.kind === query.kind : true))
       .sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0))
       .map((c) => this.store.toListItem(c));
@@ -104,7 +114,17 @@ export class MemoryConversationAdapter implements ConversationPort {
     }
 
     const existing = this.store.findContactConversation(cmd.account_id, address);
-    if (existing) return { ...existing };
+    if (existing) {
+      if (existing.hidden_at != null) {
+        existing.hidden_at = null;
+        existing.updated_at = Date.now();
+        this.store.conversations.set(
+          this.store.conversationKey(cmd.account_id, existing.id),
+          existing,
+        );
+      }
+      return { ...existing };
+    }
 
     const t = Date.now();
     let contact: Contact | undefined;
@@ -143,6 +163,7 @@ export class MemoryConversationAdapter implements ConversationPort {
       last_message_at: null,
       last_message_id: null,
       unread_count: 0,
+      hidden_at: null,
       created_at: t,
       updated_at: t,
     };
@@ -165,6 +186,28 @@ export class MemoryConversationAdapter implements ConversationPort {
       cmd.account_id,
       cmd.group_id,
     );
+    if (conversation.hidden_at != null) {
+      conversation.hidden_at = null;
+      conversation.updated_at = Date.now();
+      this.store.conversations.set(
+        this.store.conversationKey(cmd.account_id, conversation.id),
+        conversation,
+      );
+    }
     return { ...conversation };
+  }
+
+  async hideConversation(
+    accountId: AccountId,
+    conversationId: ConversationId,
+  ): Promise<void> {
+    this.store.requireAccount(accountId);
+    const key = this.store.conversationKey(accountId, conversationId);
+    const conversation = this.store.conversations.get(key);
+    if (!conversation) this.store.failNotFound('会话不存在');
+    const t = Date.now();
+    conversation.hidden_at = t;
+    conversation.updated_at = t;
+    this.store.conversations.set(key, conversation);
   }
 }

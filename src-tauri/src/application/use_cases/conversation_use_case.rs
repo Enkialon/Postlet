@@ -58,11 +58,26 @@ pub async fn ensure_contact_conversation(
     cmd: EnsureContactConversationCommand,
 ) -> Result<Conversation, AppError> {
     let mut tx = db.begin().await?;
-    if let Some(existing) =
+    if let Some(mut existing) =
         conversations::get_contact_conversation(&mut tx, &cmd.account_id, &cmd.normalized_address)
             .await
             .map_err(AppError::from)?
     {
+        // 从通讯录显式打开 → 取消隐藏
+        if existing.hidden_at.is_some() {
+            let now = now_ms();
+            conversations::set_hidden_at(
+                &mut tx,
+                &cmd.account_id,
+                &existing.id,
+                None,
+                now,
+            )
+            .await
+            .map_err(AppError::from)?;
+            existing.hidden_at = None;
+            existing.updated_at = now;
+        }
         tx.commit().await?;
         return Ok(existing);
     }
@@ -103,6 +118,7 @@ pub async fn ensure_contact_conversation(
         last_message_at: None,
         last_message_id: None,
         unread_count: 0,
+        hidden_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -124,11 +140,19 @@ pub async fn ensure_group_conversation(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found(format!("群组不存在: {}", cmd.group_id)))?;
 
-    if let Some(existing) =
+    if let Some(mut existing) =
         conversations::get_group_conversation(&mut tx, &cmd.account_id, &root.id)
             .await
             .map_err(AppError::from)?
     {
+        if existing.hidden_at.is_some() {
+            let now = now_ms();
+            conversations::set_hidden_at(&mut tx, &cmd.account_id, &existing.id, None, now)
+                .await
+                .map_err(AppError::from)?;
+            existing.hidden_at = None;
+            existing.updated_at = now;
+        }
         tx.commit().await?;
         return Ok(existing);
     }
@@ -144,6 +168,7 @@ pub async fn ensure_group_conversation(
         last_message_at: None,
         last_message_id: None,
         unread_count: 0,
+        hidden_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -152,4 +177,17 @@ pub async fn ensure_group_conversation(
         .map_err(AppError::from)?;
     tx.commit().await?;
     Ok(conversation)
+}
+
+/// 本地隐藏会话（不删邮件）；有更新入站/发信后投影会自动取消隐藏。
+pub async fn hide_conversation(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    conversation_id: &ConversationId,
+) -> Result<(), AppError> {
+    let mut conn = db.acquire().await?;
+    let now = now_ms();
+    conversations::set_hidden_at(&mut conn, account_id, conversation_id, Some(now), now)
+        .await
+        .map_err(Into::into)
 }

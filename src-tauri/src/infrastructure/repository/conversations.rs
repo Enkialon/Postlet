@@ -100,7 +100,7 @@ pub async fn list(
 
     let mut qb = QueryBuilder::new("SELECT * FROM conversations WHERE ");
     accounts::push_account_id_in(&mut qb, &account_ids);
-    qb.push(" AND (");
+    qb.push(" AND hidden_at IS NULL AND (");
     if let Some(kind) = kind {
         qb.push("kind = ");
         qb.push_bind(kind);
@@ -260,8 +260,8 @@ pub async fn upsert(
     sqlx::query(
         "INSERT INTO conversations (
             id, account_id, kind, normalized_address, contact_id, group_id,
-            last_message_at, last_message_id, unread_count, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_message_at, last_message_id, unread_count, hidden_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             kind=excluded.kind,
             normalized_address=excluded.normalized_address,
@@ -271,6 +271,7 @@ pub async fn upsert(
             last_message_id=excluded.last_message_id,
             unread_count=excluded.unread_count,
             updated_at=excluded.updated_at",
+        // 冲突更新不改 hidden_at，避免投影重写冲掉用户隐藏
     )
     .bind(conversation.id.as_str())
     .bind(conversation.account_id.as_str())
@@ -286,10 +287,38 @@ pub async fn upsert(
     .bind(conversation.last_message_at)
     .bind(conversation.last_message_id.as_ref().map(|m| m.as_str()))
     .bind(conversation.unread_count)
+    .bind(conversation.hidden_at)
     .bind(conversation.created_at)
     .bind(conversation.updated_at)
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+/// 设置或清除本地隐藏。
+pub async fn set_hidden_at(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    conversation_id: &ConversationId,
+    hidden_at: Option<i64>,
+    now: i64,
+) -> Result<(), PortError> {
+    let result = sqlx::query(
+        "UPDATE conversations
+         SET hidden_at = ?, updated_at = ?
+         WHERE account_id = ? AND id = ?",
+    )
+    .bind(hidden_at)
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(conversation_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(PortError::Conflict {
+            message: format!("会话不存在: {conversation_id}"),
+        });
+    }
     Ok(())
 }
 
@@ -532,15 +561,28 @@ pub async fn recompute_projection(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
+    // 有比隐藏时刻更新的消息 → 自动取消隐藏（再次出现在列表）
     sqlx::query(
         "UPDATE conversations
-         SET last_message_id = ?, last_message_at = ?, unread_count = ?, updated_at = ?
+         SET last_message_id = ?,
+             last_message_at = ?,
+             unread_count = ?,
+             updated_at = ?,
+             hidden_at = CASE
+               WHEN hidden_at IS NOT NULL
+                    AND ? IS NOT NULL
+                    AND ? > hidden_at
+               THEN NULL
+               ELSE hidden_at
+             END
          WHERE account_id = ? AND id = ?",
     )
     .bind(last_message_id.as_deref())
     .bind(last_message_at)
     .bind(unread)
     .bind(now)
+    .bind(last_message_at)
+    .bind(last_message_at)
     .bind(account_id.as_str())
     .bind(conversation_id.as_str())
     .execute(&mut *conn)

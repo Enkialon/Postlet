@@ -22,6 +22,8 @@ pub struct Conversation {
     pub last_message_id: Option<MessageId>,
     /// 仅统计当前会话内非软删且未读
     pub unread_count: i64,
+    /// 本地隐藏时刻；非空则不进会话列表，有更新邮件时清除
+    pub hidden_at: Option<TimestampMs>,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }

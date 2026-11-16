@@ -262,6 +262,7 @@ export class MemoryStore {
       last_message_at: null,
       last_message_id: null,
       unread_count: 0,
+      hidden_at: null,
       created_at: t,
       updated_at: t,
     };

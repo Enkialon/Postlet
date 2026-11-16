@@ -121,6 +121,7 @@ pub(super) fn conversation(row: &SqliteRow) -> Result<Conversation, sqlx::Error>
             .try_get::<Option<String>, _>("last_message_id")?
             .map(MessageId::new),
         unread_count: row.try_get("unread_count")?,
+        hidden_at: row.try_get("hidden_at")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })

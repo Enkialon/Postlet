@@ -112,6 +112,8 @@ export function createTauriPorts(): AppPorts {
         invoke<Conversation>('ensure_contact_conversation', { cmd }),
       ensureGroupConversation: (cmd: EnsureGroupConversationCommand) =>
         invoke<Conversation>('ensure_group_conversation', { cmd }),
+      hideConversation: (accountId: AccountId, conversationId: ConversationId) =>
+        invoke<void>('hide_conversation', { accountId, conversationId }),
     },
     message: {
       getMessage: (accountId: AccountId, messageId: MessageId) =>

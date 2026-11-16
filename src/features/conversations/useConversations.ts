@@ -338,6 +338,32 @@ export function useConversations() {
     void loadInitial();
   }
 
+  /** 本地隐藏：从列表移除；不删邮件。选中中则清空阅读。 */
+  async function hideConversation(item: ConversationListItem): Promise<void> {
+    const accountId = item.conversation.account_id;
+    const conversationId = item.conversation.id;
+    const key = conversationListKey(item);
+    try {
+      await ports.conversation.hideConversation(accountId, conversationId);
+      conversationByKey.delete(key);
+      canonicalOrder.value = canonicalOrder.value.filter((k) => k !== key);
+      displayOrder.value = displayOrder.value.filter((k) => k !== key);
+      pendingActivityKeys.value = pendingActivityKeys.value.filter(
+        (k) => k !== key,
+      );
+      syncListItemsFromDisplay();
+      if (
+        nav.conversationId.value === conversationId &&
+        nav.accountId.value === accountId
+      ) {
+        selected.value = null;
+        nav.clearReading();
+      }
+    } catch (e) {
+      listState.error = asAppError(e);
+    }
+  }
+
   function setListAtTop(next: boolean): void {
     const wasTop = listAtTop.value;
     listAtTop.value = next;
@@ -393,6 +419,7 @@ export function useConversations() {
     loadMore,
     refreshSoft,
     openConversation,
+    hideConversation,
     invalidate,
     listAtTop,
     setListAtTop,

@@ -22,6 +22,9 @@ import {
   isScrollAtTop,
 } from './conversationListOrder';
 import Avatar from '../../shared/ui/Avatar.vue';
+import ContextMenu, {
+  type ContextMenuItem,
+} from '../../shared/ui/ContextMenu.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
 import ErrorState from '../../shared/ui/ErrorState.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
@@ -38,11 +41,18 @@ const {
   loadMore,
   loadInitial,
   openConversation,
+  hideConversation,
   setListAtTop,
   showNewActivityHint,
   newActivityCount,
   jumpToLatestOrder,
 } = useConversations();
+
+const menuOpen = ref(false);
+const menuX = ref(0);
+const menuY = ref(0);
+const menuTarget = ref<ConversationListItem | null>(null);
+const menuItems: ContextMenuItem[] = [{ id: 'hide', label: '隐藏会话' }];
 
 const showAccountHint = computed(() => accounts.value.length > 1);
 
@@ -245,6 +255,24 @@ function onSelect(item: ConversationListItem) {
   void openConversation(item.conversation.account_id, item.conversation.id);
 }
 
+function openRowMenu(e: MouseEvent, item: ConversationListItem): void {
+  e.preventDefault();
+  menuX.value = e.clientX;
+  menuY.value = e.clientY;
+  menuTarget.value = item;
+  menuOpen.value = true;
+}
+
+function onMenuSelect(id: string): void {
+  const target = menuTarget.value;
+  menuOpen.value = false;
+  menuTarget.value = null;
+  if (!target) return;
+  if (id === 'hide') {
+    void hideConversation(target);
+  }
+}
+
 function onKeySelect(e: KeyboardEvent, item: ConversationListItem) {
   if (e.key === 'Enter') onSelect(item);
 }
@@ -398,6 +426,10 @@ function itemClass(active: boolean): string {
           @click="
             filteredItems[row.index] && onSelect(filteredItems[row.index]!)
           "
+          @contextmenu="
+            filteredItems[row.index] &&
+              openRowMenu($event, filteredItems[row.index]!)
+          "
           @keydown="
             filteredItems[row.index] &&
               onKeySelect($event, filteredItems[row.index]!)
@@ -493,5 +525,14 @@ function itemClass(active: boolean): string {
     >
       加载中…
     </p>
+
+    <ContextMenu
+      :open="menuOpen"
+      :x="menuX"
+      :y="menuY"
+      :items="menuItems"
+      @close="menuOpen = false"
+      @select="onMenuSelect"
+    />
   </section>
 </template>

@@ -13,6 +13,7 @@ commands.allow = [
   "list_conversations",
   "get_conversation",
   "list_conversation_messages",
+  "hide_conversation",
   "get_message",
   "ensure_message_body",
   "mark_messages_read",

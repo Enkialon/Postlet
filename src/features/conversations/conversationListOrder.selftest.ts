@@ -32,6 +32,7 @@ function item(partial: {
       last_message_at: partial.at ?? 1000,
       last_message_id: lastId,
       unread_count: partial.unread ?? 0,
+      hidden_at: null,
       created_at: 1,
       updated_at: 1,
     },

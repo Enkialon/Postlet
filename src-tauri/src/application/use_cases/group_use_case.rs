@@ -109,6 +109,7 @@ pub async fn create_manual_group(
         last_message_at: None,
         last_message_id: None,
         unread_count: 0,
+        hidden_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -211,6 +212,7 @@ pub async fn merge_groups(db: &SqlitePool, cmd: MergeGroupsCommand) -> Result<Gr
                 last_message_at: None,
                 last_message_id: None,
                 unread_count: 0,
+                hidden_at: None,
                 created_at: now,
                 updated_at: now,
             };
@@ -297,6 +299,7 @@ pub async fn move_thread_to_group(
             last_message_at: None,
             last_message_id: None,
             unread_count: 0,
+            hidden_at: None,
             created_at: now,
             updated_at: now,
         };

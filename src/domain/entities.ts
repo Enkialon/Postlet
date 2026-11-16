@@ -187,6 +187,8 @@ export interface Conversation {
   last_message_id: MessageId | null;
   /** 仅统计当前会话内非软删且未读 */
   unread_count: number;
+  /** 本地隐藏时刻；非空则不进列表，有更新邮件时清除 */
+  hidden_at: TimestampMs | null;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }

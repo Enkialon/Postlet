@@ -167,6 +167,8 @@ CREATE TABLE conversations (
     last_message_at    INTEGER,
     last_message_id    TEXT,
     unread_count       INTEGER NOT NULL DEFAULT 0 CHECK(unread_count >= 0),
+    -- 非空表示本地隐藏；列表过滤；新邮件 last_message_at > hidden_at 时清除
+    hidden_at          INTEGER,
     created_at         INTEGER NOT NULL,
     updated_at         INTEGER NOT NULL,
     PRIMARY KEY (account_id, id),

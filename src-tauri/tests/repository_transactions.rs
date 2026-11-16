@@ -251,6 +251,7 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
             last_message_at: Some(2_000),
             last_message_id: Some(msg_id.clone()),
             unread_count: 1,
+            hidden_at: None,
             created_at: 1,
             updated_at: 2_000,
         },

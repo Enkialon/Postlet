@@ -82,6 +82,7 @@ pub fn run() {
             commands::list_conversations,
             commands::get_conversation,
             commands::list_conversation_messages,
+            commands::hide_conversation,
             commands::get_message,
             commands::ensure_message_body,
             commands::mark_messages_read,
