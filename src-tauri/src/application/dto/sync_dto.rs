@@ -9,7 +9,7 @@ pub struct MailSyncProgress {
     pub account_id: AccountId,
     pub mail_sync_status: SyncStatus,
     pub mail_sync_error: Option<String>,
-    pub mail_synced_at: Option<TimestampMs>,
+    pub mail_sync_triggered_at: Option<TimestampMs>,
     pub folders: Vec<MailFolderSyncState>,
 }
 
@@ -33,4 +33,12 @@ pub struct TriggerMailSyncCommand {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TriggerContactSyncCommand {
     pub account_id: AccountId,
+}
+
+/// 设置文件夹是否纳入全局同步
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SetFolderSyncEnabledCommand {
+    pub account_id: AccountId,
+    pub folder_id: FolderId,
+    pub sync_enabled: bool,
 }

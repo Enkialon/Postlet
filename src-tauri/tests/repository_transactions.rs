@@ -1,13 +1,19 @@
 //! 用真实内存 SQLite（migrate）验证模块调用、账户隔离及跨仓储事务。
 
-use postlet_lib::application::use_cases::{account_use_case, contact_use_case, conversation_use_case};
+use postlet_lib::application::use_cases::{contact_use_case, conversation_use_case};
 use postlet_lib::application::dto::{ContactListQuery, ConversationListQuery, ConversationMessagesQuery, GroupListQuery};
-use postlet_lib::domain::entities::{Contact, Group};
+use postlet_lib::domain::entities::{
+    Account, Contact, Conversation, ConversationMessageLink, Group, Message, MessageWithRecipients,
+};
 use postlet_lib::domain::value_objects::{
-    AccountId, ContactId, ConversationId, EmailAddress, GroupId, GroupSource, PageDirection,
+    AccountId, BodyContentType, ContactId, ConversationId, ConversationKind, EmailAddress,
+    FolderId, GroupId, GroupSource, Importance, MessageId, MessageSyncStatus, PageDirection,
+    SyncStatus,
 };
 use postlet_lib::infrastructure::db;
-use postlet_lib::infrastructure::repository::{accounts, contacts, conversations, groups};
+use postlet_lib::infrastructure::repository::{
+    accounts, contacts, conversations, groups, messages,
+};
 use sqlx::SqlitePool;
 
 async fn database() -> SqlitePool {
@@ -150,43 +156,156 @@ async fn failure_in_second_repository_rolls_back_first_write() {
     );
 }
 
+async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
+    let mut conn = db.acquire().await.unwrap();
+    let account_id = AccountId::new("acc-test");
+    let peer = EmailAddress::parse("alice@example.com").unwrap();
+    let contact_id = ContactId::new("contact-alice");
+    let conv_id = ConversationId::new("conv-alice");
+    let msg_id = MessageId::new("msg-1");
+
+    accounts::upsert(
+        &mut conn,
+        &Account {
+            id: account_id.clone(),
+            email: EmailAddress::parse("me@example.com").unwrap(),
+            display_name: "测试用户".into(),
+            aliases: vec![],
+            tenant_id: None,
+            home_account_id: None,
+            contact_delta_link: None,
+            mail_sync_triggered_at: Some(1_000),
+            contact_synced_at: None,
+            mail_sync_status: SyncStatus::Idle,
+            mail_sync_error: None,
+            show_group_messages_in_contact_conversation: false,
+            include_in_all: true,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    contacts::upsert(
+        &mut conn,
+        &Contact {
+            id: contact_id.clone(),
+            account_id: account_id.clone(),
+            graph_id: None,
+            display_name: "Alice Chen".into(),
+            normalized_address: peer.clone(),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .await
+    .unwrap();
+
+    messages::upsert_with_recipients(
+        &mut conn,
+        &MessageWithRecipients {
+            message: Message {
+                id: msg_id.clone(),
+                account_id: account_id.clone(),
+                graph_id: None,
+                thread_id: None,
+                graph_change_key: None,
+                internet_message_id: None,
+                conversation_index: None,
+                subject: "你好".into(),
+                body_preview: "正文预览".into(),
+                body_content_type: BodyContentType::Text,
+                body_content: Some("正文".into()),
+                from_address: Some(peer.clone()),
+                from_name: "Alice Chen".into(),
+                received_at: Some(2_000),
+                sent_at: None,
+                created_at_graph: None,
+                is_read: false,
+                is_draft: false,
+                is_outbound: false,
+                has_attachments: false,
+                importance: Importance::Normal,
+                folder_id: Some(FolderId::new("inbox")),
+                parent_folder_name: Some("Inbox".into()),
+                sync_status: MessageSyncStatus::Synced,
+                local_updated_at: 2_000,
+                remote_updated_at: Some(2_000),
+            },
+            recipients: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    conversations::upsert(
+        &mut conn,
+        &Conversation {
+            id: conv_id.clone(),
+            account_id: account_id.clone(),
+            kind: ConversationKind::Contact,
+            normalized_address: Some(peer),
+            contact_id: Some(contact_id),
+            group_id: None,
+            last_message_at: Some(2_000),
+            last_message_id: Some(msg_id.clone()),
+            unread_count: 1,
+            created_at: 1,
+            updated_at: 2_000,
+        },
+    )
+    .await
+    .unwrap();
+
+    conversations::attach_messages(
+        &mut conn,
+        &[ConversationMessageLink {
+            account_id: account_id.clone(),
+            conversation_id: conv_id,
+            message_id: msg_id,
+            attached_at: 2_000,
+        }],
+    )
+    .await
+    .unwrap();
+
+    account_id
+}
+
 #[tokio::test]
-async fn load_demo_workspace_supports_conversation_reads() {
+async fn seeded_mailbox_supports_conversation_reads() {
     let db = database().await;
-    let account = account_use_case::load_demo_workspace(&db).await.unwrap();
-    assert_eq!(account.id.as_str(), "acc-demo");
+    let account_id = seed_signed_in_mailbox(&db).await;
 
     let page = conversation_use_case::list_conversations(
         &db,
         ConversationListQuery {
-            account_id: Some(account.id.clone()),
+            account_id: Some(account_id.clone()),
             cursor: None,
-            limit: 50,
+            limit: 20,
             kind: None,
         },
     )
     .await
     .unwrap();
-    assert!(page.items.len() >= 50);
-    assert!(page.has_more);
+    assert_eq!(page.items.len(), 1);
+    assert!(!page.has_more);
 
     let alice = conversation_use_case::get_conversation(
         &db,
-        &account.id,
+        &account_id,
         &ConversationId::new("conv-alice"),
     )
     .await
     .unwrap();
-    assert_eq!(
-        alice.contact_display_name.as_deref(),
-        Some("Alice Chen")
-    );
+    assert_eq!(alice.contact_display_name.as_deref(), Some("Alice Chen"));
     assert!(alice.last_message_preview.is_some());
 
-    let messages = conversation_use_case::list_messages(
+    let msgs = conversation_use_case::list_messages(
         &db,
         ConversationMessagesQuery {
-            account_id: account.id.clone(),
+            account_id: account_id.clone(),
             conversation_id: ConversationId::new("conv-alice"),
             cursor: None,
             limit: 30,
@@ -195,14 +314,14 @@ async fn load_demo_workspace_supports_conversation_reads() {
     )
     .await
     .unwrap();
-    assert_eq!(messages.items.len(), 30);
-    assert!(messages.has_more);
+    assert_eq!(msgs.items.len(), 1);
+    assert!(!msgs.has_more);
 }
 
 #[tokio::test]
 async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     let db = database().await;
-    let account = account_use_case::load_demo_workspace(&db).await.unwrap();
+    let account_id = seed_signed_in_mailbox(&db).await;
     let mut conn = db.acquire().await.unwrap();
 
     let before = conversations::list(
@@ -218,12 +337,12 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .unwrap();
     assert!(!before.items.is_empty());
 
-    accounts::set_signed_in(&mut conn, &account.id, false)
+    accounts::set_signed_in(&mut conn, &account_id, false)
         .await
         .unwrap();
     assert!(accounts::list_ids(&mut conn).await.unwrap().is_empty());
     assert!(
-        accounts::get(&mut conn, &account.id)
+        accounts::get(&mut conn, &account_id)
             .await
             .unwrap()
             .is_some(),
@@ -269,7 +388,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .unwrap();
     assert!(gs.items.is_empty());
 
-    accounts::set_signed_in(&mut conn, &account.id, true)
+    accounts::set_signed_in(&mut conn, &account_id, true)
         .await
         .unwrap();
     let again = conversations::list(
@@ -286,14 +405,9 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     assert_eq!(again.items.len(), before.items.len());
 
     // 已登录但关掉 include_in_all：不进「全部」，单账号过滤仍可见
-    accounts::update_display_settings(
-        &mut conn,
-        &account.id,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
+    accounts::update_display_settings(&mut conn, &account_id, false, false)
+        .await
+        .unwrap();
     assert!(accounts::list_ids(&mut conn).await.unwrap().is_empty());
     let hidden_in_all = conversations::list(
         &mut conn,
@@ -310,7 +424,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     let single = conversations::list(
         &mut conn,
         &ConversationListQuery {
-            account_id: Some(account.id.clone()),
+            account_id: Some(account_id.clone()),
             cursor: None,
             limit: 20,
             kind: None,

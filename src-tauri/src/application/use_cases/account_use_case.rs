@@ -3,7 +3,6 @@ use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::auth as graph_auth;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::accounts;
-use crate::infrastructure::seed;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -67,7 +66,7 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
                 .clone()
                 .or(existing.home_account_id),
             contact_delta_link: existing.contact_delta_link,
-            mail_synced_at: existing.mail_synced_at,
+            mail_sync_triggered_at: existing.mail_sync_triggered_at,
             contact_synced_at: existing.contact_synced_at,
             mail_sync_status: existing.mail_sync_status,
             mail_sync_error: existing.mail_sync_error,
@@ -86,7 +85,7 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             tenant_id: remote.tenant_id.clone(),
             home_account_id: remote.home_account_id.clone(),
             contact_delta_link: None,
-            mail_synced_at: None,
+            mail_sync_triggered_at: None,
             contact_synced_at: None,
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
@@ -161,14 +160,6 @@ pub async fn update_display_settings(
         5_000,
     )
     .await;
-    Ok(account)
-}
-
-/// 清空并装载本地演示工作区（不接 Graph）。
-pub async fn load_demo_workspace(db: &SqlitePool) -> Result<Account, AppError> {
-    let mut tx = db.begin().await?;
-    let account = seed::seed_demo_workspace(&mut tx).await?;
-    tx.commit().await?;
     Ok(account)
 }
 

@@ -3,11 +3,9 @@
 use crate::application::dto::remote_models::{ContactDeltaPage, RemoteContact};
 use crate::application::error::PortError;
 use crate::domain::value_objects::EmailAddress;
-use graph_rs_sdk::http::Method;
 use graph_rs_sdk::{GraphClient, ODataQuery};
 use serde::Deserialize;
 use serde_json::Value;
-use url::Url;
 
 #[derive(Debug, Deserialize)]
 struct ODataList {
@@ -112,16 +110,5 @@ fn map_remote_contact(value: &Value) -> Option<RemoteContact> {
 }
 
 async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, PortError> {
-    let url = Url::parse(link).map_err(|_| PortError::Remote {
-        message: format!("无效 Graph 联系人续页链接: {link}"),
-        retryable: false,
-    })?;
-    let mut graph = GraphClient::new(access_token);
-    graph.custom_endpoint(&url);
-    let response = graph
-        .custom(Method::GET, None)
-        .send()
-        .await
-        .map_err(|e| map_http_err("Graph contacts absolute GET", e))?;
-    ensure_success(response, "Graph contacts absolute GET").await
+    super::http::get_absolute(access_token, link, "Graph contacts absolute GET").await
 }

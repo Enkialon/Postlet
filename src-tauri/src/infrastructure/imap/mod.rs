@@ -7,8 +7,9 @@ mod session_ops;
 mod sync;
 
 pub use client::{
-    discover_folders, list_capabilities, session_login, session_login_blocking, uid_set_seen,
-    uid_set_seen_async, ImapAuth, ImapEndpoint,
+    discover_folder_tree, discover_folders, list_capabilities, session_login,
+    session_login_blocking, uid_set_seen, uid_set_seen_async, ImapAuth, ImapEndpoint,
+    ImapFolderNode,
 };
 pub use idle::{run_idle_until_cancel, IdleOutcome};
 pub use session_ops::{sync_account_blocking, FolderSyncRequest, ImapSyncBatch};

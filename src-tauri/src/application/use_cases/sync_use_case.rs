@@ -2,8 +2,8 @@
 
 use crate::application::dto::remote_models::{GraphMessageChange, RemoteMessage};
 use crate::application::dto::{
-    ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, TriggerContactSyncCommand,
-    TriggerMailSyncCommand,
+    ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, SetFolderSyncEnabledCommand,
+    TriggerContactSyncCommand, TriggerMailSyncCommand,
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{
@@ -16,7 +16,8 @@ use crate::domain::value_objects::{
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
 use crate::infrastructure::imap::{
-    sync_account_blocking, FolderSyncRequest, ImapAuth, ImapEndpoint,
+    discover_folder_tree, session_login_blocking, sync_account_blocking, FolderSyncRequest,
+    ImapAuth, ImapEndpoint,
 };
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_last_uid, encode_uidvalidity};
@@ -27,11 +28,38 @@ use crate::infrastructure::repository::{
 };
 use crate::application::use_cases::aggregate_worker_use_case;
 use crate::application::dto::remote_models::RemoteMessageLocation;
-use crate::runtime::ChangeDispatcher;
+use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+const FOLDER_REFRESH_TIMEOUT: Duration = Duration::from_secs(90);
+const MAIL_SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+struct MailSyncGateGuard<'a> {
+    gate: &'a MailSyncGate,
+    account_id: String,
+}
+
+impl<'a> MailSyncGateGuard<'a> {
+    fn begin(gate: &'a MailSyncGate, account_id: &str) -> Option<Self> {
+        if gate.try_begin(account_id) {
+            Some(Self {
+                gate,
+                account_id: account_id.to_string(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for MailSyncGateGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.end(&self.account_id);
+    }
+}
 
 fn now_ms() -> TimestampMs {
     SystemTime::now()
@@ -40,15 +68,100 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
+/// `folder_ids` 非空时按指定夹；否则同步 `sync_enabled` 夹；尚无勾选时回落到 default_folder。
+async fn resolve_mail_folders(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    folder_ids: &Option<Vec<FolderId>>,
+    default_folder: &str,
+) -> Result<Vec<FolderId>, AppError> {
+    if let Some(ids) = folder_ids {
+        if !ids.is_empty() {
+            return Ok(ids.clone());
+        }
+    }
+    let mut conn = db.acquire().await?;
+    let enabled = folder_states::list_sync_enabled(&mut conn, account_id)
+        .await
+        .map_err(AppError::from)?;
+    if !enabled.is_empty() {
+        return Ok(enabled.into_iter().map(|s| s.folder_id).collect());
+    }
+    Ok(vec![FolderId::new(default_folder)])
+}
+
+fn merge_folder_progress(
+    account_id: &AccountId,
+    folder: FolderId,
+    prev: Option<&MailFolderSyncState>,
+    delta_link: Option<String>,
+    next_link: Option<String>,
+) -> MailFolderSyncState {
+    let now = now_ms();
+    MailFolderSyncState {
+        account_id: account_id.clone(),
+        folder_id: folder.clone(),
+        parent_folder_id: prev.and_then(|p| p.parent_folder_id.clone()),
+        display_name: prev
+            .map(|p| p.display_name.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| folder.as_str().to_string()),
+        sync_enabled: prev.map(|p| p.sync_enabled).unwrap_or(true),
+        delta_link,
+        next_link,
+        synced_at: Some(now),
+        sync_status: SyncStatus::Idle,
+        last_error: None,
+        updated_at: now,
+    }
+}
+
 /// 请求同步指定账户邮件；按 `receive_protocol` 路由。
+///
+/// 同一账户重入时直接 Ok（已在跑）；调用方可将本函数丢到后台，避免 IPC 卡死。
 pub async fn trigger_mail_sync(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
+    gate: &MailSyncGate,
     cmd: TriggerMailSyncCommand,
 ) -> Result<(), AppError> {
+    let Some(_guard) = MailSyncGateGuard::begin(gate, cmd.account_id.as_str()) else {
+        return Ok(());
+    };
+    match tokio::time::timeout(
+        MAIL_SYNC_TIMEOUT,
+        trigger_mail_sync_locked(db, paths, changes, &cmd),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            if let Ok(mut c) = db.acquire().await {
+                let _ = accounts::update_mail_sync_meta(
+                    &mut c,
+                    &cmd.account_id,
+                    SyncStatus::Error,
+                    Some("邮件同步超时，请稍后重试"),
+                    None,
+                )
+                .await;
+            }
+            Err(AppError::from(crate::application::error::PortError::Network {
+                message: "邮件同步超时，请稍后重试".into(),
+            }))
+        }
+    }
+}
+
+async fn trigger_mail_sync_locked(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    changes: &ChangeDispatcher,
+    cmd: &TriggerMailSyncCommand,
+) -> Result<(), AppError> {
     let mut conn = db.acquire().await?;
-    let account = accounts::get(&mut conn, &cmd.account_id)
+    let _account = accounts::get(&mut conn, &cmd.account_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
     let transport = mail_transports::ensure_default(&mut conn, &cmd.account_id, now_ms())
@@ -56,16 +169,23 @@ pub async fn trigger_mail_sync(
         .map_err(AppError::from)?;
     drop(conn);
 
+    // 账户级只记「发起」时刻；各文件夹成功时间写在 mail_folder_sync_state.synced_at
     {
         let mut c = db.acquire().await?;
-        accounts::update_mail_sync_meta(&mut c, &cmd.account_id, SyncStatus::Running, None, None)
-            .await
-            .map_err(AppError::from)?;
+        accounts::update_mail_sync_meta(
+            &mut c,
+            &cmd.account_id,
+            SyncStatus::Running,
+            None,
+            Some(now_ms()),
+        )
+        .await
+        .map_err(AppError::from)?;
     }
 
     let result = match transport.receive_protocol {
-        ReceiveProtocol::Graph => sync_graph_mail(db, paths, &cmd).await,
-        ReceiveProtocol::Imap => sync_imap_mail(db, paths, &cmd, &transport).await,
+        ReceiveProtocol::Graph => sync_graph_mail(db, paths, cmd).await,
+        ReceiveProtocol::Imap => sync_imap_mail(db, paths, cmd, &transport).await,
     };
 
     match result {
@@ -76,7 +196,7 @@ pub async fn trigger_mail_sync(
                 &cmd.account_id,
                 SyncStatus::Idle,
                 None,
-                Some(now_ms()),
+                None,
             )
             .await
             .map_err(AppError::from)?;
@@ -86,7 +206,6 @@ pub async fn trigger_mail_sync(
             // 同步后立刻排空一批聚合，让会话列表尽快收敛
             let _ =
                 aggregate_worker_use_case::process_available_jobs(db, Some(changes), 64).await;
-            let _ = account;
             Ok(())
         }
         Err(e) => {
@@ -115,11 +234,8 @@ async fn sync_graph_mail(
         .await
         .map_err(AppError::from)?;
 
-    let folders: Vec<FolderId> = cmd
-        .folder_ids
-        .clone()
-        .filter(|f| !f.is_empty())
-        .unwrap_or_else(|| vec![FolderId::new("inbox")]);
+    let folders =
+        resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids, "inbox").await?;
 
     let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
     let mut is_initial = false;
@@ -173,18 +289,14 @@ async fn sync_graph_mail(
             }
         }
 
-        let state = MailFolderSyncState {
-            account_id: cmd.account_id.clone(),
-            folder_id: folder,
-            delta_link: page.delta_link.or_else(|| {
-                prev.as_ref().and_then(|p| p.delta_link.clone())
-            }),
-            next_link: page.next_link,
-            synced_at: Some(now_ms()),
-            sync_status: SyncStatus::Idle,
-            last_error: None,
-            updated_at: now_ms(),
-        };
+        let state = merge_folder_progress(
+            &cmd.account_id,
+            folder,
+            prev.as_ref(),
+            page.delta_link
+                .or_else(|| prev.as_ref().and_then(|p| p.delta_link.clone())),
+            page.next_link,
+        );
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
@@ -244,21 +356,18 @@ async fn sync_imap_mail(
 
     let endpoint = ImapEndpoint { host, port, tls };
 
-    // 先收集各文件夹游标与已知 UID
+    // 先收集各文件夹游标与已知 UID（按 sync_enabled / 指定夹）
     let mut requests = Vec::new();
     let mut is_initial = false;
+    let folder_ids =
+        resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids, "INBOX").await?;
     {
         let mut conn = db.acquire().await?;
-        let folder_names: Vec<String> = if let Some(ids) = &cmd.folder_ids {
-            ids.iter().map(|f| f.as_str().to_string()).collect()
-        } else {
-            vec!["INBOX".into()]
-        };
-        for folder in folder_names {
-            let prev =
-                folder_states::get(&mut conn, &cmd.account_id, &FolderId::new(folder.clone()))
-                    .await
-                    .map_err(AppError::from)?;
+        for folder_id in folder_ids {
+            let folder = folder_id.as_str().to_string();
+            let prev = folder_states::get(&mut conn, &cmd.account_id, &folder_id)
+                .await
+                .map_err(AppError::from)?;
             if prev.as_ref().and_then(|p| p.delta_link.as_ref()).is_none() {
                 is_initial = true;
             }
@@ -355,16 +464,17 @@ async fn sync_imap_mail(
             }
         }
 
-        let state = MailFolderSyncState {
-            account_id: cmd.account_id.clone(),
-            folder_id: FolderId::new(result.folder),
-            delta_link: Some(encode_uidvalidity(result.uidvalidity)),
-            next_link: Some(encode_last_uid(result.last_uid)),
-            synced_at: Some(now_ms()),
-            sync_status: SyncStatus::Idle,
-            last_error: None,
-            updated_at: now_ms(),
-        };
+        let folder_id = FolderId::new(result.folder);
+        let prev = folder_states::get(&mut tx, &cmd.account_id, &folder_id)
+            .await
+            .map_err(AppError::from)?;
+        let state = merge_folder_progress(
+            &cmd.account_id,
+            folder_id,
+            prev.as_ref(),
+            Some(encode_uidvalidity(result.uidvalidity)),
+            Some(encode_last_uid(result.last_uid)),
+        );
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
@@ -779,7 +889,7 @@ pub async fn get_mail_sync_progress(
         account_id: account_id.clone(),
         mail_sync_status: account.mail_sync_status,
         mail_sync_error: account.mail_sync_error,
-        mail_synced_at: account.mail_synced_at,
+        mail_sync_triggered_at: account.mail_sync_triggered_at,
         folders,
     })
 }
@@ -797,5 +907,185 @@ pub async fn get_contact_sync_progress(
         contact_synced_at: account.contact_synced_at,
         contact_delta_link: account.contact_delta_link,
     })
+}
+
+/// 从远端发现文件夹树并 upsert 本地元数据（保留用户勾选与游标）。
+pub async fn refresh_mail_folders(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+) -> Result<Vec<MailFolderSyncState>, AppError> {
+    match tokio::time::timeout(
+        FOLDER_REFRESH_TIMEOUT,
+        refresh_mail_folders_inner(db, paths, account_id),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(AppError::from(crate::application::error::PortError::Network {
+            message: "拉取文件夹列表超时，请检查网络后重试".into(),
+        })),
+    }
+}
+
+async fn refresh_mail_folders_inner(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+) -> Result<Vec<MailFolderSyncState>, AppError> {
+    let mut conn = db.acquire().await?;
+    let _account = accounts::get(&mut conn, account_id)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    let transport = mail_transports::ensure_default(&mut conn, account_id, now_ms())
+        .await
+        .map_err(AppError::from)?;
+    drop(conn);
+
+    match transport.receive_protocol {
+        ReceiveProtocol::Graph => {
+            let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+            let token =
+                graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+                    .await
+                    .map_err(AppError::from)?;
+            let remote = graph::mail::list_mail_folders(&token)
+                .await
+                .map_err(AppError::from)?;
+            let mut tx = db.begin().await?;
+            let now = now_ms();
+            for f in remote {
+                let fid = FolderId::new(f.id);
+                let parent = f.parent_id.map(FolderId::new);
+                let default_enabled = folder_states::default_sync_enabled(
+                    fid.as_str(),
+                    f.well_known_name.as_deref(),
+                );
+                folder_states::upsert_discovered(
+                    &mut tx,
+                    account_id,
+                    &fid,
+                    parent.as_ref(),
+                    &f.display_name,
+                    default_enabled,
+                    now,
+                )
+                .await
+                .map_err(AppError::from)?;
+            }
+            tx.commit().await?;
+        }
+        ReceiveProtocol::Imap => {
+            let host = transport
+                .imap_host
+                .clone()
+                .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_host"))?;
+            let port = transport
+                .imap_port
+                .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_port"))?;
+            let tls = transport.imap_tls.unwrap_or(MailTlsMode::Implicit);
+            let username = transport
+                .username
+                .clone()
+                .ok_or_else(|| AppError::validation("IMAP 账号缺少 username"))?;
+            let secret = credentials::load(&paths.credentials_dir, account_id)
+                .await
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
+            let auth = match transport.auth_kind {
+                MailAuthKind::Password => ImapAuth::Password {
+                    username: username.clone(),
+                    password: secret
+                        .password
+                        .ok_or_else(|| AppError::auth("缺少 IMAP 密码"))?,
+                },
+                MailAuthKind::OAuth2 => ImapAuth::OAuth2 {
+                    username: username.clone(),
+                    access_token: secret
+                        .access_token
+                        .ok_or_else(|| AppError::auth("缺少 IMAP OAuth access_token"))?,
+                },
+            };
+            let endpoint = ImapEndpoint { host, port, tls };
+            let nodes = tokio::task::spawn_blocking(move || {
+                let mut session = session_login_blocking(&endpoint, &auth)?;
+                let tree = discover_folder_tree(&mut session)?;
+                let _ = session.logout();
+                Ok::<_, crate::application::error::PortError>(tree)
+            })
+            .await
+            .map_err(|e| AppError::internal(format!("IMAP 文件夹发现失败: {e}")))?
+            .map_err(AppError::from)?;
+
+            let mut tx = db.begin().await?;
+            let now = now_ms();
+            for n in nodes {
+                let fid = FolderId::new(n.name.clone());
+                let parent = n.parent_name.map(FolderId::new);
+                let display =
+                    imap_folder_display_name(&n.name, parent.as_ref(), n.delimiter.as_deref());
+                let default_enabled = folder_states::default_sync_enabled(fid.as_str(), None);
+                folder_states::upsert_discovered(
+                    &mut tx,
+                    account_id,
+                    &fid,
+                    parent.as_ref(),
+                    &display,
+                    default_enabled,
+                    now,
+                )
+                .await
+                .map_err(AppError::from)?;
+            }
+            tx.commit().await?;
+        }
+    }
+
+    let mut conn = db.acquire().await?;
+    folder_states::list_by_account(&mut conn, account_id)
+        .await
+        .map_err(AppError::from)
+}
+
+fn imap_folder_display_name(
+    full_name: &str,
+    parent: Option<&FolderId>,
+    delimiter: Option<&str>,
+) -> String {
+    if let (Some(parent), Some(d)) = (parent, delimiter) {
+        let prefix = format!("{}{}", parent.as_str(), d);
+        if let Some(leaf) = full_name.strip_prefix(&prefix) {
+            if !leaf.is_empty() {
+                return leaf.to_string();
+            }
+        }
+    }
+    full_name.to_string()
+}
+
+/// 勾选/取消文件夹纳入账户全局同步。
+pub async fn set_folder_sync_enabled(
+    db: &SqlitePool,
+    cmd: SetFolderSyncEnabledCommand,
+) -> Result<MailFolderSyncState, AppError> {
+    let mut conn = db.acquire().await?;
+    folder_states::set_sync_enabled(
+        &mut conn,
+        &cmd.account_id,
+        &cmd.folder_id,
+        cmd.sync_enabled,
+        now_ms(),
+    )
+    .await
+    .map_err(AppError::from)?;
+    folder_states::get(&mut conn, &cmd.account_id, &cmd.folder_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            AppError::not_found(format!(
+                "文件夹不存在: {}/{}",
+                cmd.account_id, cmd.folder_id
+            ))
+        })
 }
 

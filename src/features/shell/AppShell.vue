@@ -327,8 +327,8 @@ function railBtn(active: boolean): string {
         <button
           type="button"
           :class="railBtn(nav.page.value === 'settings')"
-          aria-label="设置"
-          title="设置"
+          aria-label="邮件同步"
+          title="邮件同步"
           @click="nav.goPage('settings')"
         >
           <svg class="block size-5" viewBox="0 0 24 24" aria-hidden="true">

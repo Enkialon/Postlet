@@ -76,7 +76,7 @@ pub(super) fn account(row: &SqliteRow) -> Result<Account, sqlx::Error> {
         tenant_id: row.try_get("tenant_id")?,
         home_account_id: row.try_get("home_account_id")?,
         contact_delta_link: row.try_get("contact_delta_link")?,
-        mail_synced_at: row.try_get("mail_synced_at")?,
+        mail_sync_triggered_at: row.try_get("mail_sync_triggered_at")?,
         contact_synced_at: row.try_get("contact_synced_at")?,
         mail_sync_status: parse_syncstatus(row.try_get("mail_sync_status")?)?,
         mail_sync_error: row.try_get("mail_sync_error")?,
@@ -210,9 +210,14 @@ pub(super) fn messagerecipient(row: &SqliteRow) -> Result<MessageRecipient, sqlx
 }
 
 pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState, sqlx::Error> {
+    let parent = row.try_get::<Option<String>, _>("parent_folder_id")?;
+    let sync_enabled: i64 = row.try_get("sync_enabled").unwrap_or(0);
     Ok(MailFolderSyncState {
         account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
         folder_id: FolderId::new(row.try_get::<String, _>("folder_id")?),
+        parent_folder_id: parent.filter(|s| !s.is_empty()).map(FolderId::new),
+        display_name: row.try_get::<String, _>("display_name").unwrap_or_default(),
+        sync_enabled: sync_enabled != 0,
         delta_link: row.try_get("delta_link")?,
         next_link: row.try_get("next_link")?,
         synced_at: row.try_get("synced_at")?,

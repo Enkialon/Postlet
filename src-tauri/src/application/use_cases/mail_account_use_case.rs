@@ -61,7 +61,7 @@ pub async fn upsert_imap_smtp_account(
             tenant_id: None,
             home_account_id: None,
             contact_delta_link: None,
-            mail_synced_at: None,
+            mail_sync_triggered_at: None,
             contact_synced_at: None,
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,

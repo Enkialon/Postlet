@@ -9,7 +9,7 @@ use crate::infrastructure::imap::{
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
-use crate::runtime::ChangeDispatcher;
+use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::time::Duration;
 
@@ -18,7 +18,12 @@ const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
 
 /// 为已登录且 receive=imap 的账号启动后台监视（进程级）。
-pub fn spawn_watchers(db: SqlitePool, paths: AppPaths, changes: ChangeDispatcher) {
+pub fn spawn_watchers(
+    db: SqlitePool,
+    paths: AppPaths,
+    changes: ChangeDispatcher,
+    gate: MailSyncGate,
+) {
     tauri::async_runtime::spawn(async move {
         let mut started = std::collections::HashSet::<String>::new();
         loop {
@@ -34,9 +39,10 @@ pub fn spawn_watchers(db: SqlitePool, paths: AppPaths, changes: ChangeDispatcher
                                 let db2 = db.clone();
                                 let paths2 = paths.clone();
                                 let changes2 = changes.clone();
+                                let gate2 = gate.clone();
                                 let id = account.id.clone();
                                 tauri::async_runtime::spawn(async move {
-                                    watch_one_account(db2, paths2, changes2, id).await;
+                                    watch_one_account(db2, paths2, changes2, gate2, id).await;
                                 });
                             }
                         }
@@ -52,10 +58,11 @@ async fn watch_one_account(
     db: SqlitePool,
     paths: AppPaths,
     changes: ChangeDispatcher,
+    gate: MailSyncGate,
     account_id: AccountId,
 ) {
     loop {
-        let ok = run_cycle(&db, &paths, &changes, &account_id).await;
+        let ok = run_cycle(&db, &paths, &changes, &gate, &account_id).await;
         if !ok {
             tokio::time::sleep(RECONNECT_DELAY).await;
         }
@@ -66,6 +73,7 @@ async fn run_cycle(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
+    gate: &MailSyncGate,
     account_id: &AccountId,
 ) -> bool {
     let (transport, secret) = {
@@ -137,6 +145,7 @@ async fn run_cycle(
                     db,
                     paths,
                     changes,
+                    gate,
                     TriggerMailSyncCommand {
                         account_id: account_id.clone(),
                         folder_ids: None,
@@ -153,6 +162,7 @@ async fn run_cycle(
             db,
             paths,
             changes,
+            gate,
             TriggerMailSyncCommand {
                 account_id: account_id.clone(),
                 folder_ids: None,

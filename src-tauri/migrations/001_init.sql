@@ -8,7 +8,7 @@ CREATE TABLE accounts (
     tenant_id       TEXT,
     home_account_id TEXT,
     contact_delta_link TEXT,
-    mail_synced_at INTEGER,
+    mail_sync_triggered_at INTEGER,
     contact_synced_at INTEGER,
     mail_sync_status TEXT NOT NULL DEFAULT 'idle'
         CHECK(mail_sync_status IN ('idle', 'running', 'error')),

@@ -6,5 +6,4 @@ pub mod imap;
 pub mod mail;
 pub mod paths;
 pub mod repository;
-pub mod seed;
 pub mod smtp;

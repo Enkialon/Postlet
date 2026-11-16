@@ -182,7 +182,7 @@ export interface MailSyncProgress {
   account_id: AccountId;
   mail_sync_status: SyncStatus;
   mail_sync_error: string | null;
-  mail_synced_at: TimestampMs | null;
+  mail_sync_triggered_at: TimestampMs | null;
   folders: MailFolderSyncState[];
 }
 
@@ -203,6 +203,13 @@ export interface TriggerMailSyncCommand {
 /** 触发联系人同步 */
 export interface TriggerContactSyncCommand {
   account_id: AccountId;
+}
+
+/** 设置文件夹是否纳入全局同步 */
+export interface SetFolderSyncEnabledCommand {
+  account_id: AccountId;
+  folder_id: FolderId;
+  sync_enabled: boolean;
 }
 
 /** 写信附件草稿（仅元数据，无真实上传） */

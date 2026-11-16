@@ -5,6 +5,7 @@ alwaysApply: true
 
 # 架构硬约束
 
+- **未上线 V1**：不做旧版兼容升级包袱；破坏性修改直接改对，禁止双轨/垫片（见 `v1-no-compat.mdc`）
 - 产品：联系人/会话优先的桌面邮件客户端（Tauri 2）
 - Graph 只走 Rust `graph-rs-sdk`；IMAP/SMTP 只走 Rust 基础设施；禁止前端直连协议
 - 账号按 `receive_protocol` / `send_protocol` 路由，禁止把服务商名称等同于协议

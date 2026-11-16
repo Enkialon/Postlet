@@ -27,14 +27,35 @@ pub async fn list_by_account(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
 ) -> Result<Vec<MailFolderSyncState>, PortError> {
-    sqlx::query("SELECT * FROM mail_folder_sync_state WHERE account_id = ? ORDER BY folder_id")
-        .bind(account_id.as_str())
-        .fetch_all(&mut *conn)
-        .await?
-        .iter()
-        .map(super::rows::mailfoldersyncstate)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
+    sqlx::query(
+        "SELECT * FROM mail_folder_sync_state WHERE account_id = ?
+         ORDER BY display_name COLLATE NOCASE, folder_id",
+    )
+    .bind(account_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::mailfoldersyncstate)
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(Into::into)
+}
+
+pub async fn list_sync_enabled(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+) -> Result<Vec<MailFolderSyncState>, PortError> {
+    sqlx::query(
+        "SELECT * FROM mail_folder_sync_state
+         WHERE account_id = ? AND sync_enabled = 1
+         ORDER BY folder_id",
+    )
+    .bind(account_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?
+    .iter()
+    .map(super::rows::mailfoldersyncstate)
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(Into::into)
 }
 
 pub async fn upsert(
@@ -43,9 +64,13 @@ pub async fn upsert(
 ) -> Result<(), PortError> {
     sqlx::query(
         "INSERT INTO mail_folder_sync_state (
-            account_id, folder_id, delta_link, next_link, synced_at, sync_status, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            account_id, folder_id, parent_folder_id, display_name, sync_enabled,
+            delta_link, next_link, synced_at, sync_status, last_error, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, folder_id) DO UPDATE SET
+            parent_folder_id=excluded.parent_folder_id,
+            display_name=excluded.display_name,
+            sync_enabled=excluded.sync_enabled,
             delta_link=excluded.delta_link,
             next_link=excluded.next_link,
             synced_at=excluded.synced_at,
@@ -55,6 +80,9 @@ pub async fn upsert(
     )
     .bind(state.account_id.as_str())
     .bind(state.folder_id.as_str())
+    .bind(state.parent_folder_id.as_ref().map(|f| f.as_str()))
+    .bind(&state.display_name)
+    .bind(if state.sync_enabled { 1 } else { 0 })
     .bind(&state.delta_link)
     .bind(&state.next_link)
     .bind(state.synced_at)
@@ -63,6 +91,65 @@ pub async fn upsert(
     .bind(state.updated_at)
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+/// 发现目录时合并：保留已有游标与用户勾选；新夹按 default_enabled。
+pub async fn upsert_discovered(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    parent_folder_id: Option<&FolderId>,
+    display_name: &str,
+    default_enabled: bool,
+    now: i64,
+) -> Result<(), PortError> {
+    let existing = get(conn, account_id, folder_id).await?;
+    let state = MailFolderSyncState {
+        account_id: account_id.clone(),
+        folder_id: folder_id.clone(),
+        parent_folder_id: parent_folder_id.cloned(),
+        display_name: display_name.to_owned(),
+        sync_enabled: existing
+            .as_ref()
+            .map(|e| e.sync_enabled)
+            .unwrap_or(default_enabled),
+        delta_link: existing.as_ref().and_then(|e| e.delta_link.clone()),
+        next_link: existing.as_ref().and_then(|e| e.next_link.clone()),
+        synced_at: existing.as_ref().and_then(|e| e.synced_at),
+        sync_status: existing
+            .as_ref()
+            .map(|e| e.sync_status)
+            .unwrap_or(crate::domain::value_objects::SyncStatus::Idle),
+        last_error: existing.as_ref().and_then(|e| e.last_error.clone()),
+        updated_at: now,
+    };
+    upsert(conn, &state).await
+}
+
+pub async fn set_sync_enabled(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    enabled: bool,
+    now: i64,
+) -> Result<(), PortError> {
+    let result = sqlx::query(
+        "UPDATE mail_folder_sync_state
+         SET sync_enabled = ?, updated_at = ?
+         WHERE account_id = ? AND folder_id = ?",
+    )
+    .bind(if enabled { 1 } else { 0 })
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(folder_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(PortError::Storage {
+            message: format!("文件夹不存在: {folder_id}"),
+        });
+    }
     Ok(())
 }
 
@@ -99,4 +186,14 @@ pub async fn delete(
         .execute(&mut *conn)
         .await?;
     Ok(())
+}
+
+pub fn default_sync_enabled(folder_id: &str, well_known: Option<&str>) -> bool {
+    let id = folder_id.trim();
+    if id.eq_ignore_ascii_case("inbox") || id.eq_ignore_ascii_case("INBOX") {
+        return true;
+    }
+    well_known
+        .map(|w| w.eq_ignore_ascii_case("inbox"))
+        .unwrap_or(false)
 }

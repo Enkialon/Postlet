@@ -16,7 +16,7 @@ export interface BootstrapOptions {
 export function bootstrapApp(app: App, options: BootstrapOptions = {}): AppPorts {
   const ports =
     options.ports ??
-    (isTauri() ? createTauriPorts() : createMemoryPorts({ seed: true }));
+    (isTauri() ? createTauriPorts() : createMemoryPorts());
   const navigation = useNavigation();
 
   app.use(i18n);

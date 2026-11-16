@@ -28,10 +28,10 @@ export class MemoryAccountAdapter implements AccountPort {
       email: `user-${id.slice(-4)}@example.com`,
       display_name: `新用户 ${id.slice(-4)}`,
       aliases: [],
-      tenant_id: 'tenant-demo',
-      home_account_id: `home-${id}`,
+      tenant_id: null,
+      home_account_id: null,
       contact_delta_link: null,
-      mail_synced_at: null,
+      mail_sync_triggered_at: null,
       contact_synced_at: null,
       mail_sync_status: 'idle',
       mail_sync_error: null,
@@ -80,7 +80,7 @@ export class MemoryAccountAdapter implements AccountPort {
       tenant_id: null,
       home_account_id: null,
       contact_delta_link: null,
-      mail_synced_at: null,
+      mail_sync_triggered_at: null,
       contact_synced_at: null,
       mail_sync_status: 'idle',
       mail_sync_error: null,
@@ -114,9 +114,4 @@ export class MemoryAccountAdapter implements AccountPort {
     return { ...account };
   }
 
-  async loadDemoWorkspace(): Promise<Account> {
-    this.store.clearAll();
-    this.store.seedDemo();
-    return { ...this.store.requireAccount('acc-demo') };
-  }
 }

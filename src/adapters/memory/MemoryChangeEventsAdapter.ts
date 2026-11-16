@@ -3,7 +3,7 @@ import type {
   MailChangedEvent,
 } from '../../ports/changeEventsPort';
 
-/** Memory：进程内可手动 publish，供演示 / 测试 */
+/** Memory：进程内可手动 publish，供测试 */
 export class MemoryChangeEventsAdapter implements ChangeEventsPort {
   private handlers = new Set<(event: MailChangedEvent) => void>();
   private generation = 0;

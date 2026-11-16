@@ -5,20 +5,17 @@ use crate::application::use_cases::{message_use_case, sync_use_case};
 use crate::domain::value_objects::ReceiveProtocol;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
-use crate::runtime::ChangeDispatcher;
+use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const TICK: Duration = Duration::from_secs(120);
 
-/// 启动固定间隔调度；账户级不重入。
-pub fn spawn(db: SqlitePool, paths: AppPaths, changes: ChangeDispatcher) {
-    let inflight = Arc::new(Mutex::new(HashSet::<String>::new()));
+/// 启动固定间隔调度；账户级不重入由 `MailSyncGate` 保证。
+pub fn spawn(db: SqlitePool, paths: AppPaths, changes: ChangeDispatcher, gate: MailSyncGate) {
     tauri::async_runtime::spawn(async move {
         loop {
-            tick_once(&db, &paths, &changes, &inflight).await;
+            tick_once(&db, &paths, &changes, &gate).await;
             tokio::time::sleep(TICK).await;
         }
     });
@@ -28,7 +25,7 @@ async fn tick_once(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
-    inflight: &Arc<Mutex<HashSet<String>>>,
+    gate: &MailSyncGate,
 ) {
     let list = {
         let mut conn = match db.acquire().await {
@@ -45,26 +42,18 @@ async fn tick_once(
         if !account_is_active_for_graph_sync(db, &account.id).await {
             continue;
         }
-        {
-            let mut guard = match inflight.lock() {
-                Ok(g) => g,
-                Err(_) => continue,
-            };
-            if !guard.insert(account.id.as_str().to_string()) {
-                continue;
-            }
-        }
 
         let db2 = db.clone();
         let paths2 = paths.clone();
         let changes2 = changes.clone();
-        let inflight2 = inflight.clone();
+        let gate2 = gate.clone();
         let account_id = account.id.clone();
         tauri::async_runtime::spawn(async move {
             let _ = sync_use_case::trigger_mail_sync(
                 &db2,
                 &paths2,
                 &changes2,
+                &gate2,
                 TriggerMailSyncCommand {
                     account_id: account_id.clone(),
                     folder_ids: None,
@@ -73,9 +62,6 @@ async fn tick_once(
             .await;
             let _ = message_use_case::flush_due_mutations(&db2, &paths2, &account_id, 32).await;
             let _ = sync_use_case::process_due_locates(&db2, &paths2, &account_id, 32).await;
-            if let Ok(mut guard) = inflight2.lock() {
-                guard.remove(account_id.as_str());
-            }
         });
     }
 }

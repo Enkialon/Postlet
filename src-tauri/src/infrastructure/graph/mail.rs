@@ -10,11 +10,9 @@ use crate::domain::value_objects::{
     BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole, ThreadId,
 };
 use chrono::{DateTime, Utc};
-use graph_rs_sdk::http::Method;
 use graph_rs_sdk::{GraphClient, ODataQuery};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use url::Url;
 
 const MESSAGE_SELECT: &[&str] = &[
     "id",
@@ -281,19 +279,258 @@ fn recipients_json(list: &[(String, String)]) -> Vec<Value> {
         .collect()
 }
 
-async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, PortError> {
-    let url = Url::parse(link).map_err(|_| PortError::Remote {
-        message: format!("无效 Graph 续页链接: {link}"),
-        retryable: false,
-    })?;
-    let mut graph = GraphClient::new(access_token);
-    graph.custom_endpoint(&url);
-    let response = graph
-        .custom(Method::GET, None)
+/// 远端邮件文件夹（含父子；多级）
+#[derive(Debug, Clone)]
+pub struct RemoteMailFolder {
+    pub id: String,
+    pub display_name: String,
+    pub parent_id: Option<String>,
+    pub well_known_name: Option<String>,
+}
+
+const FOLDER_SELECT: &[&str] = &["id", "displayName", "parentFolderId", "childFolderCount"];
+
+#[derive(Debug, Clone)]
+struct ListedFolder {
+    id: String,
+    display_name: String,
+    child_folder_count: i64,
+}
+
+/// 列出邮箱全部 mailFolder。
+///
+/// 优先 `mailFolders/delta`（一次分页拿全树）；失败再回退 BFS。
+/// Graph v1.0 无 `wellKnownName`，收件箱通过 well-known 路径解析 id 后标注。
+pub async fn list_mail_folders(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+    let mut out = match list_mail_folders_delta(access_token).await {
+        Ok(folders) if !folders.is_empty() => folders,
+        _ => list_mail_folders_bfs(access_token).await?,
+    };
+    annotate_inbox_well_known(access_token, &mut out).await;
+    Ok(out)
+}
+
+async fn annotate_inbox_well_known(access_token: &str, folders: &mut [RemoteMailFolder]) {
+    if let Ok(inbox_id) = resolve_well_known_folder_id(access_token, "inbox").await {
+        for f in folders.iter_mut() {
+            if f.id == inbox_id {
+                f.well_known_name = Some("inbox".into());
+            }
+        }
+    }
+}
+
+/// `GET /me/mailFolders/delta`：扁平返回整棵树（含多级），避免逐层 HTTP。
+async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+    use std::collections::HashSet;
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut next: Option<String> = Some(
+        "https://graph.microsoft.com/v1.0/me/mailFolders/delta?$select=id,displayName,parentFolderId"
+            .into(),
+    );
+
+    while let Some(link) = next.take() {
+        let response = get_absolute(access_token, &link).await?;
+        let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+            message: "无法解析 Graph 文件夹 delta".into(),
+            retryable: true,
+        })?;
+
+        for item in page.value {
+            if item.get("@removed").is_some() {
+                continue;
+            }
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if id.is_empty() || !seen.insert(id.clone()) {
+                continue;
+            }
+            let display_name = item
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id.as_str())
+                .to_string();
+            // msgfolderroot 等不在本集合内的父 → None，前端当根渲染
+            let parent_id = item
+                .get("parentFolderId")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            out.push(RemoteMailFolder {
+                id,
+                display_name,
+                parent_id,
+                well_known_name: None,
+            });
+        }
+
+        if let Some(delta) = page.delta_link.filter(|s| !s.is_empty()) {
+            // 首轮同步结束：有 deltaLink 即完整快照
+            let _ = delta;
+            break;
+        }
+        match page.next_link {
+            Some(link) if !link.is_empty() => next = Some(link),
+            _ => break,
+        }
+    }
+
+    // 把父不在集合内的 parent_id 清掉，避免悬空引用
+    let ids: HashSet<String> = out.iter().map(|f| f.id.clone()).collect();
+    for f in &mut out {
+        if f.parent_id
+            .as_ref()
+            .is_some_and(|p| !ids.contains(p))
+        {
+            f.parent_id = None;
+        }
+    }
+    Ok(out)
+}
+
+/// 根 + childFolders BFS；跳过 searchfolders 子树，避免搜索夹爆炸拖死刷新。
+async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+    use std::collections::{HashSet, VecDeque};
+
+    let searchfolders_id = resolve_well_known_folder_id(access_token, "searchfolders")
+        .await
+        .ok();
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue: VecDeque<Option<String>> = VecDeque::new();
+    queue.push_back(None);
+
+    while let Some(parent_id) = queue.pop_front() {
+        let listed = list_folders_under(access_token, parent_id.as_deref()).await?;
+        for item in listed {
+            if !seen.insert(item.id.clone()) {
+                continue;
+            }
+            let skip_children = searchfolders_id
+                .as_ref()
+                .is_some_and(|sid| sid == &item.id);
+            let has_children = item.child_folder_count > 0 && !skip_children;
+            out.push(RemoteMailFolder {
+                id: item.id.clone(),
+                display_name: item.display_name,
+                parent_id: parent_id.clone(),
+                well_known_name: None,
+            });
+            if has_children {
+                queue.push_back(Some(item.id));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 用 well-known 名取真实 folder id，例如 `inbox` → opaque id。
+async fn resolve_well_known_folder_id(
+    access_token: &str,
+    well_known: &str,
+) -> Result<String, PortError> {
+    let response = client(access_token)
+        .me()
+        .mail_folder(well_known)
+        .get_mail_folders()
+        .select(&["id"])
         .send()
         .await
-        .map_err(|e| map_http_err("Graph absolute GET", e))?;
-    ensure_success(response, "Graph absolute GET").await
+        .map_err(|e| map_http_err("Graph well-known mailFolder", e))?;
+    let response = ensure_success(response, "Graph well-known mailFolder").await?;
+    let value: Value = response.json().await.map_err(|_| PortError::Remote {
+        message: "无法解析 Graph well-known 文件夹".into(),
+        retryable: true,
+    })?;
+    value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| PortError::Remote {
+            message: format!("well-known 文件夹缺少 id: {well_known}"),
+            retryable: false,
+        })
+}
+
+async fn list_folders_under(
+    access_token: &str,
+    parent_id: Option<&str>,
+) -> Result<Vec<ListedFolder>, PortError> {
+    let mut out = Vec::new();
+    let mut next: Option<String> = None;
+    loop {
+        let response = if let Some(link) = next.as_deref() {
+            get_absolute(access_token, link).await?
+        } else if let Some(pid) = parent_id {
+            let response = client(access_token)
+                .me()
+                .mail_folder(pid)
+                .child_folders()
+                .list_child_folders()
+                .select(FOLDER_SELECT)
+                .send()
+                .await
+                .map_err(|e| map_http_err("Graph childFolders", e))?;
+            ensure_success(response, "Graph childFolders").await?
+        } else {
+            let response = client(access_token)
+                .me()
+                .mail_folders()
+                .list_mail_folders()
+                .select(FOLDER_SELECT)
+                .send()
+                .await
+                .map_err(|e| map_http_err("Graph mailFolders", e))?;
+            ensure_success(response, "Graph mailFolders").await?
+        };
+
+        let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+            message: "无法解析 Graph 文件夹列表".into(),
+            retryable: true,
+        })?;
+
+        for item in page.value {
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let display_name = item
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id.as_str())
+                .to_string();
+            let child_folder_count = item
+                .get("childFolderCount")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            out.push(ListedFolder {
+                id,
+                display_name,
+                child_folder_count,
+            });
+        }
+
+        match page.next_link {
+            Some(link) if !link.is_empty() => next = Some(link),
+            _ => break,
+        }
+    }
+    Ok(out)
+}
+
+async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, PortError> {
+    super::http::get_absolute(access_token, link, "Graph absolute GET").await
 }
 
 fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<RemoteMessage, String> {

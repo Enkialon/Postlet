@@ -34,7 +34,7 @@ async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
         tenant_id: None,
         home_account_id: None,
         contact_delta_link: None,
-        mail_synced_at: None,
+        mail_sync_triggered_at: None,
         contact_synced_at: None,
         mail_sync_status: SyncStatus::Idle,
         mail_sync_error: None,

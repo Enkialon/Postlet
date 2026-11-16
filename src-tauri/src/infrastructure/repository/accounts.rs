@@ -112,7 +112,7 @@ pub async fn upsert_identity(
     sqlx::query(
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
-            contact_delta_link, mail_synced_at, contact_synced_at, mail_sync_status,
+            contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
             mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
             include_in_all, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
@@ -132,7 +132,7 @@ pub async fn upsert_identity(
     .bind(&account.tenant_id)
     .bind(&account.home_account_id)
     .bind(&account.contact_delta_link)
-    .bind(account.mail_synced_at)
+    .bind(account.mail_sync_triggered_at)
     .bind(account.contact_synced_at)
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
@@ -158,7 +158,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     sqlx::query(
         "INSERT INTO accounts (
             id, email, display_name, aliases_json, tenant_id, home_account_id,
-            contact_delta_link, mail_synced_at, contact_synced_at, mail_sync_status,
+            contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
             mail_sync_error, show_group_messages_in_contact_conversation, is_signed_in,
             include_in_all, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
@@ -169,7 +169,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
             tenant_id=excluded.tenant_id,
             home_account_id=excluded.home_account_id,
             contact_delta_link=excluded.contact_delta_link,
-            mail_synced_at=excluded.mail_synced_at,
+            mail_sync_triggered_at=excluded.mail_sync_triggered_at,
             contact_synced_at=excluded.contact_synced_at,
             mail_sync_status=excluded.mail_sync_status,
             mail_sync_error=excluded.mail_sync_error,
@@ -185,7 +185,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     .bind(&account.tenant_id)
     .bind(&account.home_account_id)
     .bind(&account.contact_delta_link)
-    .bind(account.mail_synced_at)
+    .bind(account.mail_sync_triggered_at)
     .bind(account.contact_synced_at)
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
@@ -224,20 +224,40 @@ pub async fn set_signed_in(
     Ok(())
 }
 
+/// 进程启动时清掉遗留的 running，避免 UI 永久显示「同步中」。
+pub async fn clear_stale_mail_sync_running(
+    conn: &mut SqliteConnection,
+) -> Result<u64, PortError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let result = sqlx::query(
+        "UPDATE accounts
+         SET mail_sync_status = 'idle', mail_sync_error = NULL, updated_at = ?
+         WHERE mail_sync_status = 'running'",
+    )
+    .bind(now)
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn update_mail_sync_meta(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     status: SyncStatus,
     error: Option<&str>,
-    mail_synced_at: Option<TimestampMs>,
+    // 传入则更新「发起同步」时间；成功结束勿传成功时刻
+    mail_sync_triggered_at: Option<TimestampMs>,
 ) -> Result<(), PortError> {
     sqlx::query(
-        "UPDATE accounts SET mail_sync_status = ?, mail_sync_error = ?, mail_synced_at = COALESCE(?, mail_synced_at), updated_at = ?
+        "UPDATE accounts SET mail_sync_status = ?, mail_sync_error = ?, mail_sync_triggered_at = COALESCE(?, mail_sync_triggered_at), updated_at = ?
          WHERE id = ?",
     )
     .bind(status.as_str())
     .bind(error)
-    .bind(mail_synced_at)
+    .bind(mail_sync_triggered_at)
     .bind(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -309,10 +329,3 @@ pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), P
     Ok(())
 }
 
-/// 删除全部账户（级联清库，供演示工作区重装）
-pub async fn delete_all(conn: &mut SqliteConnection) -> Result<(), PortError> {
-    sqlx::query("DELETE FROM accounts")
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
-}

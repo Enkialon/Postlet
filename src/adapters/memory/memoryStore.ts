@@ -22,7 +22,6 @@ import type {
   ThreadId,
 } from '../../domain/types';
 import type { AppError } from '../../domain/errors';
-import { seedDemo as loadSeedDemo } from './seedDemo';
 
 function now(): number {
   return Date.now();
@@ -36,7 +35,7 @@ function appError(
   return { code, message, retryable };
 }
 
-/** 开发 / 验收用内存数据仓 */
+/** 浏览器回退 / 单测用内存数据仓 */
 export class MemoryStore {
   accounts = new Map<AccountId, Account>();
   /** 已登录会话；退出后账户行仍在，列表只认此集合 */
@@ -277,20 +276,6 @@ export class MemoryStore {
     return conversation;
   }
 
-  clearAll(): void {
-    this.accounts.clear();
-    this.signedInIds.clear();
-    this.contacts.clear();
-    this.conversations.clear();
-    this.conversationMessages.clear();
-    this.messages.clear();
-    this.recipients.clear();
-    this.groups.clear();
-    this.participants.clear();
-    this.folderStates.clear();
-    this.pendingBodies.clear();
-  }
-
   markSignedIn(accountId: AccountId): void {
     this.signedInIds.add(accountId);
   }
@@ -310,10 +295,6 @@ export class MemoryStore {
 
   normalizeEmail(address: string): EmailAddress {
     return address.trim().toLowerCase();
-  }
-
-  seedDemo(): void {
-    loadSeedDemo(this);
   }
 
   findContactConversation(
@@ -363,10 +344,4 @@ export class MemoryStore {
         m.sync_status !== 'deleted_remote',
     );
   }
-}
-
-export function createSeededMemoryStore(): MemoryStore {
-  const store = new MemoryStore();
-  store.seedDemo();
-  return store;
 }

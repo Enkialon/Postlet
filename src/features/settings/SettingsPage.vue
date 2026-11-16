@@ -1,130 +1,122 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
 import { useSettings } from './useSettings';
-import { useSyncStatus } from '../sync/useSyncStatus';
+import { buildFolderTree, flattenFolderTree } from './folderTree';
 import { formatTimestamp } from '../../shared/formatting/format';
 import Button from '../../shared/ui/Button.vue';
+import Avatar from '../../shared/ui/Avatar.vue';
+import AddAccountDialog from '../accounts/AddAccountDialog.vue';
+import type { Account, MailFolderSyncState } from '../../domain/entities';
+import type { AccountId } from '../../domain/types';
 import type { AppLocale } from '../../i18n';
 
-const { accounts, prefs, saving, error, setShowGroupInContact, setLocale } =
-  useSettings();
-const sync = useSyncStatus();
+const {
+  accountList,
+  prefs,
+  expandedId,
+  savingId,
+  syncingMailIds,
+  syncingContactIds,
+  refreshingFoldersId,
+  togglingFolderKey,
+  error,
+  folderErrorById,
+  mailProgressById,
+  contactProgressById,
+  toggleExpanded,
+  mailStatusLabel,
+  triggerMail,
+  triggerContacts,
+  refreshMailFolders,
+  setFolderSyncEnabled,
+  folderToggleKey,
+  updateAccountSettings,
+  signOutAccount,
+  setLocale,
+} = useSettings();
+
+const addAccountOpen = ref(false);
 
 function onLocaleChange(e: Event) {
   setLocale((e.target as HTMLSelectElement).value as AppLocale);
 }
 
-function onShowGroupChange(e: Event) {
-  void setShowGroupInContact((e.target as HTMLInputElement).checked);
+function onIncludeInAll(account: Account, e: Event) {
+  void updateAccountSettings(account.id, {
+    include_in_all: (e.target as HTMLInputElement).checked,
+  });
+}
+
+function onShowGroup(account: Account, e: Event) {
+  void updateAccountSettings(account.id, {
+    show_group_messages_in_contact_conversation: (
+      e.target as HTMLInputElement
+    ).checked,
+  });
+}
+
+function folderStatusLabel(status: string, syncedAt: number | null): string {
+  if (status === 'running') return '正在同步';
+  if (status === 'error') return '部分内容可能未更新';
+  if (syncedAt) return formatTimestamp(syncedAt);
+  return '尚未完成首次同步';
+}
+
+function foldersFor(accountId: AccountId): MailFolderSyncState[] {
+  return mailProgressById.value[accountId]?.folders ?? [];
+}
+
+const folderRowsByAccount = computed(() => {
+  const out: Record<string, ReturnType<typeof flattenFolderTree>> = {};
+  for (const a of accountList.value) {
+    out[a.id] = flattenFolderTree(buildFolderTree(foldersFor(a.id)));
+  }
+  return out;
+});
+
+function onFolderSyncToggle(
+  accountId: AccountId,
+  folderId: string,
+  e: Event,
+): void {
+  void setFolderSyncEnabled(
+    accountId,
+    folderId,
+    (e.target as HTMLInputElement).checked,
+  );
 }
 </script>
 
 <template>
   <section
     class="flex h-full min-h-0 w-full flex-col bg-surface-chat"
-    aria-label="设置"
+    aria-label="邮件同步管理"
   >
     <header
       class="shrink-0 border-b border-border-subtle bg-surface-header px-8 py-5"
     >
       <h1 class="m-0 text-xl font-semibold tracking-tight text-text-primary">
-        设置
+        邮件同步
       </h1>
       <p class="mt-1 mb-0 text-[13px] text-text-secondary">
-        账户、显示与同步偏好
+        管理已登录邮箱的同步状态与显示偏好
       </p>
     </header>
 
     <div class="min-h-0 flex-1 overflow-auto">
-      <form
-        class="mx-auto flex w-full max-w-2xl flex-col gap-8 px-8 py-8"
-        @submit.prevent
-      >
-        <!-- 账户 -->
-        <fieldset class="m-0 min-w-0 border-0 p-0">
-          <legend
-            class="mb-3 w-full border-b border-border-subtle pb-2 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
+      <div class="mx-auto flex w-full max-w-3xl flex-col gap-8 px-8 py-8">
+        <!-- 全局配置 -->
+        <section aria-labelledby="settings-global">
+          <h2
+            id="settings-global"
+            class="m-0 mb-3 border-b border-border-subtle pb-2 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
           >
-            当前账户
-          </legend>
-          <template v-if="accounts.current.value">
-            <div class="flex flex-col gap-1">
-              <p
-                v-no-i18n
-                class="m-0 text-[15px] font-semibold text-text-primary"
-              >
-                {{ accounts.current.value.display_name }}
-              </p>
-              <p v-no-i18n class="m-0 text-[13px] text-text-secondary">
-                {{ accounts.current.value.email }}
-              </p>
-            </div>
-            <div class="mt-4 flex flex-wrap gap-2">
-              <Button variant="danger" @click="accounts.signOut">退出</Button>
-              <Button
-                :disabled="accounts.signingIn.value"
-                @click="accounts.loadDemoWorkspace"
-              >
-                恢复演示数据
-              </Button>
-            </div>
-          </template>
-          <template v-else>
-            <p class="m-0 text-[14px] text-text-secondary">无账户</p>
-            <div class="mt-4">
-              <Button
-                variant="primary"
-                :disabled="accounts.signingIn.value"
-                @click="accounts.loadDemoWorkspace"
-              >
-                加载演示数据
-              </Button>
-            </div>
-          </template>
-        </fieldset>
-
-        <!-- 显示 -->
-        <fieldset class="m-0 min-w-0 border-0 p-0">
-          <legend
-            class="mb-3 w-full border-b border-border-subtle pb-2 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
-          >
-            显示
-          </legend>
-          <label
-            class="flex cursor-pointer items-start gap-3 text-[14px] leading-snug text-text-primary"
-          >
-            <input
-              class="mt-0.5"
-              type="checkbox"
-              :checked="
-                accounts.current.value
-                  ?.show_group_messages_in_contact_conversation ?? false
-              "
-              :disabled="saving || !accounts.current.value"
-              @change="onShowGroupChange"
-            />
-            <span>
-              在联系人会话中同时显示群组邮件
-              <span class="mt-1 block text-[12px] text-text-tertiary">
-                关闭时，群组邮件只出现在群组会话中
-              </span>
-            </span>
-          </label>
-          <p v-if="error" class="mt-2 mb-0 text-[13px] text-danger">
-            {{ error }}
-          </p>
-        </fieldset>
-
-        <!-- 语言 -->
-        <fieldset class="m-0 min-w-0 border-0 p-0">
-          <legend
-            class="mb-3 w-full border-b border-border-subtle pb-2 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
-          >
-            语言
-          </legend>
-          <label class="flex flex-col gap-1.5 text-[14px] text-text-primary">
+            全局配置
+          </h2>
+          <label class="flex max-w-xs flex-col gap-1.5 text-[14px] text-text-primary">
             界面语言
             <select
-              class="w-full max-w-xs rounded-md border border-border-subtle bg-surface-input px-3 py-2 text-[14px] text-text-primary outline-none focus:border-brand"
+              class="w-full rounded-md border border-border-subtle bg-surface-input px-3 py-2 text-[14px] text-text-primary outline-none focus:border-brand"
               :value="prefs.preferences.locale"
               @change="onLocaleChange"
             >
@@ -132,78 +124,280 @@ function onShowGroupChange(e: Event) {
               <option value="en-US">English</option>
             </select>
           </label>
-        </fieldset>
+        </section>
 
-        <!-- 同步 -->
-        <fieldset class="m-0 min-w-0 border-0 p-0">
-          <legend
-            class="mb-3 w-full border-b border-border-subtle pb-2 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
-          >
-            同步
-          </legend>
-          <div class="flex flex-col gap-2 text-[14px]">
-            <p class="m-0 text-text-primary">{{ sync.mailStatusLabel() }}</p>
-            <p
-              v-if="sync.mailProgress.value?.mail_sync_error"
-              class="m-0 text-[13px] text-danger"
-            >
-              {{ sync.mailProgress.value.mail_sync_error }}
-            </p>
-            <p
-              v-if="sync.contactTriggerHint.value"
-              class="m-0 text-[13px] text-text-secondary"
-            >
-              {{ sync.contactTriggerHint.value }}
-            </p>
-            <p
-              v-if="sync.contactProgress.value?.contact_synced_at"
-              class="m-0 text-[13px] text-text-secondary"
-            >
-              联系人最近同步于
-              {{ formatTimestamp(sync.contactProgress.value.contact_synced_at) }}
-            </p>
-          </div>
-          <div class="mt-4 flex flex-wrap gap-2">
-            <Button @click="sync.triggerMail">同步邮件</Button>
-            <Button @click="sync.triggerContacts">同步联系人</Button>
-          </div>
-
+        <!-- 邮件账号列表 -->
+        <section aria-labelledby="settings-accounts">
           <div
-            v-if="sync.mailProgress.value?.folders?.length"
-            class="mt-6"
+            class="mb-3 flex flex-wrap items-end justify-between gap-3 border-b border-border-subtle pb-2"
           >
-            <h3
-              class="mb-2 mt-0 text-[13px] font-medium text-text-secondary"
+            <h2
+              id="settings-accounts"
+              class="m-0 text-[13px] font-semibold tracking-wide text-text-secondary uppercase"
             >
-              文件夹同步状态
-            </h3>
-            <ul
-              class="m-0 list-none divide-y divide-border-subtle rounded-md border border-border-subtle bg-surface-elevated p-0"
-            >
-              <li
-                v-for="f in sync.mailProgress.value.folders"
-                :key="f.folder_id"
-                class="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2.5 text-[13px]"
-              >
-                <span v-no-i18n class="font-medium text-text-primary">{{
-                  f.folder_id
-                }}</span>
-                <span class="text-text-secondary">
-                  {{
-                    f.sync_status === 'running'
-                      ? '正在同步'
-                      : f.sync_status === 'error'
-                        ? '部分内容可能未更新'
-                        : f.synced_at
-                          ? formatTimestamp(f.synced_at)
-                          : '尚未完成首次同步'
-                  }}
-                </span>
-              </li>
-            </ul>
+              邮件账号
+            </h2>
+            <Button variant="primary" @click="addAccountOpen = true">
+              添加账号
+            </Button>
           </div>
-        </fieldset>
-      </form>
+
+          <p v-if="error" class="mt-0 mb-3 text-[13px] text-danger" role="alert">
+            {{ error }}
+          </p>
+
+          <p
+            v-if="accountList.length === 0"
+            class="m-0 rounded-md border border-border-subtle bg-surface-elevated px-4 py-6 text-[14px] text-text-secondary"
+          >
+            还没有已登录的邮箱。添加 Outlook 或 IMAP/SMTP 账号后，可在此查看同步状态。
+          </p>
+
+          <ul
+            v-else
+            class="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated p-0"
+            role="list"
+          >
+            <li
+              v-for="account in accountList"
+              :key="account.id"
+              class="m-0"
+            >
+              <!-- 列表行：身份 + 常用同步 -->
+              <div
+                class="flex flex-wrap items-center gap-3 px-4 py-3.5"
+              >
+                <Avatar
+                  :name="account.display_name || account.email"
+                  :size="40"
+                />
+                <div class="min-w-0 flex-1">
+                  <p
+                    class="m-0 truncate text-[14px] font-medium text-text-primary"
+                    v-no-i18n
+                  >
+                    {{ account.display_name || account.email }}
+                  </p>
+                  <p
+                    class="m-0 truncate text-[12px] text-text-secondary"
+                    v-no-i18n
+                  >
+                    {{ account.email }}
+                  </p>
+                  <p
+                    class="mt-0.5 mb-0 truncate text-[12px] text-text-tertiary"
+                  >
+                    {{ mailStatusLabel(account.id) }}
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button
+                    :disabled="syncingMailIds.has(account.id)"
+                    @click="triggerMail(account.id)"
+                  >
+                    {{
+                      syncingMailIds.has(account.id) ||
+                      mailProgressById[account.id]?.mail_sync_status ===
+                        'running'
+                        ? '同步中…'
+                        : '同步邮件'
+                    }}
+                  </Button>
+                  <Button
+                    :disabled="syncingContactIds.has(account.id)"
+                    @click="triggerContacts(account.id)"
+                  >
+                    {{
+                      syncingContactIds.has(account.id)
+                        ? '请求中…'
+                        : '同步联系人'
+                    }}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    :aria-expanded="expandedId === account.id"
+                    :aria-controls="`account-config-${account.id}`"
+                    @click="toggleExpanded(account.id)"
+                  >
+                    {{ expandedId === account.id ? '收起' : '配置' }}
+                  </Button>
+                </div>
+              </div>
+
+              <!-- 展开：详细配置 -->
+              <div
+                v-if="expandedId === account.id"
+                :id="`account-config-${account.id}`"
+                class="border-t border-border-subtle bg-surface-muted px-4 py-4"
+              >
+                <div class="grid gap-4">
+                  <label
+                    class="flex cursor-pointer items-start gap-3 text-[14px] leading-snug text-text-primary"
+                  >
+                    <input
+                      class="mt-0.5"
+                      type="checkbox"
+                      :checked="account.include_in_all"
+                      :disabled="savingId === account.id"
+                      @change="onIncludeInAll(account, $event)"
+                    />
+                    <span>
+                      纳入「全部账号」列表
+                      <span class="mt-1 block text-[12px] text-text-tertiary">
+                        关闭后，会话/联系人/群组的「全部」视图将不再包含此账号
+                      </span>
+                    </span>
+                  </label>
+
+                  <label
+                    class="flex cursor-pointer items-start gap-3 text-[14px] leading-snug text-text-primary"
+                  >
+                    <input
+                      class="mt-0.5"
+                      type="checkbox"
+                      :checked="
+                        account.show_group_messages_in_contact_conversation
+                      "
+                      :disabled="savingId === account.id"
+                      @change="onShowGroup(account, $event)"
+                    />
+                    <span>
+                      在联系人会话中同时显示群组邮件
+                      <span class="mt-1 block text-[12px] text-text-tertiary">
+                        关闭时，群组邮件只出现在群组会话中
+                      </span>
+                    </span>
+                  </label>
+
+                  <div class="grid gap-1 text-[13px] text-text-secondary">
+                    <p
+                      v-if="mailProgressById[account.id]?.mail_sync_error"
+                      class="m-0 text-danger"
+                    >
+                      {{ mailProgressById[account.id]?.mail_sync_error }}
+                    </p>
+                    <p
+                      v-if="contactProgressById[account.id]?.contact_synced_at"
+                      class="m-0"
+                    >
+                      联系人最近同步于
+                      {{
+                        formatTimestamp(
+                          contactProgressById[account.id]!.contact_synced_at,
+                        )
+                      }}
+                    </p>
+                    <p v-else class="m-0 text-text-tertiary">
+                      联系人尚未同步（IMAP 账号通常无联系人增量）
+                    </p>
+                  </div>
+
+                  <div>
+                    <div
+                      class="mb-2 flex flex-wrap items-center justify-between gap-2"
+                    >
+                      <h3
+                        class="m-0 text-[12px] font-medium tracking-wide text-text-tertiary uppercase"
+                      >
+                        同步文件夹
+                      </h3>
+                      <Button
+                        variant="ghost"
+                        :disabled="refreshingFoldersId === account.id"
+                        @click="refreshMailFolders(account.id)"
+                      >
+                        {{
+                          refreshingFoldersId === account.id
+                            ? '刷新中…'
+                            : '刷新列表'
+                        }}
+                      </Button>
+                    </div>
+                    <p class="mt-0 mb-2 text-[12px] text-text-tertiary">
+                      勾选后纳入「同步邮件」；默认仅收件箱开启。
+                    </p>
+                    <p
+                      v-if="folderErrorById[account.id]"
+                      class="mt-0 mb-2 text-[13px] text-danger"
+                      role="alert"
+                    >
+                      {{ folderErrorById[account.id] }}
+                    </p>
+                    <p
+                      v-else-if="refreshingFoldersId === account.id"
+                      class="mt-0 mb-2 text-[13px] text-text-secondary"
+                    >
+                      正在从邮箱拉取文件夹树…
+                    </p>
+                    <p
+                      v-if="
+                        !(folderRowsByAccount[account.id]?.length) &&
+                        refreshingFoldersId !== account.id
+                      "
+                      class="m-0 rounded-md border border-dashed border-border-subtle px-3 py-4 text-[13px] text-text-secondary"
+                    >
+                      尚未拉取文件夹列表，点击「刷新列表」从邮箱发现目录。
+                    </p>
+                    <ul
+                      v-else
+                      class="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-md border border-border-subtle bg-surface-elevated p-0"
+                    >
+                      <li
+                        v-for="f in folderRowsByAccount[account.id]"
+                        :key="f.folder_id"
+                        class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[13px]"
+                      >
+                        <label
+                          class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-text-primary"
+                          :style="{ paddingLeft: `${f.depth * 16}px` }"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="f.sync_enabled"
+                            :disabled="
+                              togglingFolderKey ===
+                              folderToggleKey(account.id, f.folder_id)
+                            "
+                            @change="
+                              onFolderSyncToggle(
+                                account.id,
+                                f.folder_id,
+                                $event,
+                              )
+                            "
+                          />
+                          <span class="truncate font-medium" v-no-i18n>{{
+                            f.display_name || f.folder_id
+                          }}</span>
+                        </label>
+                        <span class="shrink-0 text-text-secondary">
+                          {{
+                            folderStatusLabel(f.sync_status, f.synced_at)
+                          }}
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div class="flex flex-wrap gap-2 pt-1">
+                    <Button
+                      variant="danger"
+                      @click="signOutAccount(account.id)"
+                    >
+                      退出此账号
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
     </div>
+
+    <AddAccountDialog
+      :open="addAccountOpen"
+      @close="addAccountOpen = false"
+    />
   </section>
 </template>

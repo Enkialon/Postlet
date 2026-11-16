@@ -17,8 +17,8 @@ pub struct Account {
     pub home_account_id: Option<String>,
     /// 联系人 Delta 游标
     pub contact_delta_link: Option<String>,
-    /// 最近一次账户邮件同步轮次全部成功结束时间
-    pub mail_synced_at: Option<TimestampMs>,
+    /// 最近一次发起邮件同步的时间（调用/触发时刻，非成功时刻）
+    pub mail_sync_triggered_at: Option<TimestampMs>,
     /// 最近一次联系人同步成功结束时间
     pub contact_synced_at: Option<TimestampMs>,
     pub mail_sync_status: SyncStatus,

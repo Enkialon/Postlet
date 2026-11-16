@@ -2,10 +2,11 @@ import type { SyncPort } from '../../ports/syncPort';
 import type {
   ContactSyncProgress,
   MailSyncProgress,
+  SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
 } from '../../domain/dto';
-import type { Message } from '../../domain/entities';
+import type { MailFolderSyncState, Message } from '../../domain/entities';
 import type { AccountId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
@@ -19,6 +20,7 @@ export class MemorySyncAdapter implements SyncPort {
     const account = this.store.requireAccount(cmd.account_id);
     account.mail_sync_status = 'running';
     account.mail_sync_error = null;
+    account.mail_sync_triggered_at = Date.now();
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
 
@@ -32,16 +34,11 @@ export class MemorySyncAdapter implements SyncPort {
         if (!current) return;
         this.injectSyncedMail(cmd.account_id);
         current.mail_sync_status = 'idle';
-        current.mail_synced_at = Date.now();
         current.mail_sync_error = null;
         current.updated_at = Date.now();
         this.store.accounts.set(current.id, current);
         const folders = this.store.folderStates.get(cmd.account_id) ?? [];
         for (const f of folders) {
-          if (f.folder_id === 'archive' && f.sync_status === 'error') {
-            // 保留演示错误文件夹，便于设置页看到错误态
-            continue;
-          }
           f.sync_status = 'idle';
           f.synced_at = Date.now();
           f.last_error = null;
@@ -160,7 +157,7 @@ export class MemorySyncAdapter implements SyncPort {
       account_id: accountId,
       mail_sync_status: account.mail_sync_status,
       mail_sync_error: account.mail_sync_error,
-      mail_synced_at: account.mail_synced_at,
+      mail_sync_triggered_at: account.mail_sync_triggered_at,
       folders: [...(this.store.folderStates.get(accountId) ?? [])],
     };
   }
@@ -174,5 +171,67 @@ export class MemorySyncAdapter implements SyncPort {
       contact_synced_at: account.contact_synced_at,
       contact_delta_link: account.contact_delta_link,
     };
+  }
+
+  async refreshMailFolders(
+    accountId: AccountId,
+  ): Promise<MailFolderSyncState[]> {
+    this.store.requireAccount(accountId);
+    const t = Date.now();
+    const existing = this.store.folderStates.get(accountId) ?? [];
+    const byId = new Map(existing.map((f) => [f.folder_id, f]));
+    const seed: Array<{
+      id: string;
+      parent: string | null;
+      name: string;
+      enabled: boolean;
+    }> = [
+      { id: 'inbox', parent: null, name: '收件箱', enabled: true },
+      { id: 'sentitems', parent: null, name: '已发送', enabled: false },
+      { id: 'drafts', parent: null, name: '草稿', enabled: false },
+      {
+        id: 'inbox/work',
+        parent: 'inbox',
+        name: '工作',
+        enabled: false,
+      },
+    ];
+    const next: MailFolderSyncState[] = seed.map((s) => {
+      const prev = byId.get(s.id);
+      return {
+        account_id: accountId,
+        folder_id: s.id,
+        parent_folder_id: s.parent,
+        display_name: s.name,
+        sync_enabled: prev?.sync_enabled ?? s.enabled,
+        delta_link: prev?.delta_link ?? null,
+        next_link: prev?.next_link ?? null,
+        synced_at: prev?.synced_at ?? null,
+        sync_status: prev?.sync_status ?? 'idle',
+        last_error: prev?.last_error ?? null,
+        updated_at: t,
+      };
+    });
+    this.store.folderStates.set(accountId, next);
+    return [...next];
+  }
+
+  async setFolderSyncEnabled(
+    cmd: SetFolderSyncEnabledCommand,
+  ): Promise<MailFolderSyncState> {
+    this.store.requireAccount(cmd.account_id);
+    const folders = this.store.folderStates.get(cmd.account_id) ?? [];
+    const idx = folders.findIndex((f) => f.folder_id === cmd.folder_id);
+    if (idx < 0) {
+      throw new Error(`文件夹不存在: ${cmd.folder_id}`);
+    }
+    const updated: MailFolderSyncState = {
+      ...folders[idx]!,
+      sync_enabled: cmd.sync_enabled,
+      updated_at: Date.now(),
+    };
+    folders[idx] = updated;
+    this.store.folderStates.set(cmd.account_id, folders);
+    return updated;
   }
 }

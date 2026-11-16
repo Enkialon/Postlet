@@ -18,9 +18,4 @@ export interface AccountPort {
   updateDisplaySettings(
     cmd: UpdateAccountDisplaySettingsCommand,
   ): Promise<Account>;
-  /**
-   * 开发验收：清空并装载演示工作区。
-   * Memory 实现完整数据；Tauri 可返回 not_implemented。
-   */
-  loadDemoWorkspace(): Promise<Account>;
 }

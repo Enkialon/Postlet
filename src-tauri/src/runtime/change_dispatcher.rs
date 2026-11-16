@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
-/// 事件名：前端 `listen('mail.changed', …)`
-pub const MAIL_CHANGED_EVENT: &str = "mail.changed";
+/// 事件名：前端 `listen('mail-changed', …)`（Tauri 禁止 `.`）
+pub const MAIL_CHANGED_EVENT: &str = "mail-changed";
 
 /// 进程内变更分发器（组合根持有；用例不依赖 Tauri）
 #[derive(Clone)]
@@ -33,7 +33,7 @@ impl ChangeDispatcher {
         let event = MailChangedEvent::from_change_set(&changes, generation);
         if let Err(e) = self.app.emit(MAIL_CHANGED_EVENT, &event) {
             // 前端未监听时不应拖垮写路径
-            eprintln!("mail.changed emit 失败: {e}");
+            eprintln!("mail-changed emit 失败: {e}");
         }
 
         maybe_notify_new_mail(&changes);

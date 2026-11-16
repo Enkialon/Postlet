@@ -6,8 +6,9 @@ use crate::application::dto::{
     EnsureContactConversationCommand, EnsureGroupConversationCommand, GroupListQuery,
     MailSyncProgress, MarkMessagesReadCommand, MergeGroupsCommand, MoveThreadToGroupCommand,
     RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand,
-    TriggerContactSyncCommand, TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand,
-    UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
+    SetFolderSyncEnabledCommand, TriggerContactSyncCommand, TriggerMailSyncCommand,
+    UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
+    UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
@@ -15,7 +16,8 @@ use crate::application::use_cases::{
     mail_account_use_case, message_use_case, sync_use_case,
 };
 use crate::domain::entities::{
-    Account, Contact, Conversation, Group, GroupParticipant, MessageWithRecipients,
+    Account, Contact, Conversation, Group, GroupParticipant, MailFolderSyncState,
+    MessageWithRecipients,
 };
 use crate::domain::value_objects::{AccountId, ContactId, ConversationId, GroupId, MessageId};
 use crate::AppState;
@@ -45,11 +47,6 @@ pub async fn account_sign_out(
     account_id: String,
 ) -> Result<(), AppError> {
     account_use_case::sign_out(&state.db, &state.paths, &AccountId::new(account_id)).await
-}
-
-#[tauri::command]
-pub async fn load_demo_workspace(state: State<'_, AppState>) -> Result<Account, AppError> {
-    account_use_case::load_demo_workspace(&state.db).await
 }
 
 #[tauri::command]
@@ -212,7 +209,36 @@ pub async fn trigger_mail_sync(
     state: State<'_, AppState>,
     cmd: TriggerMailSyncCommand,
 ) -> Result<(), AppError> {
-    sync_use_case::trigger_mail_sync(&state.db, &state.paths, &state.changes, cmd).await
+    // 立即返回；实际同步在后台跑，前端靠 get_mail_sync_progress 轮询
+    let db = state.db.clone();
+    let paths = state.paths.clone();
+    let changes = state.changes.clone();
+    let gate = state.mail_sync_gate.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = sync_use_case::trigger_mail_sync(&db, &paths, &changes, &gate, cmd).await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn refresh_mail_folders(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Vec<MailFolderSyncState>, AppError> {
+    sync_use_case::refresh_mail_folders(
+        &state.db,
+        &state.paths,
+        &AccountId::new(account_id),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_folder_sync_enabled(
+    state: State<'_, AppState>,
+    cmd: SetFolderSyncEnabledCommand,
+) -> Result<MailFolderSyncState, AppError> {
+    sync_use_case::set_folder_sync_enabled(&state.db, cmd).await
 }
 
 #[tauri::command]

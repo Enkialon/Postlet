@@ -18,6 +18,7 @@ import type {
   RenameGroupCommand,
   SaveComposeDraftCommand,
   SendComposedMailCommand,
+  SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
   UpdateAccountDisplaySettingsCommand,
@@ -30,6 +31,7 @@ import type {
   Conversation,
   Group,
   GroupParticipant,
+  MailFolderSyncState,
   MessageWithRecipients,
 } from '../../domain/entities';
 import type {
@@ -63,7 +65,6 @@ export function createTauriPorts(): AppPorts {
         invoke<void>('account_sign_out', { accountId }),
       updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>
         invoke<Account>('update_display_settings', { cmd }),
-      loadDemoWorkspace: () => invoke<Account>('load_demo_workspace'),
     },
     sync: {
       triggerMailSync: (cmd: TriggerMailSyncCommand) =>
@@ -76,6 +77,10 @@ export function createTauriPorts(): AppPorts {
         invoke<ContactSyncProgress>('get_contact_sync_progress', {
           accountId,
         }),
+      refreshMailFolders: (accountId: AccountId) =>
+        invoke<MailFolderSyncState[]>('refresh_mail_folders', { accountId }),
+      setFolderSyncEnabled: (cmd: SetFolderSyncEnabledCommand) =>
+        invoke<MailFolderSyncState>('set_folder_sync_enabled', { cmd }),
     },
     contact: {
       listContacts: (query: ContactListQuery) =>

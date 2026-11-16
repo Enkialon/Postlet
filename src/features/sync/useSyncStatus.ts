@@ -78,11 +78,18 @@ export function useSyncStatus(options?: {
   async function triggerMail(): Promise<void> {
     const accountId = nav.accountId.value;
     if (!accountId) return;
+    const before = mailProgress.value?.mail_sync_status;
+    if (before === 'running') return;
     await ports.sync.triggerMailSync({
       account_id: accountId,
       folder_ids: null,
     });
-    await refreshProgress();
+    for (let i = 0; i < 8; i += 1) {
+      await refreshProgress();
+      const status = mailProgress.value?.mail_sync_status;
+      if (status === 'running') break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     scheduleMailPoll();
   }
 
@@ -99,11 +106,12 @@ export function useSyncStatus(options?: {
     if (!p) return '';
     if (p.mail_sync_status === 'running') return '正在同步';
     if (p.mail_sync_status === 'error') return '部分内容可能未更新';
-    if (p.mail_sync_status === 'idle' && !p.mail_synced_at) {
+    const folderOk = p.folders?.some((f) => f.synced_at != null);
+    if (p.mail_sync_status === 'idle' && !folderOk) {
       return '尚未完成首次同步';
     }
-    if (p.mail_synced_at) {
-      return `上次邮件同步于 ${formatTimestamp(p.mail_synced_at)}`;
+    if (p.mail_sync_triggered_at) {
+      return `上次发起同步于 ${formatTimestamp(p.mail_sync_triggered_at)}`;
     }
     return '';
   }

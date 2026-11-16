@@ -4,9 +4,9 @@ import type {
   MailChangedEvent,
 } from '../../ports/changeEventsPort';
 
-const MAIL_CHANGED_EVENT = 'mail.changed';
+const MAIL_CHANGED_EVENT = 'mail-changed';
 
-/** Tauri：监听 Rust ChangeDispatcher 发出的 mail.changed */
+/** Tauri：监听 Rust ChangeDispatcher 发出的 mail-changed */
 export class TauriChangeEventsAdapter implements ChangeEventsPort {
   async subscribeMailChanged(
     handler: (event: MailChangedEvent) => void,

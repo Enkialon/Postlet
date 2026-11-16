@@ -33,7 +33,8 @@ export interface Account {
   /** 联系人 Delta 游标 */
   contact_delta_link: string | null;
   /** 最近一次账户邮件同步轮次全部成功结束时间 */
-  mail_synced_at: TimestampMs | null;
+  /** 最近一次发起邮件同步的时间（非成功时刻） */
+  mail_sync_triggered_at: TimestampMs | null;
   /** 最近一次联系人同步成功结束时间 */
   contact_synced_at: TimestampMs | null;
   mail_sync_status: SyncStatus;
@@ -47,10 +48,15 @@ export interface Account {
   updated_at: TimestampMs;
 }
 
-/** 按账户 + 文件夹保存的邮件增量游标（非文件夹导航模型） */
+/** 按账户 + 文件夹保存的目录元数据与增量游标（非主导航） */
 export interface MailFolderSyncState {
   account_id: AccountId;
   folder_id: FolderId;
+  /** 父文件夹；根为 null */
+  parent_folder_id: FolderId | null;
+  display_name: string;
+  /** 是否纳入账户全局同步 */
+  sync_enabled: boolean;
   /** 最近完成轮次的增量游标 */
   delta_link: string | null;
   /** 当前未完成轮次的分页续传位置 */

@@ -155,40 +155,10 @@ export function useAccounts() {
     }
   }
 
-  async function loadDemoWorkspace(): Promise<void> {
-    if (signingIn.value) return;
-    signingIn.value = true;
+  async function signOutAccount(accountId: string): Promise<void> {
     error.value = null;
     try {
-      const account = await ports.account.loadDemoWorkspace();
-      accounts.value = await ports.account.listAccounts();
-      nav.setAccountFilter(account.id);
-      nav.setAccount(account.id);
-      syncCurrentFromNav();
-      nav.bumpSession();
-      nav.clearReading();
-      nav.goPage('conversations');
-      void ports.sync.triggerMailSync({
-        account_id: account.id,
-        folder_ids: null,
-      });
-      void ports.sync.triggerContactSync({ account_id: account.id });
-    } catch (e) {
-      error.value = asAppError(e);
-    } finally {
-      signingIn.value = false;
-    }
-  }
-
-  async function signOut(): Promise<void> {
-    const id =
-      nav.accountFilter.value !== 'all'
-        ? nav.accountFilter.value
-        : nav.accountId.value;
-    if (!id) return;
-    error.value = null;
-    try {
-      await ports.account.signOut(id);
+      await ports.account.signOut(accountId);
       accounts.value = await ports.account.listAccounts();
       if (accounts.value.length === 0) {
         current.value = null;
@@ -199,14 +169,30 @@ export function useAccounts() {
         nav.goWelcome();
         return;
       }
-      nav.setAccountFilter('all');
-      nav.setAccount(accounts.value[0]!.id);
-      syncCurrentFromNav();
+      if (
+        nav.accountId.value === accountId ||
+        nav.accountFilter.value === accountId
+      ) {
+        nav.setAccountFilter('all');
+        nav.setAccount(accounts.value[0]!.id);
+        syncCurrentFromNav();
+        nav.clearReading();
+      }
       nav.bumpSession();
-      nav.clearReading();
     } catch (e) {
       error.value = asAppError(e);
+      throw e;
     }
+  }
+
+  /** 退出当前上下文账号（筛选单账号优先，否则读写上下文） */
+  async function signOut(): Promise<void> {
+    const id =
+      nav.accountFilter.value !== 'all'
+        ? nav.accountFilter.value
+        : nav.accountId.value;
+    if (!id) return;
+    await signOutAccount(id);
   }
 
   async function refreshCurrent(): Promise<void> {
@@ -241,8 +227,8 @@ export function useAccounts() {
     accountLabel,
     signIn,
     addImapSmtpAccount,
-    loadDemoWorkspace,
     signOut,
+    signOutAccount,
     refreshCurrent,
     replaceCurrent,
   };

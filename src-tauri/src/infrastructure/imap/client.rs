@@ -7,6 +7,9 @@ use crate::domain::value_objects::MailTlsMode;
 use imap::Session;
 use native_tls::TlsConnector;
 use std::net::TcpStream;
+use std::time::Duration;
+
+const IMAP_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct ImapEndpoint {
@@ -39,6 +42,27 @@ impl imap::Authenticator for Xoauth2 {
     }
 }
 
+fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, PortError> {
+    use std::net::ToSocketAddrs;
+    let addr = (endpoint.host.as_str(), endpoint.port)
+        .to_socket_addrs()
+        .map_err(|e| PortError::Network {
+            message: format!("IMAP 解析主机失败: {e}"),
+        })?
+        .next()
+        .ok_or_else(|| PortError::Network {
+            message: format!("IMAP 主机无可用地址: {}", endpoint.host),
+        })?;
+    let tcp = TcpStream::connect_timeout(&addr, IMAP_IO_TIMEOUT).map_err(|e| {
+        PortError::Network {
+            message: format!("IMAP 连接超时或失败: {e}"),
+        }
+    })?;
+    let _ = tcp.set_read_timeout(Some(IMAP_IO_TIMEOUT));
+    let _ = tcp.set_write_timeout(Some(IMAP_IO_TIMEOUT));
+    Ok(tcp)
+}
+
 /// 阻塞登录。
 pub fn session_login_blocking(
     endpoint: &ImapEndpoint,
@@ -51,14 +75,13 @@ pub fn session_login_blocking(
         })?;
 
     let client = match endpoint.tls {
-        MailTlsMode::Implicit => imap::connect(
-            (endpoint.host.as_str(), endpoint.port),
-            &endpoint.host,
-            &tls,
-        )
-        .map_err(|e| PortError::Network {
-            message: format!("IMAP TLS 连接失败: {e}"),
-        })?,
+        MailTlsMode::Implicit => {
+            let tcp = connect_tcp(endpoint)?;
+            let tls_stream = tls.connect(&endpoint.host, tcp).map_err(|e| PortError::Network {
+                message: format!("IMAP TLS 握手失败: {e}"),
+            })?;
+            imap::Client::new(tls_stream)
+        }
         MailTlsMode::StartTls => imap::connect_starttls(
             (endpoint.host.as_str(), endpoint.port),
             &endpoint.host,
@@ -112,11 +135,44 @@ pub async fn session_login(
 }
 
 pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, PortError> {
+    Ok(discover_folder_tree(session)?
+        .into_iter()
+        .map(|f| f.name)
+        .collect())
+}
+
+#[derive(Debug, Clone)]
+pub struct ImapFolderNode {
+    pub name: String,
+    pub parent_name: Option<String>,
+    pub delimiter: Option<String>,
+}
+
+/// LIST 全树；按 delimiter 推导父路径（多级）。
+pub fn discover_folder_tree(session: &mut ImapSession) -> Result<Vec<ImapFolderNode>, PortError> {
     let list = session.list(Some(""), Some("*")).map_err(|e| PortError::Remote {
         message: format!("IMAP LIST 失败: {e}"),
         retryable: true,
     })?;
-    Ok(list.iter().map(|n| n.name().to_string()).collect())
+    let mut out = Vec::with_capacity(list.len());
+    for n in list.iter() {
+        let name = n.name().to_string();
+        let delimiter = n.delimiter().map(|d| d.to_string());
+        let parent_name = delimiter.as_ref().and_then(|d| {
+            if d.is_empty() {
+                return None;
+            }
+            name.rsplit_once(d.as_str())
+                .map(|(parent, _)| parent.to_string())
+                .filter(|p| !p.is_empty())
+        });
+        out.push(ImapFolderNode {
+            name,
+            parent_name,
+            delimiter,
+        });
+    }
+    Ok(out)
 }
 
 pub fn list_capabilities(session: &mut ImapSession) -> Result<(bool, Vec<String>), PortError> {

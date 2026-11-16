@@ -1,5 +1,5 @@
 import type { AppPorts } from '../../ports';
-import { MemoryStore, createSeededMemoryStore } from './memoryStore';
+import { MemoryStore } from './memoryStore';
 import { MemoryAccountAdapter } from './MemoryAccountAdapter';
 import { MemorySyncAdapter } from './MemorySyncAdapter';
 import { MemoryContactAdapter } from './MemoryContactAdapter';
@@ -10,10 +10,8 @@ import { MemoryGroupAdapter } from './MemoryGroupAdapter';
 import { MemoryPlatformAdapter } from './MemoryPlatformAdapter';
 import { MemoryChangeEventsAdapter } from './MemoryChangeEventsAdapter';
 
-/** 创建内存 Port 集；默认带演示数据 */
-export function createMemoryPorts(options?: { seed?: boolean }): AppPorts {
-  const store =
-    options?.seed === false ? new MemoryStore() : createSeededMemoryStore();
+/** 创建空的内存 Port 集（浏览器非 Tauri 回退） */
+export function createMemoryPorts(store = new MemoryStore()): AppPorts {
   return {
     account: new MemoryAccountAdapter(store),
     sync: new MemorySyncAdapter(store),

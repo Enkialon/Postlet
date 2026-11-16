@@ -9,7 +9,7 @@ pub mod runtime;
 use application::dto::ComposeDraft;
 use application::use_cases::compose_use_case;
 use infrastructure::paths::AppPaths;
-use runtime::ChangeDispatcher;
+use runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -23,6 +23,8 @@ pub struct AppState {
     pub compose_drafts: Mutex<HashMap<String, ComposeDraft>>,
     /// 事务提交后的 ChangeSet 分发（UI 事件 / 系统通知）
     pub changes: ChangeDispatcher,
+    /// 账户级邮件同步互斥
+    pub mail_sync_gate: MailSyncGate,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,15 +36,36 @@ pub fn run() {
             let db =
                 tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
+            // 上次进程若在同步中退出，清掉遗留 running，避免 UI 永久「同步中」
+            tauri::async_runtime::block_on(async {
+                if let Ok(mut conn) = db.acquire().await {
+                    let _ = infrastructure::repository::accounts::clear_stale_mail_sync_running(
+                        &mut conn,
+                    )
+                    .await;
+                }
+            });
             let changes = ChangeDispatcher::new(app.handle().clone());
-            runtime::mail_watcher::spawn_watchers(db.clone(), paths.clone(), changes.clone());
-            runtime::mail_sync_scheduler::spawn(db.clone(), paths.clone(), changes.clone());
+            let mail_sync_gate = MailSyncGate::new();
+            runtime::mail_watcher::spawn_watchers(
+                db.clone(),
+                paths.clone(),
+                changes.clone(),
+                mail_sync_gate.clone(),
+            );
+            runtime::mail_sync_scheduler::spawn(
+                db.clone(),
+                paths.clone(),
+                changes.clone(),
+                mail_sync_gate.clone(),
+            );
             runtime::aggregate_scheduler::spawn(db.clone(), changes.clone());
             app.manage(AppState {
                 db,
                 paths,
                 compose_drafts: Mutex::new(compose_use_case::empty_draft_map()),
                 changes,
+                mail_sync_gate,
             });
             Ok(())
         })
@@ -52,7 +75,6 @@ pub fn run() {
             commands::account_sign_in,
             commands::account_sign_out,
             commands::upsert_imap_smtp_account,
-            commands::load_demo_workspace,
             commands::update_display_settings,
             commands::list_contacts,
             commands::get_contact,
@@ -68,6 +90,8 @@ pub fn run() {
             commands::list_group_participants,
             commands::get_mail_sync_progress,
             commands::trigger_mail_sync,
+            commands::refresh_mail_folders,
+            commands::set_folder_sync_enabled,
             commands::trigger_contact_sync,
             commands::get_contact_sync_progress,
             commands::ensure_contact_conversation,
