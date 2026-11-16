@@ -164,6 +164,11 @@ const reassignTargetId = ref('');
 const reassignBusy = ref(false);
 const reassignError = ref<string | null>(null);
 
+const deleteOpen = ref(false);
+const deleteMessageId = ref<string | null>(null);
+const deleteBusy = ref(false);
+const deleteError = ref<string | null>(null);
+
 function sessionOptionLabel(item: SessionListItem): string {
   const kind = item.session.kind === 'group' ? '群聊' : '私聊';
   const name =
@@ -412,11 +417,29 @@ function onReplyMessage(item: MessageWithRecipients): void {
   composerRef.value?.beginReply(item);
 }
 
-async function onDeleteMessage(messageId: string): Promise<void> {
-  if (mailDetail.value?.message.id === messageId) {
-    closeDetailPanel();
+function requestDeleteMessage(messageId: string): void {
+  deleteMessageId.value = messageId;
+  deleteError.value = null;
+  deleteOpen.value = true;
+}
+
+async function confirmDeleteMessage(): Promise<void> {
+  const messageId = deleteMessageId.value;
+  if (!messageId || deleteBusy.value) return;
+  deleteBusy.value = true;
+  deleteError.value = null;
+  try {
+    if (mailDetail.value?.message.id === messageId) {
+      closeDetailPanel();
+    }
+    await deleteMessages([messageId]);
+    deleteOpen.value = false;
+    deleteMessageId.value = null;
+  } catch (e) {
+    deleteError.value = asAppError(e).message;
+  } finally {
+    deleteBusy.value = false;
   }
-  await deleteMessages([messageId]);
 }
 
 async function onMailSent(_item: MessageWithRecipients): Promise<void> {
@@ -521,15 +544,18 @@ watch(
           class="min-h-0 flex-1 bg-surface-chat"
           type="hover"
         >
-          <div class="px-3 py-4 sm:px-5 sm:py-5">
+          <!-- 以聊天栏自身宽度为容器，气泡用 @container/chat 联动 -->
+          <div
+            class="@container/chat px-2.5 py-3 @[28rem]/chat:px-4 @[28rem]/chat:py-4 @[40rem]/chat:px-5 @[40rem]/chat:py-5"
+          >
             <div
-              class="relative w-full"
+              class="relative w-full min-w-0"
               :style="{ height: `${messagesTotalSize}px` }"
             >
               <div
                 v-for="row in messageVirtualItems"
                 :key="String(row.key)"
-                class="absolute top-0 left-0 box-border w-full min-w-0 px-0.5 pb-8 sm:px-1"
+                class="absolute top-0 left-0 box-border w-full min-w-0 px-0.5 pb-6 @[28rem]/chat:px-1 @[28rem]/chat:pb-8"
                 :data-index="row.index"
                 :ref="messageVirtualizer.measureElement"
                 :style="{
@@ -550,7 +576,9 @@ watch(
                     markRead([displayMessages[row.index]!.message.id], false)
                   "
                   @delete="
-                    onDeleteMessage(displayMessages[row.index]!.message.id)
+                    requestDeleteMessage(
+                      displayMessages[row.index]!.message.id,
+                    )
                   "
                   @reassign="openReassign"
                 />
@@ -603,7 +631,7 @@ watch(
             :preferred-name="selected?.contact_display_name"
             @close="closeDetailPanel"
             @retry-body="ensureBody(mailDetail.message.id)"
-            @delete="onDeleteMessage(mailDetail.message.id)"
+            @delete="requestDeleteMessage(mailDetail.message.id)"
           />
 
           <template v-else-if="selected">
@@ -757,6 +785,25 @@ watch(
         />
       </div>
     </template>
+
+    <Dialog
+      :open="deleteOpen"
+      title="删除邮件"
+      confirm-label="删除"
+      :confirming="deleteBusy"
+      danger
+      @close="
+        deleteOpen = false;
+        deleteMessageId = null;
+        deleteError = null;
+      "
+      @confirm="confirmDeleteMessage"
+    >
+      <p>确定删除这封邮件？将同步到远端，可在「显示已删除」中查看。</p>
+      <p v-if="deleteError" class="mt-2 text-[13px] text-danger">
+        {{ deleteError }}
+      </p>
+    </Dialog>
 
     <Dialog
       :open="reassignOpen"

@@ -117,7 +117,7 @@ function onMenuSelect(id: string): void {
 
 <template>
   <article
-    class="flex w-full min-w-0 max-w-full items-start gap-2.5"
+    class="flex w-full min-w-0 max-w-full items-start gap-1.5 @[28rem]/chat:gap-2.5"
     :class="outbound ? 'ml-auto flex-row-reverse' : ''"
     @contextmenu="openMenu"
   >
@@ -128,9 +128,9 @@ function onMenuSelect(id: string): void {
       class="mt-0.5 shrink-0"
     />
 
-    <!-- max 含扣掉头像，窄窗按聊天栏宽度收缩并换行，不横向撑爆 -->
+    <!-- 相对 @container/chat：窄栏近满宽换行，宽栏再抬到 360/420 上限 -->
     <div
-      class="grid min-w-0 w-fit max-w-[min(420px,calc(100%-2.75rem))] gap-1.5"
+      class="grid min-w-0 w-fit max-w-[calc(100%-2.75rem)] gap-1 @[28rem]/chat:max-w-[min(360px,calc(100%-2.75rem))] @[40rem]/chat:max-w-[min(420px,calc(100%-2.75rem))] @[28rem]/chat:gap-1.5"
       :class="outbound ? 'justify-items-end' : 'justify-items-start'"
     >
       <div
@@ -158,7 +158,7 @@ function onMenuSelect(id: string): void {
 
       <button
         type="button"
-        class="box-border w-fit min-w-0 max-w-full cursor-pointer overflow-hidden rounded-[14px] px-3.5 py-2.5 text-left transition-[box-shadow,background-color] duration-150"
+        class="box-border w-fit min-w-0 max-w-full cursor-pointer overflow-hidden rounded-[12px] px-3 py-2 text-left transition-[box-shadow,background-color] duration-150 @[28rem]/chat:rounded-[14px] @[28rem]/chat:px-3.5 @[28rem]/chat:py-2.5"
         :class="[
           outbound
             ? 'rounded-tr-md bg-bubble-outgoing'
