@@ -275,13 +275,18 @@ export function useMessages() {
         nav.sessionVersion.value,
       ],
       () => {
-        messageState.requestVersion += 1;
+        // 立刻清空旧线程；loading 保持 initial，避免短暂 EmptyState 把滚动容器卸掉
+        // 版本号只在 loadInitial/loadMore 里递增，避免与软刷新双 ++ 把本次加载作废
         messageState.items = [];
         messageState.nextCursor = null;
         messageState.hasMore = false;
         messageState.error = null;
-        messageState.loading = 'idle';
         expandedIds.value = new Set();
+        if (!nav.accountId.value || !nav.sessionId.value) {
+          Object.assign(messageState, createEmptyPageState());
+          return;
+        }
+        messageState.loading = 'initial';
         void loadInitial();
       },
     );

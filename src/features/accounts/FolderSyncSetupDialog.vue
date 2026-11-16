@@ -9,7 +9,6 @@ import {
   flattenFolderTree,
 } from '../settings/folderTree';
 import Button from '../../shared/ui/Button.vue';
-import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 
 const props = defineProps<{
   open: boolean;
@@ -151,7 +150,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
     <div class="absolute inset-0 bg-black/30" @click="!saving && emit('close')" />
     <div
       ref="panelRef"
-      class="relative flex max-h-[min(640px,calc(100vh-2rem))] w-[min(520px,calc(100vw-2rem))] flex-col rounded-lg border border-border-subtle bg-surface-elevated px-4 py-4 shadow-panel"
+      class="relative flex h-[min(640px,calc(100vh-2rem))] w-[min(520px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated px-4 py-4 shadow-panel"
       role="dialog"
       aria-modal="true"
       :aria-label="title"
@@ -200,10 +199,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
         正在从邮箱拉取文件夹树…
       </p>
 
-      <OverlayScrollArea class="min-h-0 flex-1">
+      <div
+        class="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-md border border-border-subtle bg-surface-chat"
+      >
         <ul
           v-if="!loading && rows.length"
-          class="m-0 list-none divide-y divide-border-subtle overflow-hidden rounded-md border border-border-subtle bg-surface-chat p-0"
+          class="m-0 list-none divide-y divide-border-subtle p-0"
         >
           <li
             v-for="f in rows"
@@ -233,11 +234,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
         </ul>
         <p
           v-else-if="!loading && !error"
-          class="m-0 rounded-md border border-dashed border-border-subtle px-3 py-6 text-center text-[13px] text-text-secondary"
+          class="m-0 px-3 py-6 text-center text-[13px] text-text-secondary"
         >
           没有可勾选的文件夹
         </p>
-      </OverlayScrollArea>
+      </div>
 
       <footer class="mt-4 flex shrink-0 justify-end gap-2">
         <Button variant="ghost" :disabled="saving" @click="emit('close')">

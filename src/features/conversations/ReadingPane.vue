@@ -209,7 +209,14 @@ const showingMailDetail = computed(
 
 const title = computed(() => {
   const item = selected.value;
-  if (!item) return '';
+  // 选中态必须与导航一致，避免点会话后标题/线程短暂错位
+  if (
+    !item ||
+    item.session.id !== nav.sessionId.value ||
+    item.session.account_id !== nav.accountId.value
+  ) {
+    return '';
+  }
   const resolved = item.display_name?.trim();
   if (resolved) return resolved;
   if (item.session.kind === 'group') {
@@ -508,6 +515,7 @@ watch(
 
         <OverlayScrollArea
           v-else
+          :key="`${nav.accountId.value ?? ''}:${nav.sessionId.value ?? ''}`"
           ref="scrollAreaRef"
           class="min-h-0 flex-1 bg-surface-chat"
           type="hover"

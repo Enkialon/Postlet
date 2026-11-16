@@ -39,7 +39,13 @@ useSyncStatus({
   onForegroundRefresh: () => {
     if (nav.page.value === 'conversations') {
       void conversations.refreshSoft();
-      if (nav.sessionId.value) void messages.loadInitial();
+      // 切换会话加载中勿抢 requestVersion，否则会把新会话消息请求作废、界面卡住旧线程
+      if (
+        nav.sessionId.value &&
+        messages.messageState.loading === 'idle'
+      ) {
+        void messages.loadInitial();
+      }
     }
   },
 });
