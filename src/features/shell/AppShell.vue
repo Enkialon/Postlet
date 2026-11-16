@@ -18,6 +18,7 @@ import ListPaneResizeHandle from '../../shared/ui/ListPaneResizeHandle.vue';
 import { useListPaneWidth } from '../../shared/ui/useListPaneWidth';
 import WelcomePage from '../accounts/WelcomePage.vue';
 import AddAccountDialog from '../accounts/AddAccountDialog.vue';
+import FolderSyncSetupDialog from '../accounts/FolderSyncSetupDialog.vue';
 import ConversationListPane from '../conversations/ConversationListPane.vue';
 import ReadingPane from '../conversations/ReadingPane.vue';
 import ContactsPage from '../contacts/ContactsPage.vue';
@@ -49,6 +50,15 @@ const width = ref(
 const accountMenuOpen = ref(false);
 const accountMenuRef = ref<HTMLElement | null>(null);
 const addAccountOpen = ref(false);
+
+const folderSetupAccountId = computed(
+  () => accounts.folderSetupAccountId.value,
+);
+const folderSetupLabel = computed(() => {
+  const id = folderSetupAccountId.value;
+  if (!id) return '';
+  return accounts.accountLabel(id);
+});
 
 function onResize() {
   width.value = window.innerWidth;
@@ -372,4 +382,12 @@ function railBtn(active: boolean): string {
       @close="addAccountOpen = false"
     />
   </div>
+
+  <FolderSyncSetupDialog
+    :open="Boolean(folderSetupAccountId)"
+    :account-id="folderSetupAccountId"
+    :account-label="folderSetupLabel"
+    @close="accounts.dismissFolderSetup()"
+    @done="accounts.dismissFolderSetup()"
+  />
 </template>

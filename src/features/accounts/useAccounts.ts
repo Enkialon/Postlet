@@ -2,6 +2,7 @@ import { computed, inject, ref } from 'vue';
 import type { Account } from '../../domain/entities';
 import type { UpsertImapSmtpAccountCommand } from '../../domain/dto';
 import type { AppError } from '../../domain/errors';
+import type { AccountId } from '../../domain/types';
 import type { AccountFilter } from '../../app/navigation';
 import { portsKey, navigationKey } from '../../app/provide';
 import { asAppError } from '../../shared/errors/asAppError';
@@ -11,6 +12,8 @@ const current = ref<Account | null>(null);
 const loading = ref(false);
 const signingIn = ref(false);
 const error = ref<AppError | null>(null);
+/** 登录后弹出「选择同步文件夹」；null 表示关闭 */
+const folderSetupAccountId = ref<AccountId | null>(null);
 
 export function useAccounts() {
   const ports = inject(portsKey)!;
@@ -118,19 +121,13 @@ export function useAccounts() {
     nav.bumpSession();
     nav.clearReading();
     nav.goPage('conversations');
-    // 先拉全文件夹树（默认不勾选）；有已勾选夹才同步邮件
-    void (async () => {
-      try {
-        await ports.sync.refreshMailFolders(account.id);
-      } catch {
-        /* 设置页可再刷新 */
-      }
-      void ports.sync.triggerMailSync({
-        account_id: account.id,
-        folder_ids: null,
-      });
-      void ports.sync.triggerContactSync({ account_id: account.id });
-    })();
+    // 登录流程：弹窗勾选同步文件夹后再拉邮件；联系人可并行
+    folderSetupAccountId.value = account.id;
+    void ports.sync.triggerContactSync({ account_id: account.id });
+  }
+
+  function dismissFolderSetup(): void {
+    folderSetupAccountId.value = null;
   }
 
   async function signIn(): Promise<void> {
@@ -228,6 +225,8 @@ export function useAccounts() {
     signingIn,
     error,
     hasAccounts,
+    folderSetupAccountId,
+    dismissFolderSetup,
     bootstrapAccounts,
     setAccountFilter,
     selectAccount,
