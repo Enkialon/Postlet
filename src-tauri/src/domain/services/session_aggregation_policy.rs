@@ -84,7 +84,47 @@ pub fn decide_aggregation(context: &AggregationContext) -> Result<AggregationPla
     })
 }
 
-/// 列表显示名：私聊用联系人名（或地址），群聊用群名
+/// 名称可用：非空且不等于邮箱本身
+pub fn usable_person_label(name: &str, address: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() {
+        return false;
+    }
+    let a = address.trim();
+    if a.is_empty() {
+        return true;
+    }
+    !n.eq_ignore_ascii_case(a)
+}
+
+/// 单人展示：优先昵称，否则邮箱
+pub fn person_label(name: &str, address: &str) -> String {
+    if usable_person_label(name, address) {
+        name.trim().to_owned()
+    } else {
+        address.trim().to_owned()
+    }
+}
+
+/// 自动群标题：成员昵称优先，缺昵称才用邮箱；最多 3 人
+pub fn auto_group_title<'a, I>(members: I) -> String
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let labels: Vec<String> = members
+        .into_iter()
+        .take(3)
+        .map(|(addr, name)| person_label(name, addr))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if labels.is_empty() {
+        "群组".into()
+    } else {
+        labels.join(", ")
+    }
+}
+
+/// 列表显示名：私聊优先联系人名；群聊用群名（自动群应已是成员昵称拼接）
 pub fn session_display_name(
     kind: SessionKind,
     contact_display_name: Option<&str>,
@@ -93,13 +133,16 @@ pub fn session_display_name(
 ) -> String {
     match kind {
         SessionKind::Private => {
-            let name = contact_display_name.unwrap_or("").trim();
-            if !name.is_empty() {
-                name.to_owned()
+            let addr = private_address.unwrap_or("");
+            person_label(contact_display_name.unwrap_or(""), addr)
+        }
+        SessionKind::Group => {
+            let name = group_name.unwrap_or("").trim();
+            if name.is_empty() {
+                "未命名群组".into()
             } else {
-                private_address.unwrap_or("").to_owned()
+                name.to_owned()
             }
         }
-        SessionKind::Group => group_name.unwrap_or("").to_owned(),
     }
 }

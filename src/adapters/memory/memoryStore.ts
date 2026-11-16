@@ -102,6 +102,22 @@ export class MemoryStore {
         const group = this.groups.get(
           this.groupKey(session.account_id, session.group_id),
         );
+        if (group && !group.name_is_manual) {
+          const parts =
+            this.participants.get(
+              this.groupKey(session.account_id, session.group_id),
+            ) ?? [];
+          const labels = parts
+            .slice(0, 3)
+            .map((p) => {
+              const n = p.display_name?.trim() || '';
+              const a = p.normalized_address;
+              if (n && n.toLowerCase() !== a.toLowerCase()) return n;
+              return a;
+            })
+            .filter(Boolean);
+          if (labels.length) return labels.join(', ');
+        }
         if (group?.name.trim()) return group.name.trim();
       }
       return '未命名群组';
@@ -113,9 +129,10 @@ export class MemoryStore {
           this.contactKey(session.account_id, session.contact_id),
         )?.display_name ?? null;
     }
-    const name = contactName?.trim();
-    if (name) return name;
-    return session.normalized_address?.trim() || '未知联系人';
+    const name = contactName?.trim() || '';
+    const addr = session.normalized_address?.trim() || '';
+    if (name && name.toLowerCase() !== addr.toLowerCase()) return name;
+    return addr || '未知联系人';
   }
 
   toListItem(session: Session): SessionListItem {

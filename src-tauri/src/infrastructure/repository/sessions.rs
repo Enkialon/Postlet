@@ -223,13 +223,41 @@ async fn enrich_item(
         None
     };
     let group_name = if let Some(ref gid) = session.group_id {
-        sqlx::query_scalar::<_, String>(
-            "SELECT name FROM groups WHERE account_id = ? AND id = ?",
+        let row = sqlx::query(
+            "SELECT name, name_is_manual FROM groups WHERE account_id = ? AND id = ?",
         )
         .bind(session.account_id.as_str())
         .bind(gid.as_str())
         .fetch_optional(&mut *conn)
-        .await?
+        .await?;
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                let stored: String = row.try_get("name")?;
+                let manual: i64 = row.try_get("name_is_manual")?;
+                if manual != 0 {
+                    Some(stored)
+                } else {
+                    // 自动群：列表展示优先用成员昵称拼标题
+                    let parts = super::groups::list_participants(
+                        &mut *conn,
+                        &session.account_id,
+                        gid,
+                    )
+                    .await?;
+                    if parts.is_empty() {
+                        Some(stored)
+                    } else {
+                        Some(crate::domain::services::auto_group_title(
+                            parts.iter().map(|p| {
+                                (p.normalized_address.as_str(), p.display_name.as_str())
+                            }),
+                        ))
+                    }
+                }
+            }
+            None => None,
+        }
     } else {
         None
     };

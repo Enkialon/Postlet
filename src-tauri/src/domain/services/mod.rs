@@ -9,6 +9,6 @@ pub use message_attribution::{
 };
 pub use self_address_resolver::resolve_self_addresses;
 pub use session_aggregation_policy::{
-    decide_aggregation, session_display_name, AggregationContext, AggregationPlan, GroupTarget,
-    SessionTarget,
+    auto_group_title, decide_aggregation, person_label, session_display_name, usable_person_label,
+    AggregationContext, AggregationPlan, GroupTarget, SessionTarget,
 };

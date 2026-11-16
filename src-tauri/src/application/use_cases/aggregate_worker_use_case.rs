@@ -346,14 +346,14 @@ async fn apply_plan(
                         .await?
                 }
             };
-            // 观测成员
+            // 观测成员（display_name 优先昵称）
             let mut parts = Vec::new();
             for (addr, name) in &plan.observed_participants {
                 parts.push(GroupParticipant {
                     account_id: account_id.clone(),
                     group_id: group_id.clone(),
                     normalized_address: addr.clone(),
-                    display_name: name.clone(),
+                    display_name: crate::domain::services::person_label(name, addr.as_str()),
                     is_observed: true,
                     is_send_member: false,
                     first_seen_at: now,
@@ -365,6 +365,7 @@ async fn apply_plan(
                     .await
                     .map_err(AppError::from)?;
             }
+            refresh_auto_group_name(conn, account_id, &group_id, now).await?;
             ensure_group_session(conn, account_id, &group_id, now).await?
         }
     };
@@ -395,11 +396,21 @@ async fn apply_plan(
 }
 
 fn usable_contact_display_name(name: &str, address: &EmailAddress) -> bool {
-    let n = name.trim();
-    if n.is_empty() {
-        return false;
-    }
-    !n.eq_ignore_ascii_case(address.as_str())
+    crate::domain::services::usable_person_label(name, address.as_str())
+}
+
+fn auto_group_title_from_observed(
+    members: &[EmailAddress],
+    observed: &[(EmailAddress, String)],
+) -> String {
+    crate::domain::services::auto_group_title(members.iter().map(|addr| {
+        let name = observed
+            .iter()
+            .find(|(a, _)| a == addr)
+            .map(|(_, n)| n.as_str())
+            .unwrap_or("");
+        (addr.as_str(), name)
+    }))
 }
 
 async fn ensure_private_session(
@@ -515,20 +526,11 @@ async fn create_auto_group(
     observed: &[(EmailAddress, String)],
     now: TimestampMs,
 ) -> Result<GroupId, AppError> {
-    let name = members
-        .iter()
-        .take(3)
-        .map(|a| a.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let name = auto_group_title_from_observed(members, observed);
     let group = Group {
         id: GroupId::new(Uuid::new_v4().to_string()),
         account_id: account_id.clone(),
-        name: if name.is_empty() {
-            "群组".into()
-        } else {
-            name
-        },
+        name,
         name_is_manual: false,
         source: GroupSource::Auto,
         send_members_is_manual: false,
@@ -541,11 +543,12 @@ async fn create_auto_group(
 
     let mut parts = Vec::new();
     for addr in members {
-        let display = observed
+        let raw = observed
             .iter()
             .find(|(a, _)| a == addr)
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| addr.as_str().to_string());
+            .map(|(_, n)| n.as_str())
+            .unwrap_or("");
+        let display = crate::domain::services::person_label(raw, addr.as_str());
         parts.push(GroupParticipant {
             account_id: account_id.clone(),
             group_id: group.id.clone(),
@@ -561,6 +564,41 @@ async fn create_auto_group(
         .await
         .map_err(AppError::from)?;
     Ok(group.id)
+}
+
+/// 非手动群名：随观测昵称刷新（优先名称）
+async fn refresh_auto_group_name(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    group_id: &GroupId,
+    now: TimestampMs,
+) -> Result<(), AppError> {
+    let Some(mut group) = groups::get(conn, account_id, group_id)
+        .await
+        .map_err(AppError::from)?
+    else {
+        return Ok(());
+    };
+    if group.name_is_manual {
+        return Ok(());
+    }
+    let parts = groups::list_participants(conn, account_id, group_id)
+        .await
+        .map_err(AppError::from)?;
+    let title = crate::domain::services::auto_group_title(
+        parts
+            .iter()
+            .map(|p| (p.normalized_address.as_str(), p.display_name.as_str())),
+    );
+    if title == group.name {
+        return Ok(());
+    }
+    group.name = title;
+    group.updated_at = now;
+    groups::update(conn, &group)
+        .await
+        .map_err(AppError::from)?;
+    Ok(())
 }
 
 /// 将账户内邮件重新入队。
