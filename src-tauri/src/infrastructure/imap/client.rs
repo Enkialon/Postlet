@@ -232,3 +232,55 @@ pub async fn uid_set_seen_async(
         message: format!("IMAP STORE 任务失败: {e}"),
     })?
 }
+
+/// 标记 `\Deleted` 并 UID EXPUNGE（不支持 UID EXPUNGE 时回退 EXPUNGE）。
+pub fn uid_delete(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<(), PortError> {
+    session
+        .select(folder)
+        .map_err(|e| PortError::Remote {
+            message: format!("IMAP SELECT 失败: {e}"),
+            retryable: true,
+        })?;
+    let seq = format!("{uid}");
+    session
+        .uid_store(&seq, "+FLAGS (\\Deleted)")
+        .map_err(|e| PortError::Remote {
+            message: format!("IMAP STORE \\Deleted 失败: {e}"),
+            retryable: true,
+        })?;
+    match session.uid_expunge(&seq) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            session.expunge().map_err(|e| PortError::Remote {
+                message: format!("IMAP EXPUNGE 失败: {e}"),
+                retryable: true,
+            })?;
+            Ok(())
+        }
+    }
+}
+
+pub async fn uid_delete_async(
+    endpoint: &ImapEndpoint,
+    auth: &ImapAuth,
+    folder: &str,
+    uid: u32,
+) -> Result<(), PortError> {
+    let endpoint = endpoint.clone();
+    let auth = auth.clone();
+    let folder = folder.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut session = session_login_blocking(&endpoint, &auth)?;
+        let out = uid_delete(&mut session, &folder, uid);
+        let _ = session.logout();
+        out
+    })
+    .await
+    .map_err(|e| PortError::Network {
+        message: format!("IMAP 删除任务失败: {e}"),
+    })?
+}

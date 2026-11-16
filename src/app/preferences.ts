@@ -7,6 +7,7 @@ import {
 } from '../i18n';
 
 const WIDTH_KEY = 'postlet.panelWidths';
+const SHOW_DELETED_KEY = 'postlet.showDeletedInThread';
 
 export interface PanelWidths {
   nav: number;
@@ -36,9 +37,19 @@ const DETAIL_MAX = 780;
 const COMPOSE_MIN = 176;
 const COMPOSE_MAX = 720;
 
+function loadShowDeletedInThread(): boolean {
+  try {
+    return localStorage.getItem(SHOW_DELETED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 const preferences = reactive({
   locale: detectInitialLocale() as AppLocale,
   panelWidths: loadWidths(),
+  /** 聊天线程是否显示已删除邮件（默认隐藏；后端仍返回，由前端过滤） */
+  showDeletedInThread: loadShowDeletedInThread(),
 });
 
 function clamp(n: number, min: number, max: number): number {
@@ -106,10 +117,20 @@ export function usePreferences() {
     localStorage.setItem(WIDTH_KEY, JSON.stringify(preferences.panelWidths));
   }
 
+  function setShowDeletedInThread(next: boolean): void {
+    preferences.showDeletedInThread = next;
+    try {
+      localStorage.setItem(SHOW_DELETED_KEY, next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
   return {
     preferences,
     setLocale,
     setPanelWidths,
+    setShowDeletedInThread,
     limits: {
       list: { min: LIST_MIN, max: LIST_MAX },
       mail: { min: MAIL_MIN, max: MAIL_MAX },

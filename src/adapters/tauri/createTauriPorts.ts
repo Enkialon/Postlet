@@ -8,6 +8,7 @@ import type {
   ConversationMessagesQuery,
   CreateManualGroupCommand,
   CursorPage,
+  DeleteMessagesCommand,
   EnsureContactConversationCommand,
   EnsureGroupConversationCommand,
   GroupListQuery,
@@ -128,6 +129,8 @@ export function createTauriPorts(): AppPorts {
         }),
       markRead: (cmd: MarkMessagesReadCommand) =>
         invoke<void>('mark_messages_read', { cmd }),
+      deleteMessages: (cmd: DeleteMessagesCommand) =>
+        invoke<void>('delete_messages', { cmd }),
     },
     compose: {
       getDraft: (accountId: AccountId, conversationId: ConversationId) =>

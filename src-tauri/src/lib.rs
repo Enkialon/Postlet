@@ -86,6 +86,7 @@ pub fn run() {
             commands::get_message,
             commands::ensure_message_body,
             commands::mark_messages_read,
+            commands::delete_messages,
             commands::list_groups,
             commands::get_group,
             commands::list_group_participants,

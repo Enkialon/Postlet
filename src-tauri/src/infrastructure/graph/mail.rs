@@ -238,6 +238,22 @@ pub async fn patch_message_read(
     Ok(())
 }
 
+/// 删除邮件（通常进入「已删除邮件」）。
+pub async fn delete_message(
+    access_token: &str,
+    graph_id: &GraphImmutableId,
+) -> Result<(), PortError> {
+    let response = client(access_token)
+        .me()
+        .message(graph_id.as_str())
+        .delete_messages()
+        .send()
+        .await
+        .map_err(|e| map_http_err("Graph delete message", e))?;
+    ensure_success(response, "Graph delete message").await?;
+    Ok(())
+}
+
 pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), PortError> {
     let content_type = match mail.body_content_type {
         BodyContentType::Html => "HTML",

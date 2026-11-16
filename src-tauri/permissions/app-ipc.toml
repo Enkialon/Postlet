@@ -17,6 +17,7 @@ commands.allow = [
   "get_message",
   "ensure_message_body",
   "mark_messages_read",
+  "delete_messages",
   "list_groups",
   "get_group",
   "list_group_participants",

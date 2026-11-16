@@ -1,6 +1,8 @@
-//! 邮件用例：本地读写、正文按需、已读推远端。
+//! 邮件用例：本地读写、正文按需、已读/删除推远端。
 
-use crate::application::dto::{ChangeOrigin, ChangeSet, MarkMessagesReadCommand};
+use crate::application::dto::{
+    ChangeOrigin, ChangeSet, DeleteMessagesCommand, MarkMessagesReadCommand, PendingMutationKind,
+};
 use crate::application::error::{AppError, PortError};
 use crate::domain::entities::MessageWithRecipients;
 use crate::domain::value_objects::{
@@ -8,7 +10,9 @@ use crate::domain::value_objects::{
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
-use crate::infrastructure::imap::{uid_set_seen_async, ImapAuth, ImapEndpoint};
+use crate::infrastructure::imap::{
+    uid_delete_async, uid_set_seen_async, ImapAuth, ImapEndpoint,
+};
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
@@ -130,7 +134,73 @@ pub async fn mark_read(
     })
 }
 
-/// 串行推送到期的已读变更。
+/// 批量删除邮件：本地软删 + 入队远端删除，并重算会话投影。
+pub async fn delete_messages(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    cmd: DeleteMessagesCommand,
+) -> Result<ChangeSet, AppError> {
+    if cmd.message_ids.is_empty() {
+        return Ok(ChangeSet {
+            account_id: cmd.account_id,
+            conversation_ids: Vec::new(),
+            message_ids: Vec::new(),
+            new_incoming_ids: Vec::new(),
+            origin: ChangeOrigin::UserAction,
+        });
+    }
+
+    let mut tx = db.begin().await?;
+    let mut changed = Vec::new();
+    for mid in &cmd.message_ids {
+        let Some(bundle) = messages::get(&mut tx, &cmd.account_id, mid)
+            .await
+            .map_err(AppError::from)?
+        else {
+            continue;
+        };
+        if bundle.message.sync_status
+            == crate::domain::value_objects::MessageSyncStatus::DeletedRemote
+        {
+            continue;
+        }
+        messages::mark_deleted_remote(&mut tx, &cmd.account_id, &[mid.clone()])
+            .await
+            .map_err(AppError::from)?;
+        mutations::put_delete(&mut tx, &cmd.account_id, mid)
+            .await
+            .map_err(AppError::from)?;
+        changed.push(mid.clone());
+    }
+
+    let mut touched: HashSet<String> = HashSet::new();
+    for mid in &changed {
+        for cid in conversations::find_conversation_ids_by_message(&mut tx, &cmd.account_id, mid)
+            .await?
+        {
+            touched.insert(cid.into_inner());
+        }
+    }
+    let mut conversation_ids = Vec::with_capacity(touched.len());
+    for cid in &touched {
+        let conversation_id = ConversationId::new(cid.clone());
+        conversations::recompute_projection(&mut tx, &cmd.account_id, &conversation_id).await?;
+        conversation_ids.push(conversation_id);
+    }
+    tx.commit().await?;
+
+    let _ = flush_due_mutations(db, paths, &cmd.account_id, 32).await;
+
+    Ok(ChangeSet {
+        account_id: cmd.account_id,
+        conversation_ids,
+        message_ids: changed,
+        new_incoming_ids: Vec::new(),
+        origin: ChangeOrigin::UserAction,
+    })
+}
+
+/// 串行推送到期的已读 / 删除变更。
 pub async fn flush_due_mutations(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -156,14 +226,20 @@ pub async fn flush_due_mutations(
 
     let mut flushed = 0u32;
     for mutation in due {
-        let push = match transport.receive_protocol {
-            ReceiveProtocol::Graph => {
-                push_graph_read(db, paths, account_id, &mutation.message_id, mutation.desired_is_read)
-                    .await
+        let push = match (mutation.kind, transport.receive_protocol) {
+            (PendingMutationKind::Read, ReceiveProtocol::Graph) => {
+                let is_read = mutation.desired_is_read.unwrap_or(true);
+                push_graph_read(db, paths, account_id, &mutation.message_id, is_read).await
             }
-            ReceiveProtocol::Imap => {
-                push_imap_read(db, paths, account_id, &mutation.message_id, mutation.desired_is_read)
-                    .await
+            (PendingMutationKind::Read, ReceiveProtocol::Imap) => {
+                let is_read = mutation.desired_is_read.unwrap_or(true);
+                push_imap_read(db, paths, account_id, &mutation.message_id, is_read).await
+            }
+            (PendingMutationKind::Delete, ReceiveProtocol::Graph) => {
+                push_graph_delete(db, paths, account_id, &mutation.message_id).await
+            }
+            (PendingMutationKind::Delete, ReceiveProtocol::Imap) => {
+                push_imap_delete(db, paths, account_id, &mutation.message_id).await
             }
         };
 
@@ -297,4 +373,110 @@ async fn push_imap_read(
     )
     .await
     .map_err(AppError::from)
+}
+
+async fn push_graph_delete(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<(), AppError> {
+    let graph_id = {
+        let mut conn = db.acquire().await?;
+        let bundle = messages::get(&mut conn, account_id, message_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
+        bundle
+            .message
+            .graph_id
+            .ok_or_else(|| AppError::validation("邮件缺少 graph_id，无法删除"))?
+    };
+    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+        .await
+        .map_err(AppError::from)?;
+    graph::mail::delete_message(&token, &graph_id)
+        .await
+        .map_err(AppError::from)
+}
+
+async fn push_imap_delete(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<(), AppError> {
+    let (folder, uid, transport) = {
+        let mut conn = db.acquire().await?;
+        let bundle = messages::get(&mut conn, account_id, message_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
+        let graph_id = bundle
+            .message
+            .graph_id
+            .as_ref()
+            .map(|g| g.as_str().to_string())
+            .ok_or_else(|| AppError::validation("IMAP 邮件缺少 uid 标识"))?;
+        let folder = bundle
+            .message
+            .folder_id
+            .as_ref()
+            .map(|f| f.as_str().to_string())
+            .ok_or_else(|| AppError::validation("IMAP 邮件缺少 folder_id"))?;
+        let prefix = format!("imap:{folder}:");
+        let uid_str = graph_id
+            .strip_prefix(&prefix)
+            .ok_or_else(|| AppError::validation("IMAP graph_id 格式无效"))?;
+        let uid: u32 = uid_str
+            .parse()
+            .map_err(|_| AppError::validation("IMAP uid 无效"))?;
+        let transport = mail_transports::ensure_default(&mut conn, account_id, now_ms())
+            .await
+            .map_err(AppError::from)?;
+        (folder, uid, transport)
+    };
+
+    let account = {
+        let mut conn = db.acquire().await?;
+        accounts::get(&mut conn, account_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?
+    };
+    let host = transport
+        .imap_host
+        .clone()
+        .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_host"))?;
+    let port = transport
+        .imap_port
+        .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_port"))?;
+    let tls = transport.imap_tls.unwrap_or(MailTlsMode::Implicit);
+    let username = transport
+        .username
+        .clone()
+        .unwrap_or_else(|| account.email.as_str().to_string());
+    let secret = credentials::load(&paths.credentials_dir, account_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
+    let auth = match transport.auth_kind {
+        MailAuthKind::Password => ImapAuth::Password {
+            username,
+            password: secret
+                .password
+                .ok_or_else(|| AppError::auth("缺少 IMAP 密码"))?,
+        },
+        MailAuthKind::OAuth2 => ImapAuth::OAuth2 {
+            username,
+            access_token: secret
+                .access_token
+                .ok_or_else(|| AppError::auth("缺少 IMAP OAuth access_token"))?,
+        },
+    };
+
+    uid_delete_async(&ImapEndpoint { host, port, tls }, &auth, &folder, uid)
+        .await
+        .map_err(AppError::from)
 }

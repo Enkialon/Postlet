@@ -531,15 +531,29 @@ async fn upsert_remote_message(
         .map(|e| e.message.id.clone())
         .unwrap_or_else(|| MessageId::new(Uuid::new_v4().to_string()));
 
-    let pending_read = mutations::get(conn, account_id, &local_id)
+    let pending = mutations::get(conn, account_id, &local_id)
         .await
         .map_err(AppError::from)?;
+    let pending_delete = pending
+        .as_ref()
+        .is_some_and(|p| p.kind == crate::application::dto::PendingMutationKind::Delete);
+    let already_deleted = existing.as_ref().is_some_and(|e| {
+        e.message.sync_status == MessageSyncStatus::DeletedRemote
+    });
+    // 用户已删或待推删除：不复活
+    if pending_delete || already_deleted {
+        if let Some(bundle) = existing {
+            return Ok((bundle.message.id, None, false));
+        }
+    }
 
     // FLAGS-only 占位：空 subject 且无 body → 仅更新已读（有 pending 时保留本地）
     if !is_new && remote.subject.is_empty() && remote.body_content.is_none() {
         let mut bundle = existing.unwrap();
-        if let Some(p) = &pending_read {
-            bundle.message.is_read = p.desired_is_read;
+        if let Some(p) = &pending {
+            if let Some(desired) = p.desired_is_read {
+                bundle.message.is_read = desired;
+            }
         } else {
             bundle.message.is_read = remote.is_read;
         }
@@ -562,9 +576,9 @@ async fn upsert_remote_message(
         _ => false,
     };
 
-    let is_read = pending_read
+    let is_read = pending
         .as_ref()
-        .map(|p| p.desired_is_read)
+        .and_then(|p| p.desired_is_read)
         .unwrap_or(remote.is_read);
 
     let body_content = if let Some(ref ex) = existing {

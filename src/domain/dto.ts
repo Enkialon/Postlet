@@ -127,6 +127,12 @@ export interface MarkMessagesReadCommand {
   is_read: boolean;
 }
 
+/** 批量删除邮件（本地软删 + 推远端） */
+export interface DeleteMessagesCommand {
+  account_id: AccountId;
+  message_ids: MessageId[];
+}
+
 /** 用户空手创建群组 */
 export interface CreateManualGroupCommand {
   account_id: AccountId;

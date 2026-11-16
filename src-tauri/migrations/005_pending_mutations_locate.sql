@@ -1,14 +1,19 @@
--- 本地已读待推远端；版本用于确认后乱序保护。
+-- 本地字段待推远端（已读 / 删除）；版本用于确认后乱序保护。
 CREATE TABLE pending_message_mutations (
     account_id      TEXT NOT NULL,
     message_id      TEXT NOT NULL,
-    desired_is_read INTEGER NOT NULL CHECK(desired_is_read IN (0, 1)),
+    kind            TEXT NOT NULL CHECK(kind IN ('read', 'delete')),
+    desired_is_read INTEGER CHECK(desired_is_read IS NULL OR desired_is_read IN (0, 1)),
     version         INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
     attempts        INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
     available_at    INTEGER NOT NULL,
     last_error      TEXT,
     PRIMARY KEY (account_id, message_id),
-    FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE
+    FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE,
+    CHECK (
+        (kind = 'read' AND desired_is_read IS NOT NULL)
+        OR (kind = 'delete' AND desired_is_read IS NULL)
+    )
 );
 
 CREATE INDEX idx_pending_message_mutations_due

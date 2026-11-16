@@ -51,6 +51,13 @@ pub struct MarkMessagesReadCommand {
     pub is_read: bool,
 }
 
+/// 批量删除邮件（本地软删 + 推远端）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeleteMessagesCommand {
+    pub account_id: AccountId,
+    pub message_ids: Vec<MessageId>,
+}
+
 /// 用户空手创建群组
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CreateManualGroupCommand {

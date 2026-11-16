@@ -18,4 +18,4 @@ pub mod remote_models;
 mod aggregate_claim;
 mod pending_message_mutation;
 pub use aggregate_claim::AggregateClaim;
-pub use pending_message_mutation::PendingMessageMutation;
+pub use pending_message_mutation::{PendingMessageMutation, PendingMutationKind};

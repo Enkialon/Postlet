@@ -191,10 +191,56 @@ export class MemoryStore {
       }
     }
 
+    return this.messagesFromIds(accountId, ids, false);
+  }
+
+  /** 聊天线程列表：含已删，是否展示由前端决定 */
+  threadMessagesForConversation(conversation: Conversation): Message[] {
+    const accountId = conversation.account_id;
+    const key = this.conversationKey(accountId, conversation.id);
+    const ids = new Set(this.conversationMessages.get(key) ?? []);
+
+    const account = this.accounts.get(accountId);
+    if (
+      account?.show_group_messages_in_contact_conversation &&
+      conversation.kind === 'contact' &&
+      conversation.normalized_address
+    ) {
+      const address = conversation.normalized_address;
+      for (const conv of this.conversations.values()) {
+        if (
+          conv.account_id !== accountId ||
+          conv.kind !== 'group' ||
+          !conv.group_id
+        ) {
+          continue;
+        }
+        const groupIds =
+          this.conversationMessages.get(
+            this.conversationKey(accountId, conv.id),
+          ) ?? [];
+        for (const id of groupIds) {
+          if (this.messageInvolvesAddress(accountId, id, address)) {
+            ids.add(id);
+          }
+        }
+      }
+    }
+
+    return this.messagesFromIds(accountId, ids, true);
+  }
+
+  private messagesFromIds(
+    accountId: AccountId,
+    ids: Set<MessageId>,
+    includeDeleted: boolean,
+  ): Message[] {
     const live: Message[] = [];
     for (const id of ids) {
       const msg = this.messages.get(this.messageKey(accountId, id));
-      if (msg && msg.sync_status !== 'deleted_remote') live.push(msg);
+      if (!msg) continue;
+      if (!includeDeleted && msg.sync_status === 'deleted_remote') continue;
+      live.push(msg);
     }
     live.sort((a, b) => {
       const ta = a.received_at ?? a.sent_at ?? 0;

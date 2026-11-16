@@ -2,6 +2,7 @@
 import { computed, inject, nextTick, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { navigationKey, portsKey } from '../../app/provide';
+import { usePreferences } from '../../app/preferences';
 import { useConversations } from './useConversations';
 import { useMessages } from './useMessages';
 import { useGroups } from '../groups/useGroups';
@@ -32,6 +33,7 @@ const ROW_SIZE = 128;
 
 const nav = inject(navigationKey)!;
 const ports = inject(portsKey)!;
+const { preferences, setShowDeletedInThread } = usePreferences();
 const { selected, refreshSoft: refreshConversations } = useConversations();
 const {
   messageState,
@@ -41,6 +43,7 @@ const {
   openMessage,
   ensureBody,
   markRead,
+  deleteMessages,
   loadInitial,
 } = useMessages();
 const groups = useGroups();
@@ -66,14 +69,22 @@ const {
 const pendingStickBottom = ref(Boolean(nav.conversationId.value));
 let loadingOlder = false;
 
+/** 后端返回含已删；默认前端隐藏 */
+const displayMessages = computed(() => {
+  if (preferences.showDeletedInThread) return messageState.items;
+  return messageState.items.filter(
+    (item) => item.message.sync_status !== 'deleted_remote',
+  );
+});
+
 const messageVirtualizer = useVirtualizer(
   computed(() => ({
-    count: messageState.items.length,
+    count: displayMessages.value.length,
     getScrollElement: () => scrollViewport.value,
     estimateSize: () => ROW_SIZE,
     overscan: 8,
     getItemKey: (index: number) =>
-      messageState.items[index]?.message.id ?? index,
+      displayMessages.value[index]?.message.id ?? index,
   })),
 );
 
@@ -85,7 +96,7 @@ const messagesTotalSize = computed(() =>
 );
 
 function scrollToLatest(): void {
-  const len = messageState.items.length;
+  const len = displayMessages.value.length;
   if (len === 0) return;
   messageVirtualizer.value.scrollToIndex(len - 1, { align: 'end' });
 }
@@ -101,7 +112,7 @@ watch(
   () =>
     [
       messageState.loading,
-      messageState.items.length,
+      displayMessages.value.length,
       nav.conversationId.value,
     ] as const,
   async ([loading, len, conversationId]) => {
@@ -197,7 +208,7 @@ const showEmptyThread = computed(
     Boolean(nav.conversationId.value) &&
     messageState.loading === 'idle' &&
     !messageState.error &&
-    messageState.items.length === 0,
+    displayMessages.value.length === 0,
 );
 
 async function loadDetail(): Promise<void> {
@@ -337,6 +348,13 @@ function onReplyMessage(item: MessageWithRecipients): void {
   composerRef.value?.beginReply(item);
 }
 
+async function onDeleteMessage(messageId: string): Promise<void> {
+  if (mailDetail.value?.message.id === messageId) {
+    closeDetailPanel();
+  }
+  await deleteMessages([messageId]);
+}
+
 async function onMailSent(_item: MessageWithRecipients): Promise<void> {
   pendingStickBottom.value = true;
   await loadInitial();
@@ -454,18 +472,21 @@ watch(
                 }"
               >
                 <MessageCard
-                  v-if="messageState.items[row.index]"
-                  :item="messageState.items[row.index]!"
+                  v-if="displayMessages[row.index]"
+                  :item="displayMessages[row.index]!"
                   :selected="
                     mailDetail?.message.id ===
-                    messageState.items[row.index]!.message.id
+                    displayMessages[row.index]!.message.id
                   "
                   :preferred-name="selected?.contact_display_name"
                   :allow-move-thread="selected?.conversation.kind === 'group'"
-                  @select="openMailReading(messageState.items[row.index]!)"
-                  @reply="onReplyMessage(messageState.items[row.index]!)"
+                  @select="openMailReading(displayMessages[row.index]!)"
+                  @reply="onReplyMessage(displayMessages[row.index]!)"
                   @mark-unread="
-                    markRead([messageState.items[row.index]!.message.id], false)
+                    markRead([displayMessages[row.index]!.message.id], false)
+                  "
+                  @delete="
+                    onDeleteMessage(displayMessages[row.index]!.message.id)
                   "
                   @move-thread="openMove"
                 />
@@ -518,6 +539,7 @@ watch(
             :preferred-name="selected?.contact_display_name"
             @close="closeDetailPanel"
             @retry-body="ensureBody(mailDetail.message.id)"
+            @delete="onDeleteMessage(mailDetail.message.id)"
           />
 
           <template v-else-if="selected">
@@ -539,6 +561,21 @@ watch(
             <p v-else-if="detailError" class="text-[13px] text-danger">
               {{ detailError }}
             </p>
+            <label
+              class="mb-4 flex cursor-pointer items-center gap-2 text-[13px] text-text-primary"
+            >
+              <input
+                type="checkbox"
+                class="size-3.5 accent-brand"
+                :checked="preferences.showDeletedInThread"
+                @change="
+                  setShowDeletedInThread(
+                    ($event.target as HTMLInputElement).checked,
+                  )
+                "
+              />
+              显示已删除邮件
+            </label>
             <dl class="mb-4 grid gap-2">
               <div
                 class="grid grid-cols-[3.5rem_1fr] items-start gap-2 text-[14px]"

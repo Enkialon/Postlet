@@ -417,7 +417,6 @@ pub async fn list_messages(
                  INNER JOIN messages m
                    ON m.account_id = cm.account_id AND m.id = cm.message_id
                  WHERE cm.account_id = ? AND cm.conversation_id = ?
-                   AND m.sync_status != 'deleted_remote'
                    AND (
                      ? IS NULL
                      OR COALESCE(m.received_at, m.sent_at, 0) < ?
@@ -442,7 +441,6 @@ pub async fn list_messages(
                  INNER JOIN messages m
                    ON m.account_id = cm.account_id AND m.id = cm.message_id
                  WHERE cm.account_id = ? AND cm.conversation_id = ?
-                   AND m.sync_status != 'deleted_remote'
                    AND (
                      ? IS NULL
                      OR COALESCE(m.received_at, m.sent_at, 0) > ?

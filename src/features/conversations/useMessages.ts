@@ -216,6 +216,35 @@ export function useMessages() {
     await markQueue.value;
   }
 
+  /** 删除邮件：本地标 deleted_remote；是否从气泡列表消失由前端开关决定。 */
+  async function deleteMessages(messageIds: MessageId[]): Promise<void> {
+    const accountId = nav.accountId.value;
+    if (!accountId || messageIds.length === 0) return;
+
+    markQueue.value = markQueue.value.then(async () => {
+      await ports.message.deleteMessages({
+        account_id: accountId,
+        message_ids: messageIds,
+      });
+      const now = Date.now();
+      for (const id of messageIds) {
+        const key = cacheKey(accountId, id);
+        const item = entityCache.get(key);
+        if (item) {
+          item.message.sync_status = 'deleted_remote';
+          item.message.local_updated_at = now;
+          entityCache.set(key, item);
+        }
+      }
+      applyCacheToList(accountId);
+      const nextExpanded = new Set(expandedIds.value);
+      for (const id of messageIds) nextExpanded.delete(id);
+      expandedIds.value = nextExpanded;
+      await conversations.refreshSoft();
+    });
+    await markQueue.value;
+  }
+
   /**
    * 在右侧阅读区打开一封邮件：拉取正文，并在可读后自动标已读。
    * 不再在消息气泡下方展开。
@@ -278,6 +307,7 @@ export function useMessages() {
     expandMessage,
     ensureBody,
     markRead,
+    deleteMessages,
     entityCache,
   };
 }

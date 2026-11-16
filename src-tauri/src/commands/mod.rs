@@ -4,7 +4,8 @@ use crate::application::dto::{
     ComposeDraft, ContactListQuery, ContactSyncProgress, ConversationListItem,
     ConversationListQuery, ConversationMessagesQuery, CreateManualGroupCommand, CursorPage,
     EnsureContactConversationCommand, EnsureGroupConversationCommand, GroupListQuery,
-    MailSyncProgress, MarkMessagesReadCommand, MergeGroupsCommand, MoveThreadToGroupCommand,
+    DeleteMessagesCommand, MailSyncProgress, MarkMessagesReadCommand, MergeGroupsCommand,
+    MoveThreadToGroupCommand,
     RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand,
     SetFolderSyncEnabledCommand, TriggerContactSyncCommand, TriggerMailSyncCommand,
     UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
@@ -170,6 +171,16 @@ pub async fn mark_messages_read(
     cmd: MarkMessagesReadCommand,
 ) -> Result<(), AppError> {
     let changes = message_use_case::mark_read(&state.db, &state.paths, cmd).await?;
+    state.changes.dispatch(changes);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_messages(
+    state: State<'_, AppState>,
+    cmd: DeleteMessagesCommand,
+) -> Result<(), AppError> {
+    let changes = message_use_case::delete_messages(&state.db, &state.paths, cmd).await?;
     state.changes.dispatch(changes);
     Ok(())
 }

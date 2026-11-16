@@ -1,6 +1,9 @@
 import type { MessagePort } from '../../ports/messagePort';
 import type { MessageWithRecipients } from '../../domain/entities';
-import type { MarkMessagesReadCommand } from '../../domain/dto';
+import type {
+  DeleteMessagesCommand,
+  MarkMessagesReadCommand,
+} from '../../domain/dto';
 import type { AccountId, MessageId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
@@ -69,6 +72,19 @@ export class MemoryMessageAdapter implements MessagePort {
     }
 
     // 投影开关开启时联系人会话未读依赖群组附着，统一重算账户下全部会话
+    this.store.recomputeAllConversations(cmd.account_id);
+  }
+
+  async deleteMessages(cmd: DeleteMessagesCommand): Promise<void> {
+    this.store.requireAccount(cmd.account_id);
+    for (const messageId of cmd.message_ids) {
+      const key = this.store.messageKey(cmd.account_id, messageId);
+      const message = this.store.messages.get(key);
+      if (!message || message.sync_status === 'deleted_remote') continue;
+      message.sync_status = 'deleted_remote';
+      message.local_updated_at = Date.now();
+      this.store.messages.set(key, message);
+    }
     this.store.recomputeAllConversations(cmd.account_id);
   }
 }

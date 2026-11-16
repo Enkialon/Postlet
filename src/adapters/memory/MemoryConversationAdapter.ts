@@ -82,7 +82,7 @@ export class MemoryConversationAdapter implements ConversationPort {
     if (!conversation) {
       this.store.failNotFound('会话不存在');
     }
-    const messages = this.store.effectiveMessagesForConversation(conversation);
+    const messages = this.store.threadMessagesForConversation(conversation);
     const ordered =
       query.direction === 'newer' ? [...messages].reverse() : messages;
 

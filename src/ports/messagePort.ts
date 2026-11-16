@@ -1,5 +1,8 @@
 import type { MessageWithRecipients } from '../domain/entities';
-import type { MarkMessagesReadCommand } from '../domain/dto';
+import type {
+  DeleteMessagesCommand,
+  MarkMessagesReadCommand,
+} from '../domain/dto';
 import type { AccountId, MessageId } from '../domain/types';
 
 /** 邮件入站端口 */
@@ -14,4 +17,6 @@ export interface MessagePort {
     messageId: MessageId,
   ): Promise<MessageWithRecipients>;
   markRead(cmd: MarkMessagesReadCommand): Promise<void>;
+  /** 删除邮件（本地软删 + 推远端） */
+  deleteMessages(cmd: DeleteMessagesCommand): Promise<void>;
 }

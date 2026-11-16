@@ -22,6 +22,7 @@ const emit = defineEmits<{
   select: [];
   reply: [];
   markUnread: [];
+  delete: [];
   moveThread: [threadId: string];
 }>();
 
@@ -41,6 +42,9 @@ const menuItems = computed<ContextMenuItem[]>(() => {
   ];
   if (props.allowMoveThread && props.item.message.thread_id) {
     items.push({ id: 'moveThread', label: '迁移到其他群组' });
+  }
+  if (props.item.message.sync_status !== 'deleted_remote') {
+    items.push({ id: 'delete', label: '删除邮件', danger: true });
   }
   return items;
 });
@@ -88,6 +92,10 @@ function onMenuSelect(id: string): void {
   }
   if (id === 'markUnread') {
     emit('markUnread');
+    return;
+  }
+  if (id === 'delete') {
+    emit('delete');
     return;
   }
   if (id === 'moveThread' && props.item.message.thread_id) {
@@ -180,13 +188,19 @@ function onMenuSelect(id: string): void {
         <p
           v-if="
             item.message.has_attachments ||
-            item.message.sync_status === 'pending_local'
+            item.message.sync_status === 'pending_local' ||
+            item.message.sync_status === 'deleted_remote'
           "
           class="mt-1.5 mb-0 flex gap-2 text-[11px] text-text-tertiary"
         >
           <span v-if="item.message.has_attachments">含附件</span>
           <span v-if="item.message.sync_status === 'pending_local'"
             >发送中</span
+          >
+          <span
+            v-if="item.message.sync_status === 'deleted_remote'"
+            class="text-danger"
+            >已删除</span
           >
         </p>
       </button>

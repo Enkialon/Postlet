@@ -22,6 +22,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   retryBody: [];
+  delete: [];
 }>();
 
 const showMoreMeta = ref(false);
@@ -100,14 +101,29 @@ const folderLabel = computed(
           >
             {{ item.message.subject || '（无主题）' }}
           </h1>
-          <Button
-            variant="ghost"
-            class="!px-2 shrink-0"
-            aria-label="关闭"
-            @click="emit('close')"
-          >
-            ✕
-          </Button>
+          <div class="flex shrink-0 items-center gap-1">
+            <Button
+              v-if="item.message.sync_status !== 'deleted_remote'"
+              variant="ghost"
+              class="!px-2 shrink-0 text-danger"
+              aria-label="删除邮件"
+              @click="emit('delete')"
+            >
+              删除
+            </Button>
+            <span
+              v-else
+              class="px-2 text-[12px] text-danger"
+            >已删除</span>
+            <Button
+              variant="ghost"
+              class="!px-2 shrink-0"
+              aria-label="关闭"
+              @click="emit('close')"
+            >
+              ✕
+            </Button>
+          </div>
         </div>
 
         <div class="flex items-start gap-3">
