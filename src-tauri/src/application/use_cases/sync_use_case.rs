@@ -68,12 +68,11 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
-/// `folder_ids` 非空时按指定夹；否则同步 `sync_enabled` 夹；尚无勾选时回落到 default_folder。
+/// `folder_ids` 非空时按指定夹；否则只同步已勾选夹。无勾选则空列表（不偷偷回落收件箱）。
 async fn resolve_mail_folders(
     db: &SqlitePool,
     account_id: &AccountId,
     folder_ids: &Option<Vec<FolderId>>,
-    default_folder: &str,
 ) -> Result<Vec<FolderId>, AppError> {
     if let Some(ids) = folder_ids {
         if !ids.is_empty() {
@@ -84,10 +83,7 @@ async fn resolve_mail_folders(
     let enabled = folder_states::list_sync_enabled(&mut conn, account_id)
         .await
         .map_err(AppError::from)?;
-    if !enabled.is_empty() {
-        return Ok(enabled.into_iter().map(|s| s.folder_id).collect());
-    }
-    Ok(vec![FolderId::new(default_folder)])
+    Ok(enabled.into_iter().map(|s| s.folder_id).collect())
 }
 
 fn merge_folder_progress(
@@ -106,7 +102,7 @@ fn merge_folder_progress(
             .map(|p| p.display_name.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| folder.as_str().to_string()),
-        sync_enabled: prev.map(|p| p.sync_enabled).unwrap_or(true),
+        sync_enabled: prev.map(|p| p.sync_enabled).unwrap_or(false),
         delta_link,
         next_link,
         synced_at: Some(now),
@@ -240,8 +236,7 @@ async fn sync_graph_mail(
         .await
         .map_err(AppError::from)?;
 
-    let folders =
-        resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids, "inbox").await?;
+    let folders = resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids).await?;
 
     let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
     let mut is_initial = false;
@@ -365,8 +360,7 @@ async fn sync_imap_mail(
     // 先收集各文件夹游标与已知 UID（按 sync_enabled / 指定夹）
     let mut requests = Vec::new();
     let mut is_initial = false;
-    let folder_ids =
-        resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids, "INBOX").await?;
+    let folder_ids = resolve_mail_folders(db, &cmd.account_id, &cmd.folder_ids).await?;
     {
         let mut conn = db.acquire().await?;
         for folder_id in folder_ids {

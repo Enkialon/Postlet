@@ -118,11 +118,19 @@ export function useAccounts() {
     nav.bumpSession();
     nav.clearReading();
     nav.goPage('conversations');
-    void ports.sync.triggerMailSync({
-      account_id: account.id,
-      folder_ids: null,
-    });
-    void ports.sync.triggerContactSync({ account_id: account.id });
+    // 先拉全文件夹树（默认不勾选）；有已勾选夹才同步邮件
+    void (async () => {
+      try {
+        await ports.sync.refreshMailFolders(account.id);
+      } catch {
+        /* 设置页可再刷新 */
+      }
+      void ports.sync.triggerMailSync({
+        account_id: account.id,
+        folder_ids: null,
+      });
+      void ports.sync.triggerContactSync({ account_id: account.id });
+    })();
   }
 
   async function signIn(): Promise<void> {

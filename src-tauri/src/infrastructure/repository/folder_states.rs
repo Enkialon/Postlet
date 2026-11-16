@@ -188,12 +188,7 @@ pub async fn delete(
     Ok(())
 }
 
-pub fn default_sync_enabled(folder_id: &str, well_known: Option<&str>) -> bool {
-    let id = folder_id.trim();
-    if id.eq_ignore_ascii_case("inbox") || id.eq_ignore_ascii_case("INBOX") {
-        return true;
-    }
-    well_known
-        .map(|w| w.eq_ignore_ascii_case("inbox"))
-        .unwrap_or(false)
+/// 新发现文件夹默认不勾选；由用户在设置里选择要同步的夹。
+pub fn default_sync_enabled(_folder_id: &str, _well_known: Option<&str>) -> bool {
+    false
 }

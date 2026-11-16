@@ -286,7 +286,7 @@ function onFolderSyncToggle(
                       </Button>
                     </div>
                     <p class="mt-0 mb-2 text-[12px] text-text-tertiary">
-                      勾选后纳入「同步邮件」；默认仅收件箱开启。
+                      先拉取全部文件夹，勾选后才纳入「同步邮件」；默认不勾选。
                     </p>
                     <p
                       v-if="folderErrorById[account.id]"
