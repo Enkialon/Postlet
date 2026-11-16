@@ -138,6 +138,7 @@ export class MemorySyncAdapter implements SyncPort {
         graph_id: `graph-synced-${n}`,
         display_name: `Synced ${n}`,
         normalized_address: address,
+        source: 'graph' as const,
         created_at: t,
         updated_at: t,
       };

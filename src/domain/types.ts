@@ -19,6 +19,8 @@ export type Importance = 'low' | 'normal' | 'high';
 export type RecipientRole = 'to' | 'cc' | 'bcc' | 'reply_to';
 /** 群组诞生方式 */
 export type GroupSource = 'auto' | 'manual';
+/** 联系人来源：真联系人 vs 邮件/群观测档 */
+export type ContactSource = 'graph' | 'manual' | 'observed';
 /** 会话种类：一张 sessions 表内区分 */
 export type SessionKind = 'private' | 'group';
 export type AggregateJobStatus =

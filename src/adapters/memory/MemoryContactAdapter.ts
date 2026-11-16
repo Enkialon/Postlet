@@ -30,9 +30,10 @@ export class MemoryContactAdapter implements ContactPort {
     const search = query.search?.trim().toLowerCase() ?? null;
     let items = [...this.store.contacts.values()]
       .filter((c) =>
-        query.account_id
+        (c.source === 'graph' || c.source === 'manual') &&
+        (query.account_id
           ? c.account_id === query.account_id
-          : allListIds.has(c.account_id),
+          : allListIds.has(c.account_id)),
       )
       .sort((a, b) =>
         (a.display_name || a.normalized_address).localeCompare(

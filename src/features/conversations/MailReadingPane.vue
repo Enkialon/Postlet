@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
 import type { RecipientRole } from '../../domain/types';
 import {
+  addressHoverTitle,
   displayNameOrAddress,
   formatTimestampOrUnknown,
 } from '../../shared/formatting/format';
@@ -10,6 +11,12 @@ import Avatar from '../../shared/ui/Avatar.vue';
 import Button from '../../shared/ui/Button.vue';
 import OverlayScrollArea from '../../shared/ui/OverlayScrollArea.vue';
 import MailBodyView from '../../shared/mail-content/MailBodyView.vue';
+
+type RecipientChip = {
+  key: string;
+  label: string;
+  title: string;
+};
 
 const props = defineProps<{
   item: MessageWithRecipients;
@@ -38,18 +45,39 @@ const fromLabel = computed(() => {
   );
 });
 
-function recipientsByRole(role: RecipientRole): string {
+const fromTitle = computed(() => {
+  if (props.item.message.is_outbound) {
+    return props.item.message.from_address?.trim() || '我';
+  }
+  return (
+    addressHoverTitle(
+      props.item.message.from_name,
+      props.item.message.from_address,
+      props.preferredName,
+    ) || fromLabel.value
+  );
+});
+
+function recipientsByRole(role: RecipientRole): RecipientChip[] {
   return props.item.recipients
     .filter((r) => r.role === role)
     .sort((a, b) => a.seq - b.seq)
-    .map((r) => displayNameOrAddress(r.display_name, r.normalized_address))
-    .filter(Boolean)
-    .join('、');
+    .map((r) => {
+      const label =
+        displayNameOrAddress(r.display_name, r.normalized_address) ||
+        r.normalized_address;
+      return {
+        key: `${role}-${r.seq}-${r.normalized_address}`,
+        label,
+        title: addressHoverTitle(r.display_name, r.normalized_address) || label,
+      };
+    })
+    .filter((r) => Boolean(r.label));
 }
 
-const toLine = computed(() => recipientsByRole('to'));
-const ccLine = computed(() => recipientsByRole('cc'));
-const bccLine = computed(() => recipientsByRole('bcc'));
+const toRecipients = computed(() => recipientsByRole('to'));
+const ccRecipients = computed(() => recipientsByRole('cc'));
+const bccRecipients = computed(() => recipientsByRole('bcc'));
 
 const timeLabel = computed(() =>
   formatTimestampOrUnknown(
@@ -135,7 +163,8 @@ const folderLabel = computed(
           <div class="grid min-w-0 flex-1 gap-1">
             <div class="flex items-baseline justify-between gap-3">
               <strong
-                class="text-[14px] font-semibold text-text-primary"
+                class="cursor-default text-[14px] font-semibold text-text-primary"
+                :title="fromTitle"
                 v-no-i18n
                 >{{ fromLabel }}</strong
               >
@@ -144,31 +173,55 @@ const folderLabel = computed(
               }}</time>
             </div>
             <p
-              v-if="toLine"
+              v-if="toRecipients.length"
               class="m-0 text-[13px] leading-normal text-text-secondary"
-              v-no-i18n
             >
               <span class="mr-2 inline-block min-w-[3em] text-text-tertiary"
                 >收件人</span
-              >{{ toLine }}
+              >
+              <span
+                v-for="(r, i) in toRecipients"
+                :key="r.key"
+                class="cursor-default"
+                :title="r.title"
+                v-no-i18n
+                >{{ r.label
+                }}<template v-if="i < toRecipients.length - 1">、</template></span
+              >
             </p>
             <p
-              v-if="ccLine"
+              v-if="ccRecipients.length"
               class="m-0 text-[13px] leading-normal text-text-secondary"
-              v-no-i18n
             >
               <span class="mr-2 inline-block min-w-[3em] text-text-tertiary"
                 >抄送</span
-              >{{ ccLine }}
+              >
+              <span
+                v-for="(r, i) in ccRecipients"
+                :key="r.key"
+                class="cursor-default"
+                :title="r.title"
+                v-no-i18n
+                >{{ r.label
+                }}<template v-if="i < ccRecipients.length - 1">、</template></span
+              >
             </p>
             <p
-              v-if="bccLine"
+              v-if="bccRecipients.length"
               class="m-0 text-[13px] leading-normal text-text-secondary"
-              v-no-i18n
             >
               <span class="mr-2 inline-block min-w-[3em] text-text-tertiary"
                 >密送</span
-              >{{ bccLine }}
+              >
+              <span
+                v-for="(r, i) in bccRecipients"
+                :key="r.key"
+                class="cursor-default"
+                :title="r.title"
+                v-no-i18n
+                >{{ r.label
+                }}<template v-if="i < bccRecipients.length - 1">、</template></span
+              >
             </p>
             <button
               type="button"

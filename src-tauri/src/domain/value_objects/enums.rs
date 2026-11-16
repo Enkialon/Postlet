@@ -115,6 +115,33 @@ impl GroupSource {
     }
 }
 
+/// 联系人来源：真联系人 vs 邮件/群观测档（同表不同关系）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactSource {
+    /// Graph 通讯录同步
+    Graph,
+    /// 用户在本 App 手动保存
+    Manual,
+    /// 邮件/群观测到的短名档；不进联系人页 / 写信默认联想
+    Observed,
+}
+
+impl ContactSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Graph => "graph",
+            Self::Manual => "manual",
+            Self::Observed => "observed",
+        }
+    }
+
+    /// 是否出现在通讯录页 / 写信默认选人
+    pub fn is_address_book(self) -> bool {
+        matches!(self, Self::Graph | Self::Manual)
+    }
+}
+
 /// 会话种类（一张 sessions 表内区分）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

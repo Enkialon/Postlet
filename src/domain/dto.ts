@@ -55,6 +55,8 @@ export interface GroupListQuery {
   account_id: AccountId | null;
   cursor: string | null;
   limit: number;
+  /** 群名 / 成员昵称或地址前缀 */
+  search: string | null;
 }
 
 /** 列表用消息摘要 */
@@ -145,6 +147,12 @@ export interface RenameGroupCommand {
   name: string;
 }
 
+/** 隐藏群组（隐藏群聊 Session；不删邮件） */
+export interface HideGroupCommand {
+  account_id: AccountId;
+  group_id: GroupId;
+}
+
 /** 合并群聊 Session：source → target（消息迁入 + soft-link） */
 export interface MergeSessionsCommand {
   account_id: AccountId;
@@ -152,11 +160,11 @@ export interface MergeSessionsCommand {
   target_session_id: SessionId;
 }
 
-/** 将选中消息改挂到目标群聊 Session */
-export interface ReassignMessagesToGroupCommand {
+/** 将选中消息改挂到目标 Session（私聊 / 群聊均可） */
+export interface ReassignMessagesCommand {
   account_id: AccountId;
   message_ids: MessageId[];
-  target_group_id: GroupId;
+  target_session_id: SessionId;
 }
 
 /** 更新发信成员集合 */

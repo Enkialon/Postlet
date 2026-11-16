@@ -4,6 +4,7 @@ import type {
   CursorPage,
   EnsureGroupSessionCommand,
   EnsurePrivateSessionCommand,
+  ReassignMessagesCommand,
   SessionListItem,
   SessionListQuery,
   SessionMessagesQuery,
@@ -142,6 +143,7 @@ export class MemorySessionAdapter implements SessionPort {
         graph_id: null,
         display_name: cmd.display_name?.trim() || '',
         normalized_address: address,
+        source: 'observed',
         created_at: t,
         updated_at: t,
       };
@@ -199,5 +201,40 @@ export class MemorySessionAdapter implements SessionPort {
     session.hidden_at = t;
     session.updated_at = t;
     this.store.sessions.set(key, session);
+  }
+
+  async reassignMessages(cmd: ReassignMessagesCommand): Promise<void> {
+    this.store.requireAccount(cmd.account_id);
+    if (cmd.message_ids.length === 0) return;
+    const target = this.store.sessions.get(
+      this.store.sessionKey(cmd.account_id, cmd.target_session_id),
+    );
+    if (!target || target.merged_into_id) {
+      this.store.failNotFound('目标会话不存在');
+    }
+    const t = Date.now();
+    const touched = new Set<string>([target.id]);
+    for (const messageId of cmd.message_ids) {
+      const key = this.store.messageKey(cmd.account_id, messageId);
+      const message = this.store.messages.get(key);
+      if (!message || message.sync_status === 'deleted_remote') {
+        this.store.failNotFound('邮件不存在');
+      }
+      touched.add(message.session_id);
+      message.session_id = target.id;
+      message.local_updated_at = t;
+      this.store.messages.set(key, message);
+    }
+    if (target.hidden_at != null) {
+      target.hidden_at = null;
+      target.updated_at = t;
+      this.store.sessions.set(
+        this.store.sessionKey(cmd.account_id, target.id),
+        target,
+      );
+    }
+    for (const sessionId of touched) {
+      this.store.recomputeSession(cmd.account_id, sessionId);
+    }
   }
 }

@@ -5,11 +5,11 @@ use crate::application::error::AppError;
 use crate::domain::entities::{Contact, Group, GroupParticipant, MessageWithRecipients};
 use crate::domain::services::{
     decide_aggregation, resolve_self_addresses, AggregationContext, AggregationPlan, GroupTarget,
-    SessionTarget,
+    ParentSessionHint, SessionTarget,
 };
 use crate::domain::value_objects::{
-    AccountId, AggregateJobStatus, AggregationOutcome, ContactId, EmailAddress, GroupId,
-    GroupSource, MessageSyncStatus, SessionId, TimestampMs,
+    AccountId, AggregateJobStatus, AggregationOutcome, ContactId, ContactSource, EmailAddress,
+    GroupId, GroupSource, MessageSyncStatus, SessionId, SessionKind, TimestampMs,
 };
 use crate::infrastructure::repository::{
     accounts, contacts, groups, jobs, messages, sessions,
@@ -195,14 +195,13 @@ pub async fn aggregate_message(
         return Ok((AggregationOutcome::Skipped, None));
     }
 
-    let parent_session_id =
-        resolve_parent_session(&mut tx, &claim.account_id, &bundle).await?;
+    let parent = resolve_parent_hint(&mut tx, &claim.account_id, &bundle).await?;
 
     let self_set = resolve_self_addresses(&account);
     let plan = match decide_aggregation(&AggregationContext {
         message: bundle.clone(),
         self_set,
-        parent_session_id,
+        parent,
     }) {
         Ok(p) => p,
         Err(e) => {
@@ -262,12 +261,12 @@ pub async fn aggregate_message(
     }
 }
 
-/// in_reply_to → internet_message_id → session resolve_root
-async fn resolve_parent_session(
+/// in_reply_to → internet_message_id → session resolve_root（含 kind / 成员，供决策兼容性）
+async fn resolve_parent_hint(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     bundle: &MessageWithRecipients,
-) -> Result<Option<SessionId>, AppError> {
+) -> Result<Option<ParentSessionHint>, AppError> {
     let Some(irt) = bundle
         .message
         .in_reply_to
@@ -284,16 +283,39 @@ async fn resolve_parent_session(
         .unwrap_or(irt)
         .trim()
         .to_string();
-    let Some(parent) = messages::find_by_internet_message_id(conn, account_id, &first)
+    let Some(parent_msg) = messages::find_by_internet_message_id(conn, account_id, &first)
         .await
         .map_err(AppError::from)?
     else {
         return Ok(None);
     };
-    let root = sessions::resolve_root(conn, account_id, &parent.message.session_id)
+    let Some(root) = sessions::resolve_root(conn, account_id, &parent_msg.message.session_id)
         .await
-        .map_err(AppError::from)?;
-    Ok(root.map(|s| s.id))
+        .map_err(AppError::from)?
+    else {
+        return Ok(None);
+    };
+    let group_member_addresses = if root.kind == SessionKind::Group {
+        if let Some(ref gid) = root.group_id {
+            groups::list_participants(conn, account_id, gid)
+                .await
+                .map_err(AppError::from)?
+                .into_iter()
+                .map(|p| p.normalized_address)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(Some(ParentSessionHint {
+        id: root.id,
+        kind: root.kind,
+        normalized_address: root.normalized_address,
+        group_id: root.group_id,
+        group_member_addresses,
+    }))
 }
 
 async fn apply_plan(
@@ -342,18 +364,46 @@ async fn apply_plan(
             let group_id = match target {
                 GroupTarget::Existing(id) => id.clone(),
                 GroupTarget::Create { members } => {
-                    create_auto_group(conn, account_id, members, &plan.observed_participants, now)
+                    // 同成员集合复用已有自动群，避免「lida+zhang」每次新建/或被 In-Reply-To 锁死在私聊
+                    if let Some(existing) =
+                        groups::find_auto_group_by_exact_members(conn, account_id, members)
+                            .await
+                            .map_err(AppError::from)?
+                    {
+                        existing
+                    } else {
+                        create_auto_group(
+                            conn,
+                            account_id,
+                            members,
+                            &plan.observed_participants,
+                            now,
+                        )
                         .await?
+                    }
                 }
             };
-            // 观测成员（display_name 优先昵称）
+            // 观测成员：人表写 observed；成员行存短名
             let mut parts = Vec::new();
             for (addr, name) in &plan.observed_participants {
+                let contact = ensure_observed_contact(
+                    conn,
+                    account_id,
+                    addr,
+                    Some(name.as_str()).filter(|s| !s.is_empty()),
+                    now,
+                )
+                .await?;
+                let label = if contact.source.is_address_book() {
+                    contact.display_name.as_str()
+                } else {
+                    name.as_str()
+                };
                 parts.push(GroupParticipant {
                     account_id: account_id.clone(),
                     group_id: group_id.clone(),
                     normalized_address: addr.clone(),
-                    display_name: crate::domain::services::person_label(name, addr.as_str()),
+                    display_name: crate::domain::services::person_label(label, addr.as_str()),
                     is_observed: true,
                     is_send_member: false,
                     first_seen_at: now,
@@ -413,6 +463,52 @@ fn auto_group_title_from_observed(
     }))
 }
 
+/// 确保人表有一行：已有真联系人则复用；否则建/回填 observed（不进通讯录页）
+async fn ensure_observed_contact(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    peer: &EmailAddress,
+    observed_name: Option<&str>,
+    now: TimestampMs,
+) -> Result<Contact, AppError> {
+    let better_name = observed_name
+        .map(str::trim)
+        .filter(|n| usable_contact_display_name(n, peer));
+
+    if let Some(mut c) = contacts::get_by_address(conn, account_id, peer)
+        .await
+        .map_err(AppError::from)?
+    {
+        if c.source == ContactSource::Observed {
+            if let Some(name) = better_name {
+                if !usable_contact_display_name(&c.display_name, peer) {
+                    c.display_name = name.to_owned();
+                    c.updated_at = now;
+                    contacts::upsert(conn, &c)
+                        .await
+                        .map_err(AppError::from)?;
+                }
+            }
+        }
+        return Ok(c);
+    }
+
+    let c = Contact {
+        id: ContactId::new(Uuid::new_v4().to_string()),
+        account_id: account_id.clone(),
+        graph_id: None,
+        display_name: better_name.unwrap_or(peer.as_str()).to_owned(),
+        normalized_address: peer.clone(),
+        source: ContactSource::Observed,
+        created_at: now,
+        updated_at: now,
+    };
+    contacts::upsert(conn, &c)
+        .await
+        .map_err(AppError::from)?;
+    Ok(c)
+}
+
 async fn ensure_private_session(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
@@ -420,10 +516,6 @@ async fn ensure_private_session(
     observed_name: Option<&str>,
     now: TimestampMs,
 ) -> Result<SessionId, AppError> {
-    let better_name = observed_name
-        .map(str::trim)
-        .filter(|n| usable_contact_display_name(n, peer));
-
     if let Some(existing) = sessions::get_private_by_address(conn, account_id, peer)
         .await
         .map_err(AppError::from)?
@@ -436,50 +528,11 @@ async fn ensure_private_session(
         } else {
             existing
         };
-        if let (Some(name), Some(cid)) = (better_name, root.contact_id.as_ref()) {
-            if let Some(mut contact) = contacts::get(conn, account_id, cid)
-                .await
-                .map_err(AppError::from)?
-            {
-                if !usable_contact_display_name(&contact.display_name, peer) {
-                    contact.display_name = name.to_owned();
-                    contact.updated_at = now;
-                    contacts::upsert(conn, &contact)
-                        .await
-                        .map_err(AppError::from)?;
-                }
-            }
-        }
+        let _ = ensure_observed_contact(conn, account_id, peer, observed_name, now).await?;
         return Ok(root.id);
     }
 
-    let contact = if let Some(mut c) = contacts::get_by_address(conn, account_id, peer)
-        .await
-        .map_err(AppError::from)?
-    {
-        if let Some(name) = better_name {
-            if !usable_contact_display_name(&c.display_name, peer) {
-                c.display_name = name.to_owned();
-                c.updated_at = now;
-                contacts::upsert(conn, &c)
-                    .await
-                    .map_err(AppError::from)?;
-            }
-        }
-        c
-    } else {
-        let c = Contact {
-            id: ContactId::new(Uuid::new_v4().to_string()),
-            account_id: account_id.clone(),
-            graph_id: None,
-            display_name: better_name.unwrap_or(peer.as_str()).to_owned(),
-            normalized_address: peer.clone(),
-            created_at: now,
-            updated_at: now,
-        };
-        contacts::upsert(conn, &c).await.map_err(AppError::from)?;
-        c
-    };
+    let contact = ensure_observed_contact(conn, account_id, peer, observed_name, now).await?;
 
     let session = sessions::new_private(
         account_id.clone(),
@@ -548,7 +601,16 @@ async fn create_auto_group(
             .find(|(a, _)| a == addr)
             .map(|(_, n)| n.as_str())
             .unwrap_or("");
-        let display = crate::domain::services::person_label(raw, addr.as_str());
+        let contact = ensure_observed_contact(conn, account_id, addr, Some(raw).filter(|s| !s.is_empty()), now)
+            .await?;
+        let display = crate::domain::services::person_label(
+            if contact.source.is_address_book() {
+                contact.display_name.as_str()
+            } else {
+                raw
+            },
+            addr.as_str(),
+        );
         parts.push(GroupParticipant {
             account_id: account_id.clone(),
             group_id: group.id.clone(),
@@ -582,14 +644,9 @@ async fn refresh_auto_group_name(
     if group.name_is_manual {
         return Ok(());
     }
-    let parts = groups::list_participants(conn, account_id, group_id)
+    let title = groups::resolve_auto_title(conn, account_id, group_id)
         .await
         .map_err(AppError::from)?;
-    let title = crate::domain::services::auto_group_title(
-        parts
-            .iter()
-            .map(|p| (p.normalized_address.as_str(), p.display_name.as_str())),
-    );
     if title == group.name {
         return Ok(());
     }

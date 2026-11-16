@@ -4,6 +4,7 @@ import type {
   AggregationOutcome,
   BodyContentType,
   ContactId,
+  ContactSource,
   EmailAddress,
   FolderId,
   GraphImmutableId,
@@ -63,15 +64,16 @@ export interface MailFolderSyncState {
   updated_at: TimestampMs;
 }
 
-/** 通讯录本地缓存 */
+/** 人档案：graph/manual=真联系人；observed=短名档（不进通讯录页） */
 export interface Contact {
   id: ContactId;
   account_id: AccountId;
-  /** 可空：允许仅按地址建的占位联系人 */
+  /** Graph 通讯录远端 id；observed / 纯手动可空 */
   graph_id: string | null;
   display_name: string;
   /** 主地址（账户内唯一） */
   normalized_address: EmailAddress;
+  source: ContactSource;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }

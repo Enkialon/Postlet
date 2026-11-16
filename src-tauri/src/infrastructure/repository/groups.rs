@@ -23,6 +23,20 @@ pub async fn get(
         .map_err(Into::into)
 }
 
+/// 读取并套用自动群展示名（联系人昵称优先）
+pub async fn get_for_display(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    id: &GroupId,
+) -> Result<Option<Group>, PortError> {
+    let mut group = match get(conn, account_id, id).await? {
+        Some(g) => g,
+        None => return Ok(None),
+    };
+    apply_display_name(conn, &mut group).await?;
+    Ok(Some(group))
+}
+
 pub async fn list(
     conn: &mut SqliteConnection,
     query: &GroupListQuery,
@@ -40,7 +54,8 @@ pub async fn list(
 
     let mut qb = QueryBuilder::new("SELECT * FROM groups WHERE ");
     accounts::push_account_id_in(&mut qb, &account_ids);
-    qb.push(" AND (");
+    // 群组页 = 真群组；auto 多人往来只出现在会话列表
+    qb.push(" AND source = 'manual' AND (");
     if cursor_id.is_none() {
         qb.push("1 = 1");
     } else {
@@ -52,16 +67,54 @@ pub async fn list(
         qb.push_bind(cursor_id.as_deref());
         qb.push(")");
     }
-    qb.push(") ORDER BY account_id ASC, id ASC LIMIT ");
+    qb.push(") AND (");
+    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // 群名，或成员昵称/联系人昵称/地址前缀
+        qb.push("instr(lower(name), lower(");
+        qb.push_bind(search);
+        qb.push(
+            ")) = 1 OR EXISTS (
+              SELECT 1 FROM group_participants gp
+              LEFT JOIN contacts c
+                ON c.account_id = gp.account_id
+               AND c.normalized_address = gp.normalized_address
+              WHERE gp.account_id = groups.account_id AND gp.group_id = groups.id
+                AND (
+                  instr(lower(gp.display_name), lower(",
+        );
+        qb.push_bind(search);
+        qb.push(")) = 1 OR instr(gp.normalized_address, lower(");
+        qb.push_bind(search);
+        qb.push(")) = 1 OR instr(lower(COALESCE(c.display_name, '')), lower(");
+        qb.push_bind(search);
+        qb.push(")) = 1))",
+        );
+    } else {
+        qb.push("1 = 1");
+    }
+    // 对应群聊 Session 已隐藏的不出现在群组列表（邮件仍在）
+    qb.push(
+        ") AND NOT EXISTS (
+          SELECT 1 FROM sessions s
+          WHERE s.account_id = groups.account_id
+            AND s.group_id = groups.id
+            AND s.kind = 'group'
+            AND s.merged_into_id IS NULL
+            AND s.hidden_at IS NOT NULL
+        ) ORDER BY account_id ASC, id ASC LIMIT ",
+    );
     qb.push_bind(i64::from(query.limit) + 1);
 
     let rows = qb.build().fetch_all(&mut *conn).await?;
     let has_more = rows.len() > query.limit as usize;
-    let items = rows
+    let mut items = rows
         .iter()
         .take(query.limit as usize)
         .map(super::rows::group)
         .collect::<Result<Vec<_>, _>>()?;
+    for g in &mut items {
+        apply_display_name(conn, g).await?;
+    }
     let next_cursor = if has_more {
         items
             .last()
@@ -74,6 +127,51 @@ pub async fn list(
         next_cursor,
         has_more,
     })
+}
+
+/// 自动群：成员昵称优先（联系人表 > 参与者 display_name > 地址）
+pub async fn resolve_auto_title(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    group_id: &GroupId,
+) -> Result<String, PortError> {
+    let parts = list_participants(conn, account_id, group_id).await?;
+    if parts.is_empty() {
+        return Ok("群组".into());
+    }
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(parts.len());
+    for p in &parts {
+        let addr = p.normalized_address.as_str();
+        let name = if let Some(c) =
+            super::contacts::get_by_address(conn, account_id, &p.normalized_address).await?
+        {
+            if crate::domain::services::usable_person_label(&c.display_name, addr) {
+                c.display_name
+            } else if crate::domain::services::usable_person_label(&p.display_name, addr) {
+                p.display_name.clone()
+            } else {
+                c.display_name
+            }
+        } else {
+            p.display_name.clone()
+        };
+        pairs.push((addr.to_owned(), name));
+    }
+    Ok(crate::domain::services::auto_group_title(
+        pairs.iter().map(|(a, n)| (a.as_str(), n.as_str())),
+    ))
+}
+
+/// 自动群：用成员昵称覆盖展示名（不写库）
+async fn apply_display_name(
+    conn: &mut SqliteConnection,
+    group: &mut Group,
+) -> Result<(), PortError> {
+    if group.name_is_manual {
+        return Ok(());
+    }
+    group.name = resolve_auto_title(conn, &group.account_id, &group.id).await?;
+    Ok(())
 }
 
 pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), PortError> {
@@ -162,6 +260,43 @@ pub async fn list_participants(
     .map(super::rows::groupparticipant)
     .collect::<Result<Vec<_>, _>>()
     .map_err(Into::into)
+}
+
+/// 查找 source=auto 且成员地址集合与 `members` 完全一致的群（顺序无关）
+pub async fn find_auto_group_by_exact_members(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    members: &[crate::domain::value_objects::EmailAddress],
+) -> Result<Option<GroupId>, PortError> {
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let mut want: Vec<String> = members.iter().map(|a| a.as_str().to_string()).collect();
+    want.sort();
+    want.dedup();
+
+    let candidates = sqlx::query(
+        "SELECT id FROM groups WHERE account_id = ? AND source = 'auto' ORDER BY created_at ASC",
+    )
+    .bind(account_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+
+    for row in candidates {
+        use sqlx::Row;
+        let gid = GroupId::new(row.try_get::<String, _>("id")?);
+        let parts = list_participants(conn, account_id, &gid).await?;
+        let mut have: Vec<String> = parts
+            .iter()
+            .map(|p| p.normalized_address.as_str().to_string())
+            .collect();
+        have.sort();
+        have.dedup();
+        if have == want {
+            return Ok(Some(gid));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn upsert_participants(

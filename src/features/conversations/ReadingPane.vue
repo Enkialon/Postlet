@@ -5,7 +5,6 @@ import { navigationKey, portsKey } from '../../app/provide';
 import { usePreferences } from '../../app/preferences';
 import { useConversations } from './useConversations';
 import { useMessages } from './useMessages';
-import { useGroups } from '../groups/useGroups';
 import { useAccounts } from '../accounts/useAccounts';
 import {
   displayNameOrAddress,
@@ -27,6 +26,7 @@ import type {
   GroupParticipant,
   MessageWithRecipients,
 } from '../../domain/entities';
+import type { SessionListItem } from '../../domain/dto';
 import { asAppError } from '../../shared/errors/asAppError';
 
 const ROW_SIZE = 128;
@@ -46,7 +46,6 @@ const {
   deleteMessages,
   loadInitial,
 } = useMessages();
-const groups = useGroups();
 const { accounts, accountLabel } = useAccounts();
 
 const scrollAreaRef = ref<InstanceType<typeof OverlayScrollArea> | null>(null);
@@ -159,9 +158,43 @@ async function loadOlderPreservingScroll(): Promise<void> {
 
 const reassignOpen = ref(false);
 const reassignMessageId = ref<string | null>(null);
-const reassignTargets = ref<Group[]>([]);
+const reassignTargets = ref<SessionListItem[]>([]);
 const reassignTargetId = ref('');
 const reassignBusy = ref(false);
+const reassignError = ref<string | null>(null);
+
+function sessionOptionLabel(item: SessionListItem): string {
+  const kind = item.session.kind === 'group' ? '群聊' : '私聊';
+  const name =
+    item.display_name?.trim() ||
+    item.group_name?.trim() ||
+    item.contact_display_name?.trim() ||
+    item.session.normalized_address?.trim() ||
+    item.session.id;
+  return `${kind} · ${name}`;
+}
+
+async function loadReassignTargets(): Promise<SessionListItem[]> {
+  const accountId = nav.accountId.value;
+  if (!accountId) return [];
+  const all: SessionListItem[] = [];
+  let cursor: string | null = null;
+  let hasMore = true;
+  while (hasMore) {
+    const page = await ports.session.listSessions({
+      account_id: accountId,
+      cursor,
+      limit: 50,
+      kind: null,
+    });
+    all.push(...page.items);
+    hasMore = page.has_more;
+    cursor = page.next_cursor;
+    if (hasMore && !cursor) break;
+  }
+  const currentId = nav.sessionId.value;
+  return all.filter((s) => s.session.id !== currentId);
+}
 
 const detailContact = ref<Contact | null>(null);
 const detailGroup = ref<Group | null>(null);
@@ -285,15 +318,21 @@ watch(
 
 async function openReassign(messageId: string) {
   reassignMessageId.value = messageId;
-  reassignTargets.value = (await groups.loadAllRootGroups()).filter(
-    (g) => g.id !== selected.value?.session.group_id,
-  );
-  reassignTargetId.value = reassignTargets.value[0]?.id ?? '';
-  reassignOpen.value = true;
+  reassignError.value = null;
+  try {
+    reassignTargets.value = await loadReassignTargets();
+    reassignTargetId.value = reassignTargets.value[0]?.session.id ?? '';
+    reassignOpen.value = true;
+  } catch (e) {
+    reassignError.value = asAppError(e).message;
+    reassignOpen.value = true;
+  }
 }
 
 async function confirmReassign() {
+  const accountId = nav.accountId.value;
   if (
+    !accountId ||
     !reassignMessageId.value ||
     !reassignTargetId.value ||
     reassignBusy.value
@@ -301,14 +340,20 @@ async function confirmReassign() {
     return;
   }
   reassignBusy.value = true;
-  const ok = await groups.reassignMessages(
-    [reassignMessageId.value],
-    reassignTargetId.value,
-  );
-  reassignBusy.value = false;
-  if (ok) {
+  reassignError.value = null;
+  try {
+    await ports.session.reassignMessages({
+      account_id: accountId,
+      message_ids: [reassignMessageId.value],
+      target_session_id: reassignTargetId.value,
+    });
     reassignOpen.value = false;
     await loadInitial();
+    await refreshConversations();
+  } catch (e) {
+    reassignError.value = asAppError(e).message;
+  } finally {
+    reassignBusy.value = false;
   }
 }
 
@@ -490,7 +535,6 @@ watch(
                     displayMessages[row.index]!.message.id
                   "
                   :preferred-name="selected?.contact_display_name"
-                  :allow-reassign="selected?.session.kind === 'group'"
                   @select="openMailReading(displayMessages[row.index]!)"
                   @reply="onReplyMessage(displayMessages[row.index]!)"
                   @mark-unread="
@@ -707,30 +751,36 @@ watch(
 
     <Dialog
       :open="reassignOpen"
-      title="迁移邮件到群组"
+      title="改到其他会话"
       :confirming="reassignBusy"
       @close="reassignOpen = false"
       @confirm="confirmReassign"
     >
-      <p>将该邮件改挂到目标群聊会话。</p>
+      <p>将该邮件改挂到目标会话（私聊或群聊均可）。</p>
       <label class="mt-3 grid gap-1.5 text-[13px]">
-        目标群组
+        目标会话
         <select
           v-model="reassignTargetId"
           class="rounded-md border border-border-subtle bg-surface-input px-2.5 py-2 text-[14px]"
         >
           <option
-            v-for="g in reassignTargets"
-            :key="g.id"
-            :value="g.id"
+            v-for="s in reassignTargets"
+            :key="s.session.id"
+            :value="s.session.id"
             v-no-i18n
           >
-            {{ g.name }}
+            {{ sessionOptionLabel(s) }}
           </option>
         </select>
       </label>
-      <p v-if="groups.actionError.value" class="text-[13px] text-danger">
-        {{ groups.actionError.value }}
+      <p
+        v-if="reassignTargets.length === 0 && !reassignError"
+        class="mt-2 text-[13px] text-text-secondary"
+      >
+        当前没有可迁移的其他会话。
+      </p>
+      <p v-if="reassignError" class="mt-2 text-[13px] text-danger">
+        {{ reassignError }}
       </p>
     </Dialog>
   </section>

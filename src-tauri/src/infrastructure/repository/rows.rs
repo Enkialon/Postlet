@@ -55,6 +55,15 @@ fn parse_groupsource(value: String) -> Result<GroupSource, sqlx::Error> {
     }
 }
 
+fn parse_contactsource(value: String) -> Result<ContactSource, sqlx::Error> {
+    match value.as_str() {
+        "graph" => Ok(ContactSource::Graph),
+        "manual" => Ok(ContactSource::Manual),
+        "observed" => Ok(ContactSource::Observed),
+        _ => Err(sqlx::Error::Decode("无效领域枚举值".into())),
+    }
+}
+
 fn parse_sessionkind(value: String) -> Result<SessionKind, sqlx::Error> {
     match value.as_str() {
         "private" => Ok(SessionKind::Private),
@@ -95,6 +104,7 @@ pub(super) fn contact(row: &SqliteRow) -> Result<Contact, sqlx::Error> {
         normalized_address: EmailAddress::new_unchecked(
             row.try_get::<String, _>("normalized_address")?,
         ),
+        source: parse_contactsource(row.try_get("source")?)?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })

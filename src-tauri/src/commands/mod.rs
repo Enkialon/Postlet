@@ -2,9 +2,10 @@
 
 use crate::application::dto::{
     ComposeDraft, ContactListQuery, ContactSyncProgress, CreateManualGroupCommand, CursorPage,
-    DeleteMessagesCommand, EnsureGroupSessionCommand, EnsurePrivateSessionCommand, GroupListQuery,
-    MailSyncProgress, MarkMessagesReadCommand, MergeSessionsCommand, ReassignMessagesToGroupCommand,
-    RenameGroupCommand, SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,
+    DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
+    EnsurePrivateSessionCommand, GroupListQuery, MailSyncProgress, MarkMessagesReadCommand,
+    MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
+    SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,
     SessionListQuery, SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
     TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
     UpsertImapSmtpAccountCommand,
@@ -319,6 +320,14 @@ pub async fn rename_group(
 }
 
 #[tauri::command]
+pub async fn hide_group(
+    state: State<'_, AppState>,
+    cmd: HideGroupCommand,
+) -> Result<(), AppError> {
+    group_use_case::hide_group(&state.db, cmd).await
+}
+
+#[tauri::command]
 pub async fn merge_sessions(
     state: State<'_, AppState>,
     cmd: MergeSessionsCommand,
@@ -327,11 +336,11 @@ pub async fn merge_sessions(
 }
 
 #[tauri::command]
-pub async fn reassign_messages_to_group(
+pub async fn reassign_messages(
     state: State<'_, AppState>,
-    cmd: ReassignMessagesToGroupCommand,
+    cmd: ReassignMessagesCommand,
 ) -> Result<(), AppError> {
-    group_use_case::reassign_messages_to_group(&state.db, cmd).await
+    session_use_case::reassign_messages(&state.db, cmd).await
 }
 
 #[tauri::command]

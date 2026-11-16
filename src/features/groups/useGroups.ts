@@ -8,12 +8,15 @@ import {
 import { asAppError } from '../../shared/errors/asAppError';
 
 const PAGE_SIZE = 50;
+const DEBOUNCE_MS = 250;
 
 const listState = reactive<PageState<Group>>(createEmptyPageState());
+const searchInput = ref('');
 const selected = ref<Group | null>(null);
 const participants = ref<GroupParticipant[]>([]);
 const actionError = ref<string | null>(null);
 const busy = ref(false);
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let watchBound = false;
 
 function groupKey(g: Group): string {
@@ -28,7 +31,7 @@ export function useGroups() {
     return selected.value?.account_id ?? nav.accountId.value;
   }
 
-  async function loadInitial(): Promise<void> {
+  async function loadInitial(search: string | null): Promise<void> {
     const filter = nav.accountFilter.value;
     const version = ++listState.requestVersion;
     listState.loading = 'initial';
@@ -38,6 +41,7 @@ export function useGroups() {
         account_id: nav.listAccountId.value,
         cursor: null,
         limit: PAGE_SIZE,
+        search,
       });
       if (
         version !== listState.requestVersion ||
@@ -60,12 +64,14 @@ export function useGroups() {
     if (!listState.hasMore || listState.loading !== 'idle') return;
     const filter = nav.accountFilter.value;
     const version = listState.requestVersion;
+    const search = searchInput.value.trim() || null;
     listState.loading = 'more';
     try {
       const page = await ports.group.listGroups({
         account_id: nav.listAccountId.value,
         cursor: listState.nextCursor,
         limit: PAGE_SIZE,
+        search,
       });
       if (
         version !== listState.requestVersion ||
@@ -84,6 +90,14 @@ export function useGroups() {
     } finally {
       if (version === listState.requestVersion) listState.loading = 'idle';
     }
+  }
+
+  function setSearch(value: string): void {
+    searchInput.value = value;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      void loadInitial(value.trim() || null);
+    }, DEBOUNCE_MS);
   }
 
   async function openGroup(group: Group | string): Promise<void> {
@@ -133,7 +147,7 @@ export function useGroups() {
         name,
         send_member_addresses: memberAddresses,
       });
-      await loadInitial();
+      await loadInitial(searchInput.value.trim() || null);
       await openGroup(group);
       return true;
     } catch (e) {
@@ -178,10 +192,33 @@ export function useGroups() {
         group_id: group.id,
         name,
       });
-      await loadInitial();
+      await loadInitial(searchInput.value.trim() || null);
       return true;
     } catch (e) {
       actionError.value = asAppError(e).message;
+      return false;
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function hideGroup(): Promise<boolean> {
+    const group = selected.value;
+    if (!group || busy.value) return false;
+    busy.value = true;
+    actionError.value = null;
+    try {
+      await ports.group.hideGroup({
+        account_id: group.account_id,
+        group_id: group.id,
+      });
+      selected.value = null;
+      participants.value = [];
+      await loadInitial(searchInput.value.trim() || null);
+      return true;
+    } catch (e) {
+      actionError.value = asAppError(e).message;
+      await loadInitial(searchInput.value.trim() || null);
       return false;
     } finally {
       busy.value = false;
@@ -236,37 +273,12 @@ export function useGroups() {
         source_session_id: sourceSession.id,
         target_session_id: targetSession.id,
       });
-      await loadInitial();
+      await loadInitial(searchInput.value.trim() || null);
       await openGroup(targetGroupId);
       return true;
     } catch (e) {
       actionError.value = asAppError(e).message;
-      await loadInitial();
-      return false;
-    } finally {
-      busy.value = false;
-    }
-  }
-
-  async function reassignMessages(
-    messageIds: string[],
-    targetGroupId: string,
-  ): Promise<boolean> {
-    const accountId = selected.value?.account_id ?? nav.accountId.value;
-    if (!accountId || busy.value || messageIds.length === 0) return false;
-    busy.value = true;
-    actionError.value = null;
-    try {
-      await ports.group.reassignMessagesToGroup({
-        account_id: accountId,
-        message_ids: messageIds,
-        target_group_id: targetGroupId,
-      });
-      if (selected.value) await openGroup(selected.value);
-      return true;
-    } catch (e) {
-      actionError.value = asAppError(e).message;
-      await loadInitial();
+      await loadInitial(searchInput.value.trim() || null);
       return false;
     } finally {
       busy.value = false;
@@ -285,6 +297,7 @@ export function useGroups() {
         account_id: accountId,
         cursor,
         limit: PAGE_SIZE,
+        search: null,
       });
       all.push(...page.items);
       hasMore = page.has_more;
@@ -307,26 +320,28 @@ export function useGroups() {
         listState.hasMore = false;
         listState.error = null;
         listState.loading = 'idle';
-        void loadInitial();
+        void loadInitial(searchInput.value.trim() || null);
       },
     );
   }
 
   return {
     listState,
+    searchInput,
     selected,
     participants,
     actionError,
     busy,
+    setSearch,
     loadInitial,
     loadMore,
     openGroup,
     openGroupConversation,
     createGroup,
     renameGroup,
+    hideGroup,
     updateMembers,
     mergeInto,
-    reassignMessages,
     loadAllRootGroups,
   };
 }

@@ -3,8 +3,8 @@ import type {
   CreateManualGroupCommand,
   CursorPage,
   GroupListQuery,
+  HideGroupCommand,
   MergeSessionsCommand,
-  ReassignMessagesToGroupCommand,
   RenameGroupCommand,
   UpdateGroupSendMembersCommand,
 } from '../domain/dto';
@@ -20,10 +20,9 @@ export interface GroupPort {
   ): Promise<GroupParticipant[]>;
   createManualGroup(cmd: CreateManualGroupCommand): Promise<Group>;
   renameGroup(cmd: RenameGroupCommand): Promise<Group>;
+  hideGroup(cmd: HideGroupCommand): Promise<void>;
   /** 合并群聊 Session：source → target */
   mergeSessions(cmd: MergeSessionsCommand): Promise<Session>;
-  /** 将选中消息改挂到目标群聊 Session */
-  reassignMessagesToGroup(cmd: ReassignMessagesToGroupCommand): Promise<void>;
   updateSendMembers(
     cmd: UpdateGroupSendMembersCommand,
   ): Promise<GroupParticipant[]>;

@@ -1,19 +1,31 @@
 //! 会话聚合纯规则：一封信只进一个 Session
 
-use super::message_attribution::{observed_participants, peer_addresses_for_contact_projection};
+use super::message_attribution::{
+    is_system_mailer_address, observed_participants, peer_addresses_for_contact_projection,
+};
 use crate::domain::entities::MessageWithRecipients;
 use crate::domain::error::DomainError;
 use crate::domain::value_objects::{
     AggregationOutcome, EmailAddress, GroupId, SelfAddressSet, SessionId, SessionKind,
 };
 
+/// 父信所在会话（已 resolve_root），仅作兼容性参考，不能无条件覆盖对端人数决策
+#[derive(Debug, Clone)]
+pub struct ParentSessionHint {
+    pub id: SessionId,
+    pub kind: SessionKind,
+    pub normalized_address: Option<EmailAddress>,
+    pub group_id: Option<GroupId>,
+    /// 父群当前成员地址集合（私聊为空）
+    pub group_member_addresses: Vec<EmailAddress>,
+}
+
 /// 聚合决策上下文
 #[derive(Debug, Clone)]
 pub struct AggregationContext {
     pub message: MessageWithRecipients,
     pub self_set: SelfAddressSet,
-    /// 由 In-Reply-To 解析到的父信 Session（已 resolve_root）
-    pub parent_session_id: Option<SessionId>,
+    pub parent: Option<ParentSessionHint>,
 }
 
 /// 群组目标（仅在需要新建/绑群聊 Session 时）
@@ -26,7 +38,7 @@ pub enum GroupTarget {
 /// 期望唯一 Session
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionTarget {
-    /// 沿用父信 / 已有 Session
+    /// 沿用父信 Session（仅当与对端集合兼容）
     Existing(SessionId),
     /// 私聊：按对端地址 ensure
     Private { address: EmailAddress },
@@ -42,17 +54,33 @@ pub struct AggregationPlan {
     pub outcome: AggregationOutcome,
 }
 
-/// 纯聚合决策：父信优先，否则按对端人数建私聊/群聊
+fn same_address_set(a: &[EmailAddress], b: &[EmailAddress]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().all(|x| b.iter().any(|y| y == x))
+}
+
+/// 纯聚合决策：按对端人数定私聊/群聊；父信仅在成员集合兼容时复用
 pub fn decide_aggregation(context: &AggregationContext) -> Result<AggregationPlan, DomainError> {
     let peers = peer_addresses_for_contact_projection(&context.message, &context.self_set);
     let observed = observed_participants(&context.message, &context.self_set);
 
-    if let Some(sid) = &context.parent_session_id {
-        return Ok(AggregationPlan {
-            session_target: Some(SessionTarget::Existing(sid.clone())),
-            observed_participants: observed,
-            outcome: AggregationOutcome::Completed,
-        });
+    // DSN / 退信：From 为系统投递员且能定位原信 Session → 直接挂回
+    if let Some(parent) = &context.parent {
+        let from_is_mailer = context
+            .message
+            .message
+            .from_address
+            .as_ref()
+            .is_some_and(is_system_mailer_address);
+        if from_is_mailer {
+            return Ok(AggregationPlan {
+                session_target: Some(SessionTarget::Existing(parent.id.clone())),
+                observed_participants: observed,
+                outcome: AggregationOutcome::Completed,
+            });
+        }
     }
 
     if peers.is_empty() {
@@ -64,13 +92,45 @@ pub fn decide_aggregation(context: &AggregationContext) -> Result<AggregationPla
     }
 
     if peers.len() == 1 {
+        let address = peers[0].clone();
+        // 父信为同一私聊 → 复用；否则按地址 ensure（勿把多人往来硬塞进父私聊）
+        if let Some(parent) = &context.parent {
+            if parent.kind == SessionKind::Private
+                && parent
+                    .normalized_address
+                    .as_ref()
+                    .is_some_and(|a| a == &address)
+            {
+                return Ok(AggregationPlan {
+                    session_target: Some(SessionTarget::Existing(parent.id.clone())),
+                    observed_participants: observed,
+                    outcome: AggregationOutcome::Completed,
+                });
+            }
+        }
         return Ok(AggregationPlan {
-            session_target: Some(SessionTarget::Private {
-                address: peers[0].clone(),
-            }),
+            session_target: Some(SessionTarget::Private { address }),
             observed_participants: observed,
             outcome: AggregationOutcome::Completed,
         });
+    }
+
+    // 多人 → 群聊；仅当父群成员集合完全一致时沿用父会话
+    if let Some(parent) = &context.parent {
+        if parent.kind == SessionKind::Group {
+            if let Some(gid) = &parent.group_id {
+                if same_address_set(&peers, &parent.group_member_addresses) {
+                    return Ok(AggregationPlan {
+                        session_target: Some(SessionTarget::Existing(parent.id.clone())),
+                        observed_participants: observed,
+                        outcome: AggregationOutcome::Completed,
+                    });
+                }
+                // 成员不完全一致：仍可提示 Existing group id 给应用层做「同成员复用」之外的扩展；
+                // 这里按 peers 建/找群，避免把新成员组合并进旧群。
+                let _ = gid;
+            }
+        }
     }
 
     Ok(AggregationPlan {

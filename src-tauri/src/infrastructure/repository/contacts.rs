@@ -56,7 +56,8 @@ pub async fn list(
 
     let mut qb = QueryBuilder::new("SELECT * FROM contacts WHERE ");
     accounts::push_account_id_in(&mut qb, &account_ids);
-    qb.push(" AND (");
+    // 通讯录页 / 写信联想：只出真联系人
+    qb.push(" AND source IN ('graph', 'manual') AND (");
     if cursor_id.is_none() {
         qb.push("1 = 1");
     } else {
@@ -103,10 +104,27 @@ pub async fn list(
 }
 
 pub async fn upsert(conn: &mut SqliteConnection, contact: &Contact) -> Result<(), PortError> {
-    sqlx::query("INSERT INTO contacts (id, account_id, graph_id, display_name, normalized_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(account_id, id) DO UPDATE SET graph_id=excluded.graph_id, display_name=excluded.display_name, normalized_address=excluded.normalized_address, updated_at=excluded.updated_at")
-        .bind(contact.id.as_str()).bind(contact.account_id.as_str()).bind(&contact.graph_id)
-        .bind(&contact.display_name).bind(contact.normalized_address.as_str())
-        .bind(contact.created_at).bind(contact.updated_at).execute(conn).await?;
+    sqlx::query(
+        "INSERT INTO contacts (
+            id, account_id, graph_id, display_name, normalized_address, source, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(account_id, id) DO UPDATE SET
+            graph_id=excluded.graph_id,
+            display_name=excluded.display_name,
+            normalized_address=excluded.normalized_address,
+            source=excluded.source,
+            updated_at=excluded.updated_at",
+    )
+    .bind(contact.id.as_str())
+    .bind(contact.account_id.as_str())
+    .bind(&contact.graph_id)
+    .bind(&contact.display_name)
+    .bind(contact.normalized_address.as_str())
+    .bind(contact.source.as_str())
+    .bind(contact.created_at)
+    .bind(contact.updated_at)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 

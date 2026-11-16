@@ -6,8 +6,9 @@ use postlet_lib::domain::entities::{
     Account, Contact, Group, Message, MessageWithRecipients, Session,
 };
 use postlet_lib::domain::value_objects::{
-    AccountId, BodyContentType, ContactId, EmailAddress, FolderId, GroupId, GroupSource,
-    Importance, MessageId, MessageSyncStatus, PageDirection, SessionId, SessionKind, SyncStatus,
+    AccountId, BodyContentType, ContactId, ContactSource, EmailAddress, FolderId, GroupId,
+    GroupSource, Importance, MessageId, MessageSyncStatus, PageDirection, SessionId, SessionKind,
+    SyncStatus,
 };
 use postlet_lib::infrastructure::db;
 use postlet_lib::infrastructure::repository::{
@@ -26,6 +27,7 @@ fn contact(account: &str) -> Contact {
         graph_id: None,
         display_name: account.into(),
         normalized_address: EmailAddress::parse("peer@example.com").unwrap(),
+        source: ContactSource::Manual,
         created_at: 1,
         updated_at: 1,
     }
@@ -191,6 +193,7 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
             graph_id: None,
             display_name: "Alice Chen".into(),
             normalized_address: peer.clone(),
+            source: ContactSource::Manual,
             created_at: 1,
             updated_at: 1,
         },
@@ -368,6 +371,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             account_id: None,
             cursor: None,
             limit: 20,
+            search: None,
         },
     )
     .await

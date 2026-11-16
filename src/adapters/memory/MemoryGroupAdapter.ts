@@ -4,13 +4,14 @@ import type {
   CreateManualGroupCommand,
   CursorPage,
   GroupListQuery,
+  HideGroupCommand,
   MergeSessionsCommand,
-  ReassignMessagesToGroupCommand,
   RenameGroupCommand,
   UpdateGroupSendMembersCommand,
 } from '../../domain/dto';
 import type { AccountId, GroupId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
+import { displayNameOrAddress } from '../../shared/formatting/format';
 
 function paginate<T>(
   items: T[],
@@ -46,15 +47,72 @@ function uniqueEmails(store: MemoryStore, addresses: string[]): string[] {
 export class MemoryGroupAdapter implements GroupPort {
   constructor(private readonly store: MemoryStore) {}
 
+  private displayGroup(group: Group): Group {
+    if (group.name_is_manual) return { ...group };
+    const parts =
+      this.store.participants.get(
+        this.store.groupKey(group.account_id, group.id),
+      ) ?? [];
+    const labels = parts.slice(0, 3).map((p) => {
+      const contact = [...this.store.contacts.values()].find(
+        (c) =>
+          c.account_id === group.account_id &&
+          c.normalized_address === p.normalized_address,
+      );
+      return displayNameOrAddress(
+        contact?.display_name ?? p.display_name,
+        p.normalized_address,
+      );
+    });
+    return {
+      ...group,
+      name: labels.filter(Boolean).join(', ') || '群组',
+    };
+  }
+
   async listGroups(query: GroupListQuery): Promise<CursorPage<Group>> {
     if (query.account_id) this.store.requireAccount(query.account_id);
     const allListIds = this.store.idsForAllLists();
+    const search = query.search?.trim().toLowerCase() ?? '';
     const items = [...this.store.groups.values()]
+      .filter((g) => g.source === 'manual')
       .filter((g) =>
         query.account_id
           ? g.account_id === query.account_id
           : allListIds.has(g.account_id),
       )
+      .filter((g) => {
+        const session = [...this.store.sessions.values()].find(
+          (s) =>
+            s.account_id === g.account_id &&
+            s.kind === 'group' &&
+            s.group_id === g.id &&
+            s.merged_into_id == null,
+        );
+        return !session?.hidden_at;
+      })
+      .map((g) => this.displayGroup(g))
+      .filter((g) => {
+        if (!search) return true;
+        if (g.name.toLowerCase().startsWith(search)) return true;
+        const parts =
+          this.store.participants.get(
+            this.store.groupKey(g.account_id, g.id),
+          ) ?? [];
+        return parts.some((p) => {
+          const contact = [...this.store.contacts.values()].find(
+            (c) =>
+              c.account_id === g.account_id &&
+              c.normalized_address === p.normalized_address,
+          );
+          const nick = (contact?.display_name || p.display_name || '')
+            .toLowerCase();
+          return (
+            nick.startsWith(search) ||
+            p.normalized_address.toLowerCase().startsWith(search)
+          );
+        });
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
     return paginate(items, query.cursor, Math.max(1, Math.min(query.limit, 200)));
   }
@@ -63,7 +121,7 @@ export class MemoryGroupAdapter implements GroupPort {
     this.store.requireAccount(accountId);
     const group = this.store.groups.get(this.store.groupKey(accountId, groupId));
     if (!group) this.store.failNotFound('群组不存在');
-    return { ...group };
+    return this.displayGroup(group);
   }
 
   async listParticipants(
@@ -129,6 +187,26 @@ export class MemoryGroupAdapter implements GroupPort {
     return { ...group };
   }
 
+  async hideGroup(cmd: HideGroupCommand): Promise<void> {
+    this.store.requireAccount(cmd.account_id);
+    const gKey = this.store.groupKey(cmd.account_id, cmd.group_id);
+    if (!this.store.groups.has(gKey)) this.store.failNotFound('群组不存在');
+    const session = [...this.store.sessions.values()].find(
+      (s) =>
+        s.account_id === cmd.account_id &&
+        s.kind === 'group' &&
+        s.group_id === cmd.group_id,
+    );
+    if (!session) return;
+    const root = this.store.findRootSession(cmd.account_id, session.id);
+    root.hidden_at = Date.now();
+    root.updated_at = root.hidden_at;
+    this.store.sessions.set(
+      this.store.sessionKey(cmd.account_id, root.id),
+      root,
+    );
+  }
+
   async mergeSessions(cmd: MergeSessionsCommand): Promise<Session> {
     this.store.requireAccount(cmd.account_id);
     if (cmd.source_session_id === cmd.target_session_id) {
@@ -172,33 +250,6 @@ export class MemoryGroupAdapter implements GroupPort {
     );
     this.store.recomputeSession(cmd.account_id, target.id);
     return { ...target };
-  }
-
-  async reassignMessagesToGroup(
-    cmd: ReassignMessagesToGroupCommand,
-  ): Promise<void> {
-    this.store.requireAccount(cmd.account_id);
-    if (cmd.message_ids.length === 0) return;
-    const target = this.store.ensureGroupSessionEntity(
-      cmd.account_id,
-      cmd.target_group_id,
-    );
-    const t = Date.now();
-    const touched = new Set<string>([target.id]);
-    for (const messageId of cmd.message_ids) {
-      const key = this.store.messageKey(cmd.account_id, messageId);
-      const message = this.store.messages.get(key);
-      if (!message || message.sync_status === 'deleted_remote') {
-        this.store.failNotFound('邮件不存在');
-      }
-      touched.add(message.session_id);
-      message.session_id = target.id;
-      message.local_updated_at = t;
-      this.store.messages.set(key, message);
-    }
-    for (const sessionId of touched) {
-      this.store.recomputeSession(cmd.account_id, sessionId);
-    }
   }
 
   async updateSendMembers(

@@ -10,8 +10,8 @@ use crate::domain::entities::{
     Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients,
 };
 use crate::domain::value_objects::{
-    AccountId, ContactId, EmailAddress, FolderId, MailAuthKind, MailTlsMode, MessageId,
-    MessageSyncStatus, ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
+    AccountId, ContactId, ContactSource, EmailAddress, FolderId, MailAuthKind, MailTlsMode,
+    MessageId, MessageSyncStatus, ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
@@ -203,9 +203,15 @@ async fn trigger_mail_sync_locked(
             if !changeset.is_empty() {
                 changes.dispatch(changeset);
             }
-            // 同步后立刻排空一批聚合，让会话列表尽快收敛
+            // 同步后重入队再排空：修正 In-Reply-To 误挂私聊、同成员自动群复用
+            let _ = aggregate_worker_use_case::requeue_account_messages(
+                db,
+                &cmd.account_id,
+                512,
+            )
+            .await;
             let _ =
-                aggregate_worker_use_case::process_available_jobs(db, Some(changes), 64).await;
+                aggregate_worker_use_case::process_available_jobs(db, Some(changes), 256).await;
             Ok(())
         }
         Err(e) => {
@@ -755,6 +761,7 @@ pub async fn trigger_contact_sync(
                 c.graph_id = Some(remote.graph_id.clone());
                 c.display_name = remote.display_name;
                 c.normalized_address = remote.normalized_address;
+                c.source = ContactSource::Graph;
                 c.updated_at = now;
                 c
             } else {
@@ -764,6 +771,7 @@ pub async fn trigger_contact_sync(
                     graph_id: Some(remote.graph_id),
                     display_name: remote.display_name,
                     normalized_address: remote.normalized_address,
+                    source: ContactSource::Graph,
                     created_at: now,
                     updated_at: now,
                 }
@@ -773,11 +781,15 @@ pub async fn trigger_contact_sync(
                 .map_err(AppError::from)?;
         }
         for gid in page.removed_graph_ids {
-            if let Some(c) = contacts::get_by_graph_id(&mut tx, &cmd.account_id, &gid)
+            if let Some(mut c) = contacts::get_by_graph_id(&mut tx, &cmd.account_id, &gid)
                 .await
                 .map_err(AppError::from)?
             {
-                contacts::delete(&mut tx, &cmd.account_id, &c.id)
+                // 移出通讯录 ≠ 删人：降为 observed，保留短名给会话
+                c.graph_id = None;
+                c.source = ContactSource::Observed;
+                c.updated_at = now_ms();
+                contacts::upsert(&mut tx, &c)
                     .await
                     .map_err(AppError::from)?;
             }

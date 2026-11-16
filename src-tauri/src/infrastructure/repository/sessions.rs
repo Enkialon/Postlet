@@ -238,22 +238,15 @@ async fn enrich_item(
                 if manual != 0 {
                     Some(stored)
                 } else {
-                    // 自动群：列表展示优先用成员昵称拼标题
-                    let parts = super::groups::list_participants(
-                        &mut *conn,
-                        &session.account_id,
-                        gid,
+                    // 自动群：列表展示优先用成员/联系人昵称拼标题
+                    Some(
+                        super::groups::resolve_auto_title(
+                            &mut *conn,
+                            &session.account_id,
+                            gid,
+                        )
+                        .await?,
                     )
-                    .await?;
-                    if parts.is_empty() {
-                        Some(stored)
-                    } else {
-                        Some(crate::domain::services::auto_group_title(
-                            parts.iter().map(|p| {
-                                (p.normalized_address.as_str(), p.display_name.as_str())
-                            }),
-                        ))
-                    }
                 }
             }
             None => None,

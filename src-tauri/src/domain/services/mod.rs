@@ -5,10 +5,11 @@ mod self_address_resolver;
 mod session_aggregation_policy;
 
 pub use message_attribution::{
-    is_outbound, observed_participants, peer_addresses_for_contact_projection,
+    is_outbound, is_system_mailer_address, observed_participants,
+    peer_addresses_for_contact_projection,
 };
 pub use self_address_resolver::resolve_self_addresses;
 pub use session_aggregation_policy::{
     auto_group_title, decide_aggregation, person_label, session_display_name, usable_person_label,
-    AggregationContext, AggregationPlan, GroupTarget, SessionTarget,
+    AggregationContext, AggregationPlan, GroupTarget, ParentSessionHint, SessionTarget,
 };

@@ -107,7 +107,7 @@ CREATE TABLE mail_folder_sync_state (
 
 ## `contacts`
 
-通讯录本地缓存；联系人会话通过 `normalized_address` / `contact_id` 关联。
+人档案表（类似微信「人都在联系人表」）：真联系人与观测档同表，用 `source` 区分关系。
 
 ```sql
 CREATE TABLE contacts (
@@ -116,6 +116,7 @@ CREATE TABLE contacts (
     graph_id            TEXT,
     display_name        TEXT NOT NULL DEFAULT '',
     normalized_address  TEXT NOT NULL COLLATE NOCASE,
+    source              TEXT NOT NULL CHECK(source IN ('graph', 'manual', 'observed')),
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL,
     UNIQUE (account_id, id),
@@ -128,8 +129,12 @@ CREATE UNIQUE INDEX idx_contacts_account_address
 CREATE INDEX idx_contacts_account ON contacts(account_id);
 ```
 
+- `source = graph | manual`：真联系人 → 联系人页、写信默认联想。
+- `source = observed`：邮件/群观测短名档 → 不进通讯录页；会话/群成员显示仍可用。
+- Graph 同步写入 `graph`；聚合/建私聊写 `observed`；用户保存为联系人写 `manual`。
+- Graph 移出通讯录：降为 `observed`（清 `graph_id`），保留短名给会话。
 - 一人多邮箱若后续需要，再拆 `contact_emails`；V1 以主地址一行表示。
-- `graph_id` 可空：允许本地仅按地址建的占位联系人。
+- `groups.source = auto` 的多人往来只出现在会话列表；群组页默认只列 `manual`。
 
 ---
 

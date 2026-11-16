@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useGroups } from './useGroups';
+import { displayNameOrAddress } from '../../shared/formatting/format';
 import Avatar from '../../shared/ui/Avatar.vue';
 import Button from '../../shared/ui/Button.vue';
 import EmptyState from '../../shared/ui/EmptyState.vue';
@@ -21,16 +22,19 @@ const {
 
 const {
   listState,
+  searchInput,
   selected,
   participants,
   actionError,
   busy,
+  setSearch,
   loadInitial,
   loadMore,
   openGroup,
   openGroupConversation,
   createGroup,
   renameGroup,
+  hideGroup,
   updateMembers,
   mergeInto,
   loadAllRootGroups,
@@ -69,6 +73,7 @@ const createOpen = ref(false);
 const renameOpen = ref(false);
 const membersOpen = ref(false);
 const mergeOpen = ref(false);
+const hideOpen = ref(false);
 
 const createName = ref('');
 const createMembers = ref('');
@@ -83,7 +88,7 @@ const sendMembers = computed(() =>
 
 onMounted(() => {
   if (listState.items.length === 0 && listState.loading === 'idle') {
-    void loadInitial();
+    void loadInitial(searchInput.value.trim() || null);
   }
 });
 
@@ -142,6 +147,15 @@ async function confirmMerge() {
   const ok = await mergeInto(mergeTargetId.value);
   if (ok) mergeOpen.value = false;
 }
+
+function openHide() {
+  hideOpen.value = true;
+}
+
+async function confirmHide() {
+  const ok = await hideGroup();
+  if (ok) hideOpen.value = false;
+}
 </script>
 <template>
   <section
@@ -153,20 +167,32 @@ async function confirmMerge() {
       :style="listStyle"
     >
       <header
-        class="flex items-center justify-between border-b border-border-subtle px-3.5 py-3.5"
+        class="flex h-[52px] shrink-0 items-center gap-2 border-b border-border-subtle px-3"
       >
-        <h2 class="m-0 text-base font-semibold text-text-primary">群组</h2>
-        <Button variant="primary" @click="openCreate">创建</Button>
+        <label
+          class="flex h-7 min-w-0 flex-1 items-center rounded-md border border-border-subtle bg-surface-elevated px-2 focus-within:border-brand/35"
+        >
+          <span class="sr-only">搜索群组</span>
+          <input
+            class="min-w-0 flex-1 border-0 bg-transparent text-[12px] leading-none text-text-primary outline-none placeholder:text-text-tertiary"
+            :value="searchInput"
+            type="search"
+            placeholder="搜索"
+            autocomplete="off"
+            @input="setSearch(($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <Button variant="primary" @click="openCreate">新建</Button>
       </header>
 
       <ErrorState
         v-if="listState.error && listState.items.length === 0"
         :error="listState.error"
-        @retry="loadInitial"
+        @retry="() => loadInitial(searchInput.trim() || null)"
       />
       <EmptyState
         v-else-if="listState.loading === 'idle' && listState.items.length === 0"
-        title="没有群组"
+        :title="searchInput.trim() ? '没有匹配的群组' : '没有群组'"
       />
       <OverlayScrollArea
         v-else
@@ -243,6 +269,7 @@ async function confirmMerge() {
           <Button @click="openRename">重命名</Button>
           <Button @click="openMembers">发信成员</Button>
           <Button @click="openMerge">合并到…</Button>
+          <Button @click="openHide">隐藏</Button>
         </div>
         <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
 
@@ -254,7 +281,7 @@ async function confirmMerge() {
             class="flex justify-between gap-3 border-b border-border-subtle py-2"
           >
             <span class="text-[14px] text-text-primary" v-no-i18n>{{
-              p.display_name || p.normalized_address
+              displayNameOrAddress(p.display_name, p.normalized_address)
             }}</span>
             <span class="flex flex-wrap gap-1.5 text-[12px] text-text-tertiary">
               <span v-if="p.is_observed">往来成员</span>
@@ -338,6 +365,19 @@ async function confirmMerge() {
           </option>
         </select>
       </label>
+      <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
+    </Dialog>
+
+    <Dialog
+      :open="hideOpen"
+      title="隐藏群组"
+      :confirming="busy"
+      @close="hideOpen = false"
+      @confirm="confirmHide"
+    >
+      <p>
+        将「{{ selected?.name }}」从群组与会话列表中隐藏，不会删除邮件。
+      </p>
       <p v-if="actionError" class="text-[13px] text-danger">{{ actionError }}</p>
     </Dialog>
   </section>

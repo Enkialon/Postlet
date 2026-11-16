@@ -3,6 +3,7 @@ import type {
   CursorPage,
   EnsureGroupSessionCommand,
   EnsurePrivateSessionCommand,
+  ReassignMessagesCommand,
   SessionListItem,
   SessionListQuery,
   SessionMessagesQuery,
@@ -23,4 +24,6 @@ export interface SessionPort {
   ensureGroupSession(cmd: EnsureGroupSessionCommand): Promise<Session>;
   /** 本地隐藏会话（不删邮件）；有更新邮件后会再出现 */
   hideSession(accountId: AccountId, sessionId: SessionId): Promise<void>;
+  /** 将选中消息改挂到目标会话 */
+  reassignMessages(cmd: ReassignMessagesCommand): Promise<void>;
 }

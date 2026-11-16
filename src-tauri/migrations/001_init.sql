@@ -60,12 +60,14 @@ CREATE TABLE mail_folder_sync_state (
     PRIMARY KEY (account_id, folder_id)
 );
 
+-- 人表：graph/manual = 真联系人（通讯录）；observed = 邮件/群观测短名（非通讯录）
 CREATE TABLE contacts (
     id                  TEXT NOT NULL,
     account_id          TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     graph_id            TEXT,
     display_name        TEXT NOT NULL DEFAULT '',
     normalized_address  TEXT NOT NULL COLLATE NOCASE,
+    source              TEXT NOT NULL CHECK(source IN ('graph', 'manual', 'observed')),
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL,
     PRIMARY KEY (account_id, id),

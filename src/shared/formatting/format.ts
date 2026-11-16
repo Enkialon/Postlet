@@ -53,6 +53,25 @@ export function displayNameOrAddress(
   return address?.trim() || '';
 }
 
+/**
+ * 悬停提示：有昵称时显示 `"昵称" <邮箱>`，否则只显示邮箱（对齐写信 chips）。
+ */
+export function addressHoverTitle(
+  name: string | null | undefined,
+  address: string | null | undefined,
+  fallbackName?: string | null | undefined,
+): string {
+  const a = address?.trim() || '';
+  if (!a) {
+    return displayNameOrAddress(name, address, fallbackName);
+  }
+  const label = displayNameOrAddress(name, address, fallbackName);
+  if (label && label.toLowerCase() !== a.toLowerCase()) {
+    return `"${label}" <${a}>`;
+  }
+  return a;
+}
+
 export function formatUnreadBadge(count: number): string {
   if (count <= 0) return '';
   if (count > 99) return '99+';

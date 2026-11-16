@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
 import {
+  addressHoverTitle,
   displayNameOrAddress,
   formatChatTime,
 } from '../../shared/formatting/format';
@@ -13,7 +14,6 @@ import ContextMenu, {
 const props = defineProps<{
   item: MessageWithRecipients;
   selected?: boolean;
-  allowReassign?: boolean;
   /** 会话联系人昵称；邮件 from_name 缺失或等于邮箱时回退 */
   preferredName?: string | null;
 }>();
@@ -39,10 +39,8 @@ const menuItems = computed<ContextMenuItem[]>(() => {
       label: '标记未读',
       disabled: !props.item.message.is_read,
     },
+    { id: 'reassign', label: '改到其他会话' },
   ];
-  if (props.allowReassign) {
-    items.push({ id: 'reassign', label: '迁移到其他群组' });
-  }
   if (props.item.message.sync_status !== 'deleted_remote') {
     items.push({ id: 'delete', label: '删除邮件', danger: true });
   }
@@ -58,6 +56,19 @@ const senderLabel = computed(() => {
       props.item.message.from_address,
       props.preferredName,
     ) || '未知'
+  );
+});
+
+const senderTitle = computed(() => {
+  if (props.item.message.is_outbound) {
+    return props.item.message.from_address?.trim() || '我';
+  }
+  return (
+    addressHoverTitle(
+      props.item.message.from_name,
+      props.item.message.from_address,
+      props.preferredName,
+    ) || senderLabel.value
   );
 });
 
@@ -127,7 +138,7 @@ function onMenuSelect(id: string): void {
       >
         <span
           class="min-w-0 truncate text-[12px] font-medium text-text-secondary"
-          :title="senderLabel"
+          :title="senderTitle"
           v-no-i18n
         >
           {{ senderLabel }}

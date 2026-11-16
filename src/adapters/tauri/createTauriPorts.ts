@@ -6,13 +6,14 @@ import type {
   CreateManualGroupCommand,
   CursorPage,
   DeleteMessagesCommand,
+  HideGroupCommand,
   EnsureGroupSessionCommand,
   EnsurePrivateSessionCommand,
   GroupListQuery,
   MailSyncProgress,
   MarkMessagesReadCommand,
   MergeSessionsCommand,
-  ReassignMessagesToGroupCommand,
+  ReassignMessagesCommand,
   RenameGroupCommand,
   SaveComposeDraftCommand,
   SendComposedMailCommand,
@@ -109,6 +110,8 @@ export function createTauriPorts(): AppPorts {
         invoke<Session>('ensure_group_session', { cmd }),
       hideSession: (accountId: AccountId, sessionId: SessionId) =>
         invoke<void>('hide_session', { accountId, sessionId }),
+      reassignMessages: (cmd: ReassignMessagesCommand) =>
+        invoke<void>('reassign_messages', { cmd }),
     },
     message: {
       getMessage: (accountId: AccountId, messageId: MessageId) =>
@@ -153,10 +156,10 @@ export function createTauriPorts(): AppPorts {
         invoke<Group>('create_manual_group', { cmd }),
       renameGroup: (cmd: RenameGroupCommand) =>
         invoke<Group>('rename_group', { cmd }),
+      hideGroup: (cmd: HideGroupCommand) =>
+        invoke<void>('hide_group', { cmd }),
       mergeSessions: (cmd: MergeSessionsCommand) =>
         invoke<Session>('merge_sessions', { cmd }),
-      reassignMessagesToGroup: (cmd: ReassignMessagesToGroupCommand) =>
-        invoke<void>('reassign_messages_to_group', { cmd }),
       updateSendMembers: (cmd: UpdateGroupSendMembersCommand) =>
         invoke<GroupParticipant[]>('update_group_send_members', { cmd }),
     },

@@ -4,8 +4,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::dto::{
-    CreateManualGroupCommand, CursorPage, GroupListQuery, MergeSessionsCommand,
-    ReassignMessagesToGroupCommand, RenameGroupCommand, UpdateGroupSendMembersCommand,
+    CreateManualGroupCommand, CursorPage, GroupListQuery, HideGroupCommand, MergeSessionsCommand,
+    RenameGroupCommand, UpdateGroupSendMembersCommand,
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{Group, GroupParticipant};
@@ -34,7 +34,7 @@ pub async fn get_group(
     group_id: &GroupId,
 ) -> Result<Group, AppError> {
     let mut conn = db.acquire().await?;
-    groups::get(&mut conn, account_id, group_id)
+    groups::get_for_display(&mut conn, account_id, group_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("群组不存在: {group_id}")))
 }
@@ -124,6 +124,36 @@ pub async fn rename_group(db: &SqlitePool, cmd: RenameGroupCommand) -> Result<Gr
     Ok(group)
 }
 
+/// 隐藏群组：只隐藏对应群聊 Session，不删邮件、不删群行。
+pub async fn hide_group(db: &SqlitePool, cmd: HideGroupCommand) -> Result<(), AppError> {
+    let mut tx = db.begin().await?;
+    let _group = groups::get(&mut tx, &cmd.account_id, &cmd.group_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(format!("群组不存在: {}", cmd.group_id)))?;
+
+    if let Some(session) =
+        sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &cmd.group_id)
+            .await
+            .map_err(AppError::from)?
+    {
+        let root = if session.merged_into_id.is_some() {
+            sessions::resolve_root(&mut tx, &cmd.account_id, &session.id)
+                .await
+                .map_err(AppError::from)?
+                .unwrap_or(session)
+        } else {
+            session
+        };
+        let now = now_ms();
+        sessions::set_hidden_at(&mut tx, &cmd.account_id, &root.id, Some(now), now)
+            .await
+            .map_err(AppError::from)?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 合并两个群聊 Session（按 group 找到各自 Session 后合并）
 pub async fn merge_group_sessions(
     db: &SqlitePool,
@@ -136,58 +166,6 @@ pub async fn merge_group_sessions(
         &cmd.target_session_id,
     )
     .await
-}
-
-/// 将选中消息改挂到目标群的存活 Session
-pub async fn reassign_messages_to_group(
-    db: &SqlitePool,
-    cmd: ReassignMessagesToGroupCommand,
-) -> Result<(), AppError> {
-    if cmd.message_ids.is_empty() {
-        return Ok(());
-    }
-    let mut tx = db.begin().await?;
-    let _group = groups::get(&mut tx, &cmd.account_id, &cmd.target_group_id)
-        .await
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found(format!("目标群组不存在: {}", cmd.target_group_id)))?;
-
-    let now = now_ms();
-    let target = if let Some(s) =
-        sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &cmd.target_group_id)
-            .await
-            .map_err(AppError::from)?
-    {
-        if s.merged_into_id.is_some() {
-            sessions::resolve_root(&mut tx, &cmd.account_id, &s.id)
-                .await
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::not_found("目标群聊 Session 不存在"))?
-        } else {
-            s
-        }
-    } else {
-        let s = sessions::new_group(cmd.account_id.clone(), cmd.target_group_id.clone(), now);
-        sessions::upsert(&mut tx, &s)
-            .await
-            .map_err(AppError::from)?;
-        s
-    };
-
-    let old_ids =
-        sessions::reassign_messages(&mut tx, &cmd.account_id, &cmd.message_ids, &target.id)
-            .await
-            .map_err(AppError::from)?;
-    for old in &old_ids {
-        sessions::recompute_projection(&mut tx, &cmd.account_id, old)
-            .await
-            .map_err(AppError::from)?;
-    }
-    sessions::recompute_projection(&mut tx, &cmd.account_id, &target.id)
-        .await
-        .map_err(AppError::from)?;
-    tx.commit().await?;
-    Ok(())
 }
 
 pub async fn update_send_members(

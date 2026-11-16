@@ -4,8 +4,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::dto::{
-    CursorPage, EnsureGroupSessionCommand, EnsurePrivateSessionCommand, SessionListItem,
-    SessionListQuery, SessionMessagesQuery,
+    CursorPage, EnsureGroupSessionCommand, EnsurePrivateSessionCommand, ReassignMessagesCommand,
+    SessionListItem, SessionListQuery, SessionMessagesQuery,
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{Contact, MessageWithRecipients, Session};
@@ -50,7 +50,7 @@ pub async fn list_messages(
         .map_err(Into::into)
 }
 
-/// 按账户及规范化地址取得或创建私聊 Session，必要时创建占位联系人。
+/// 按账户及规范化地址取得或创建私聊 Session；无档案时建 observed 短名档（非通讯录）。
 pub async fn ensure_private_session(
     db: &SqlitePool,
     cmd: EnsurePrivateSessionCommand,
@@ -90,6 +90,7 @@ pub async fn ensure_private_session(
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| cmd.normalized_address.as_str().to_string()),
             normalized_address: cmd.normalized_address.clone(),
+            source: crate::domain::value_objects::ContactSource::Observed,
             created_at: now,
             updated_at: now,
         };
@@ -229,4 +230,46 @@ pub async fn merge_sessions(
         .ok_or_else(|| AppError::not_found("目标会话不存在"))?;
     tx.commit().await?;
     Ok(out)
+}
+
+/// 将选中消息改挂到目标存活 Session（私聊 / 群聊均可）。
+pub async fn reassign_messages(
+    db: &SqlitePool,
+    cmd: ReassignMessagesCommand,
+) -> Result<(), AppError> {
+    if cmd.message_ids.is_empty() {
+        return Ok(());
+    }
+    let mut tx = db.begin().await?;
+    let target = sessions::resolve_root(&mut tx, &cmd.account_id, &cmd.target_session_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            AppError::not_found(format!("目标会话不存在: {}", cmd.target_session_id))
+        })?;
+    if target.merged_into_id.is_some() {
+        return Err(AppError::conflict("目标会话已合并"));
+    }
+
+    let old_ids =
+        sessions::reassign_messages(&mut tx, &cmd.account_id, &cmd.message_ids, &target.id)
+            .await
+            .map_err(AppError::from)?;
+    for old in &old_ids {
+        sessions::recompute_projection(&mut tx, &cmd.account_id, old)
+            .await
+            .map_err(AppError::from)?;
+    }
+    sessions::recompute_projection(&mut tx, &cmd.account_id, &target.id)
+        .await
+        .map_err(AppError::from)?;
+    // 目标若被隐藏，迁入后重新露出
+    if target.hidden_at.is_some() {
+        let now = now_ms();
+        sessions::set_hidden_at(&mut tx, &cmd.account_id, &target.id, None, now)
+            .await
+            .map_err(AppError::from)?;
+    }
+    tx.commit().await?;
+    Ok(())
 }

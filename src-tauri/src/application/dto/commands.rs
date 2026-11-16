@@ -73,6 +73,13 @@ pub struct RenameGroupCommand {
     pub name: String,
 }
 
+/// 隐藏群组（隐藏群聊 Session；不删邮件）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HideGroupCommand {
+    pub account_id: AccountId,
+    pub group_id: GroupId,
+}
+
 /// 合并群聊 Session：source → target（消息迁入 + soft-link）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MergeSessionsCommand {
@@ -81,12 +88,12 @@ pub struct MergeSessionsCommand {
     pub target_session_id: SessionId,
 }
 
-/// 将选中消息改挂到目标群聊 Session
+/// 将选中消息改挂到目标 Session（私聊 / 群聊均可）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ReassignMessagesToGroupCommand {
+pub struct ReassignMessagesCommand {
     pub account_id: AccountId,
     pub message_ids: Vec<MessageId>,
-    pub target_group_id: GroupId,
+    pub target_session_id: SessionId,
 }
 
 /// 更新发信成员集合
@@ -130,4 +137,6 @@ pub struct GroupListQuery {
     pub account_id: Option<AccountId>,
     pub cursor: Option<String>,
     pub limit: u32,
+    /// 群名 / 成员昵称或地址前缀
+    pub search: Option<String>,
 }
