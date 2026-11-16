@@ -40,8 +40,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          # 与本地 / packageManager 一致（lockfileVersion 9 需 pnpm 10+）
-          version: 11
+          # 版本取自 package.json 的 packageManager 字段
           run_install: false
 
       - name: Setup Rust
