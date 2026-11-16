@@ -3,13 +3,17 @@ use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::auth as graph_auth;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::accounts;
+use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::application::dto::UpdateAccountDisplaySettingsCommand;
+use crate::application::dto::{
+    UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
+};
 use crate::application::error::AppError;
+use crate::application::use_cases::aggregate_worker_use_case;
 use crate::domain::entities::Account;
-use crate::domain::value_objects::{AccountId, SyncStatus, TimestampMs};
+use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
 
 /// 列出当前已登录的 Outlook 账户，供启动恢复和账户切换使用。
 ///
@@ -59,7 +63,8 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             id: existing.id,
             email: remote.email.clone(),
             display_name: remote.display_name.clone(),
-            aliases: remote.aliases.clone(),
+            // 别名仅手动维护，登录刷新不得冲掉
+            aliases: existing.aliases,
             tenant_id: remote.tenant_id.clone().or(existing.tenant_id),
             home_account_id: remote
                 .home_account_id
@@ -79,7 +84,7 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
             id: AccountId::new(Uuid::new_v4().to_string()),
             email: remote.email.clone(),
             display_name: remote.display_name.clone(),
-            aliases: remote.aliases.clone(),
+            aliases: Vec::new(),
             tenant_id: remote.tenant_id.clone(),
             home_account_id: remote.home_account_id.clone(),
             contact_delta_link: None,
@@ -146,6 +151,100 @@ pub async fn update_display_settings(
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
     tx.commit().await?;
     Ok(account)
+}
+
+/// 手动更新账户别名（self 额外身份；整表替换）。
+///
+/// 集合变化时：把「对端已变 self」的私聊消息迁到正确会话（读路径动态判定 is_outbound）。
+pub async fn update_aliases(
+    db: &SqlitePool,
+    changes: &ChangeDispatcher,
+    cmd: UpdateAccountAliasesCommand,
+) -> Result<Account, AppError> {
+    let mut tx = db.begin().await?;
+    let account = accounts::get(&mut tx, &cmd.account_id)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
+
+    let aliases = normalize_aliases(&account.email, &cmd.aliases)?;
+    let aliases_changed = aliases != account.aliases;
+    ensure_aliases_not_claimed(&mut tx, &account.id, &aliases).await?;
+
+    accounts::update_aliases(&mut tx, &cmd.account_id, &aliases)
+        .await
+        .map_err(AppError::from)?;
+    let updated = accounts::get(&mut tx, &cmd.account_id)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
+    tx.commit().await?;
+
+    if aliases_changed {
+        let _ = aggregate_worker_use_case::relocate_self_keyed_private_sessions(
+            db,
+            &updated.id,
+            Some(changes),
+        )
+        .await?;
+    }
+    Ok(updated)
+}
+
+fn normalize_aliases(
+    primary: &EmailAddress,
+    raw: &[String],
+) -> Result<Vec<EmailAddress>, AppError> {
+    let mut out = Vec::new();
+    for item in raw {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.contains('@') {
+            return Err(AppError::validation(format!("邮箱地址无效: {trimmed}")));
+        }
+        let Some(addr) = EmailAddress::parse(trimmed) else {
+            continue;
+        };
+        if &addr == primary {
+            return Err(AppError::validation(
+                "别名不能与主邮箱相同".to_string(),
+            ));
+        }
+        if out.iter().any(|a| a == &addr) {
+            continue;
+        }
+        out.push(addr);
+    }
+    Ok(out)
+}
+
+async fn ensure_aliases_not_claimed(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    aliases: &[EmailAddress],
+) -> Result<(), AppError> {
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    let others = accounts::list_all(conn).await.map_err(AppError::from)?;
+    for other in others {
+        if &other.id == account_id {
+            continue;
+        }
+        for alias in aliases {
+            if alias == &other.email {
+                return Err(AppError::validation(format!(
+                    "别名已被其他账号主邮箱占用: {alias}"
+                )));
+            }
+            if other.aliases.iter().any(|a| a == alias) {
+                return Err(AppError::validation(format!(
+                    "别名已被其他账号使用: {alias}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn now_ms() -> TimestampMs {

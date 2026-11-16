@@ -23,6 +23,7 @@ import type {
   SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
+  UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
   UpdateGroupSendMembersCommand,
   UpsertImapSmtpAccountCommand,
@@ -67,6 +68,8 @@ export function createTauriPorts(): AppPorts {
         invoke<void>('account_sign_out', { accountId }),
       updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>
         invoke<Account>('update_display_settings', { cmd }),
+      updateAliases: (cmd: UpdateAccountAliasesCommand) =>
+        invoke<Account>('update_account_aliases', { cmd }),
     },
     sync: {
       triggerMailSync: (cmd: TriggerMailSyncCommand) =>

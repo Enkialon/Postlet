@@ -250,6 +250,35 @@ export function useSettings() {
     }
   }
 
+  async function updateAccountAliases(
+    accountId: AccountId,
+    aliases: string[],
+  ): Promise<void> {
+    const account = accountList.value.find((a) => a.id === accountId);
+    if (!account || savingId.value) return;
+
+    const optimistic: Account = { ...account, aliases: [...aliases] };
+    patchAccount(optimistic);
+    savingId.value = accountId;
+    error.value = null;
+    try {
+      const updated = await ports.account.updateAliases({
+        account_id: accountId,
+        aliases,
+      });
+      patchAccount(updated);
+      conversations.invalidate();
+      if (accountsApi.current.value?.id === accountId) {
+        await messages.loadInitial();
+      }
+    } catch (e) {
+      patchAccount(account);
+      error.value = asAppError(e).message;
+    } finally {
+      savingId.value = null;
+    }
+  }
+
   async function refreshMailFolders(accountId: AccountId): Promise<void> {
     if (refreshingFoldersId.value === accountId) return;
     error.value = null;
@@ -372,6 +401,7 @@ export function useSettings() {
     setFolderSyncEnabled,
     folderToggleKey,
     updateAccountSettings,
+    updateAccountAliases,
     signOutAccount,
     setLocale,
     refreshAllProgress,

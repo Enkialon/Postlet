@@ -9,6 +9,7 @@ use crate::application::error::AppError;
 use crate::domain::entities::{
     Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients,
 };
+use crate::domain::services::resolve_self_addresses;
 use crate::domain::value_objects::{
     AccountId, ContactId, ContactSource, EmailAddress, FolderId, MailAuthKind, MailTlsMode,
     MessageId, MessageSyncStatus, ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
@@ -570,8 +571,9 @@ async fn upsert_remote_message(
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    let self_set = resolve_self_addresses(&account);
     let is_outbound = match &remote.from_address {
-        Some(from) => from.as_str() == account.email.as_str(),
+        Some(from) => self_set.contains(from),
         _ => false,
     };
 

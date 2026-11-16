@@ -23,6 +23,14 @@ pub struct UpdateAccountDisplaySettingsCommand {
     pub include_in_all: bool,
 }
 
+/// 手动维护账户别名（self 额外身份；不做 Send-As）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpdateAccountAliasesCommand {
+    pub account_id: AccountId,
+    /// 原始地址列表；用例侧 trim + lowercase 去重
+    pub aliases: Vec<String>,
+}
+
 /// 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpsertImapSmtpAccountCommand {

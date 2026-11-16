@@ -1,6 +1,7 @@
 import type { AccountPort } from '../../ports/accountPort';
 import type { Account } from '../../domain/entities';
 import type {
+  UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
   UpsertImapSmtpAccountCommand,
 } from '../../domain/dto';
@@ -103,6 +104,49 @@ export class MemoryAccountAdapter implements AccountPort {
   ): Promise<Account> {
     const account = this.store.requireAccount(cmd.account_id);
     account.include_in_all = cmd.include_in_all;
+    account.updated_at = Date.now();
+    this.store.accounts.set(account.id, account);
+    return { ...account };
+  }
+
+  async updateAliases(cmd: UpdateAccountAliasesCommand): Promise<Account> {
+    const account = this.store.requireAccount(cmd.account_id);
+    const primary = account.email.toLowerCase();
+    const aliases: string[] = [];
+    for (const raw of cmd.aliases) {
+      const trimmed = raw.trim().toLowerCase();
+      if (!trimmed) continue;
+      if (!trimmed.includes('@')) {
+        throw {
+          code: 'validation',
+          message: `邮箱地址无效: ${trimmed}`,
+          retryable: false,
+        };
+      }
+      if (trimmed === primary) {
+        throw {
+          code: 'validation',
+          message: '别名不能与主邮箱相同',
+          retryable: false,
+        };
+      }
+      if (aliases.includes(trimmed)) continue;
+      for (const other of this.store.accounts.values()) {
+        if (other.id === account.id) continue;
+        if (
+          other.email.toLowerCase() === trimmed ||
+          other.aliases.some((a) => a.toLowerCase() === trimmed)
+        ) {
+          throw {
+            code: 'validation',
+            message: `别名已被其他账号使用: ${trimmed}`,
+            retryable: false,
+          };
+        }
+      }
+      aliases.push(trimmed);
+    }
+    account.aliases = aliases;
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
     return { ...account };

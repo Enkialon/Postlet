@@ -30,7 +30,7 @@ pub struct Message {
     pub created_at_graph: Option<TimestampMs>,
     pub is_read: bool,
     pub is_draft: bool,
-    /// 是否本账户发出（结合 self 集合判定后落库）
+    /// 是否本账户发出（sync 落库缓存；读路径按当前 self 集合现算覆盖）
     pub is_outbound: bool,
     pub has_attachments: bool,
     pub importance: Importance,

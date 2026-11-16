@@ -76,6 +76,7 @@ pub fn run() {
             commands::account_sign_out,
             commands::upsert_imap_smtp_account,
             commands::update_display_settings,
+            commands::update_account_aliases,
             commands::list_contacts,
             commands::get_contact,
             commands::get_contact_by_address,

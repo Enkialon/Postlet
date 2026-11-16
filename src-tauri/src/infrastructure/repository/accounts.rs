@@ -57,6 +57,17 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError
         .map_err(Into::into)
 }
 
+/// 全部账户行（含已退出）；别名冲突校验用。
+pub async fn list_all(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError> {
+    sqlx::query("SELECT * FROM accounts ORDER BY id")
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(super::rows::account)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
 /// 「全部账号」列表用的账号 ID：已登录且 `include_in_all`。
 ///
 /// 退出只清凭证并把 `is_signed_in=0`；未退出也可关掉 `include_in_all` 而不进跨账号扫描。
@@ -302,6 +313,40 @@ pub async fn update_display_settings(
         "UPDATE accounts SET include_in_all = ?, updated_at = ? WHERE id = ?",
     )
     .bind(include_in_all)
+    .bind(now)
+    .bind(account_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(PortError::Conflict {
+            message: format!("账户不存在: {account_id}"),
+        });
+    }
+    Ok(())
+}
+
+pub async fn update_aliases(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    aliases: &[EmailAddress],
+) -> Result<(), PortError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let aliases_json = serde_json::to_string(
+        &aliases
+            .iter()
+            .map(|a| a.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| PortError::Storage {
+        message: format!("aliases_json 序列化失败: {e}"),
+    })?;
+    let result = sqlx::query(
+        "UPDATE accounts SET aliases_json = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&aliases_json)
     .bind(now)
     .bind(account_id.as_str())
     .execute(&mut *conn)

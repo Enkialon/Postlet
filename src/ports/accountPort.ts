@@ -1,5 +1,6 @@
 import type { Account } from '../domain/entities';
 import type {
+  UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
   UpsertImapSmtpAccountCommand,
 } from '../domain/dto';
@@ -18,4 +19,6 @@ export interface AccountPort {
   updateDisplaySettings(
     cmd: UpdateAccountDisplaySettingsCommand,
   ): Promise<Account>;
+  /** 手动维护别名（视为本账号；不做 Send-As） */
+  updateAliases(cmd: UpdateAccountAliasesCommand): Promise<Account>;
 }

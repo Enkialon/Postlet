@@ -7,8 +7,8 @@ use crate::application::dto::{
     MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
     SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,
     SessionListQuery, SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
-    TriggerMailSyncCommand, UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand,
-    UpsertImapSmtpAccountCommand,
+    TriggerMailSyncCommand, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
+    UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
@@ -54,6 +54,14 @@ pub async fn update_display_settings(
     cmd: UpdateAccountDisplaySettingsCommand,
 ) -> Result<Account, AppError> {
     account_use_case::update_display_settings(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn update_account_aliases(
+    state: State<'_, AppState>,
+    cmd: UpdateAccountAliasesCommand,
+) -> Result<Account, AppError> {
+    account_use_case::update_aliases(&state.db, &state.changes, cmd).await
 }
 
 #[tauri::command]

@@ -31,11 +31,44 @@ const {
   setFolderSyncEnabled,
   folderToggleKey,
   updateAccountSettings,
+  updateAccountAliases,
   signOutAccount,
   setLocale,
 } = useSettings();
 
 const addAccountOpen = ref(false);
+/** 各账号别名输入框草稿 */
+const aliasDraftById = ref<Record<string, string>>({});
+
+function aliasDraft(accountId: AccountId): string {
+  return aliasDraftById.value[accountId] ?? '';
+}
+
+function setAliasDraft(accountId: AccountId, value: string): void {
+  aliasDraftById.value = { ...aliasDraftById.value, [accountId]: value };
+}
+
+function onAddAlias(account: Account): void {
+  const raw = aliasDraft(account.id).trim();
+  if (!raw) return;
+  const next = [...account.aliases];
+  const normalized = raw.toLowerCase();
+  if (
+    normalized === account.email.toLowerCase() ||
+    next.some((a) => a.toLowerCase() === normalized)
+  ) {
+    setAliasDraft(account.id, '');
+    return;
+  }
+  next.push(raw);
+  setAliasDraft(account.id, '');
+  void updateAccountAliases(account.id, next);
+}
+
+function onRemoveAlias(account: Account, alias: string): void {
+  const next = account.aliases.filter((a) => a !== alias);
+  void updateAccountAliases(account.id, next);
+}
 
 function onLocaleChange(e: Event) {
   setLocale((e.target as HTMLSelectElement).value as AppLocale);
@@ -240,6 +273,65 @@ function onFolderSyncToggle(
                       </span>
                     </span>
                   </label>
+
+                  <div class="grid gap-2">
+                    <div>
+                      <p
+                        class="m-0 text-[14px] font-medium text-text-primary"
+                      >
+                        别名
+                      </p>
+                      <p class="mt-0.5 mb-0 text-[12px] text-text-tertiary">
+                        这些地址视为本账号（会话归属与发出判定）；不会用它们发信
+                      </p>
+                    </div>
+                    <ul
+                      v-if="account.aliases.length > 0"
+                      class="m-0 flex list-none flex-col gap-1.5 p-0"
+                    >
+                      <li
+                        v-for="alias in account.aliases"
+                        :key="alias"
+                        class="flex items-center gap-2 text-[13px] text-text-primary"
+                      >
+                        <span class="min-w-0 flex-1 truncate" v-no-i18n>{{
+                          alias
+                        }}</span>
+                        <Button
+                          variant="ghost"
+                          :disabled="savingId === account.id"
+                          @click="onRemoveAlias(account, alias)"
+                        >
+                          移除
+                        </Button>
+                      </li>
+                    </ul>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <input
+                        class="min-w-[12rem] flex-1 rounded-md border border-border-subtle bg-surface-input px-3 py-2 text-[14px] text-text-primary outline-none focus:border-brand"
+                        type="email"
+                        placeholder="alias@example.com"
+                        :value="aliasDraft(account.id)"
+                        :disabled="savingId === account.id"
+                        @input="
+                          setAliasDraft(
+                            account.id,
+                            ($event.target as HTMLInputElement).value,
+                          )
+                        "
+                        @keydown.enter.prevent="onAddAlias(account)"
+                      />
+                      <Button
+                        :disabled="
+                          savingId === account.id ||
+                          !aliasDraft(account.id).trim()
+                        "
+                        @click="onAddAlias(account)"
+                      >
+                        添加
+                      </Button>
+                    </div>
+                  </div>
 
                   <div class="grid gap-1 text-[13px] text-text-secondary">
                     <p

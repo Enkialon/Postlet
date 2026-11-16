@@ -102,6 +102,13 @@ export interface UpdateAccountDisplaySettingsCommand {
   include_in_all: boolean;
 }
 
+/** 手动维护账户别名（self 额外身份；不做 Send-As） */
+export interface UpdateAccountAliasesCommand {
+  account_id: AccountId;
+  /** 原始地址列表；后端 trim + lowercase 去重 */
+  aliases: string[];
+}
+
 /** 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌） */
 export interface UpsertImapSmtpAccountCommand {
   email: string;

@@ -1,5 +1,5 @@
 //! 会话用例（主导航）
-use crate::infrastructure::repository::{contacts, groups, sessions};
+use crate::infrastructure::repository::{accounts, contacts, groups, sessions};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -8,8 +8,11 @@ use crate::application::dto::{
     SessionListItem, SessionListQuery, SessionMessagesQuery,
 };
 use crate::application::error::AppError;
+use crate::application::self_view::{apply_outbound_to_bundle, apply_outbound_to_preview};
 use crate::domain::entities::{Contact, MessageWithRecipients, Session};
-use crate::domain::value_objects::{AccountId, ContactId, SessionId, TimestampMs};
+use crate::domain::services::resolve_self_addresses;
+use crate::domain::value_objects::{AccountId, ContactId, SelfAddressSet, SessionId, TimestampMs};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> TimestampMs {
@@ -19,14 +22,57 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
+async fn self_set_for(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+) -> Result<SelfAddressSet, AppError> {
+    let account = accounts::get(conn, account_id)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    Ok(resolve_self_addresses(&account))
+}
+
+async fn self_sets_for_accounts(
+    conn: &mut sqlx::SqliteConnection,
+    account_ids: impl IntoIterator<Item = AccountId>,
+) -> Result<HashMap<AccountId, SelfAddressSet>, AppError> {
+    let mut map = HashMap::new();
+    for id in account_ids {
+        if map.contains_key(&id) {
+            continue;
+        }
+        let set = self_set_for(conn, &id).await?;
+        map.insert(id, set);
+    }
+    Ok(map)
+}
+
+fn apply_session_item_outbound(item: &mut SessionListItem, self_set: &SelfAddressSet) {
+    if let Some(ref mut preview) = item.last_message_preview {
+        apply_outbound_to_preview(preview, self_set);
+    }
+}
+
 pub async fn list_sessions(
     db: &SqlitePool,
     query: SessionListQuery,
 ) -> Result<CursorPage<SessionListItem>, AppError> {
     let mut conn = db.acquire().await?;
-    sessions::list(&mut conn, &query)
+    let mut page = sessions::list(&mut conn, &query)
         .await
-        .map_err(Into::into)
+        .map_err(AppError::from)?;
+    let account_ids = page
+        .items
+        .iter()
+        .map(|i| i.session.account_id.clone())
+        .collect::<Vec<_>>();
+    let sets = self_sets_for_accounts(&mut conn, account_ids).await?;
+    for item in &mut page.items {
+        if let Some(set) = sets.get(&item.session.account_id) {
+            apply_session_item_outbound(item, set);
+        }
+    }
+    Ok(page)
 }
 
 pub async fn get_session(
@@ -35,9 +81,12 @@ pub async fn get_session(
     session_id: &SessionId,
 ) -> Result<SessionListItem, AppError> {
     let mut conn = db.acquire().await?;
-    sessions::get_list_item(&mut conn, account_id, session_id)
+    let mut item = sessions::get_list_item(&mut conn, account_id, session_id)
         .await?
-        .ok_or_else(|| AppError::not_found(format!("会话不存在: {session_id}")))
+        .ok_or_else(|| AppError::not_found(format!("会话不存在: {session_id}")))?;
+    let self_set = self_set_for(&mut conn, account_id).await?;
+    apply_session_item_outbound(&mut item, &self_set);
+    Ok(item)
 }
 
 pub async fn list_messages(
@@ -45,9 +94,14 @@ pub async fn list_messages(
     query: SessionMessagesQuery,
 ) -> Result<CursorPage<MessageWithRecipients>, AppError> {
     let mut conn = db.acquire().await?;
-    sessions::list_messages(&mut conn, &query)
+    let mut page = sessions::list_messages(&mut conn, &query)
         .await
-        .map_err(Into::into)
+        .map_err(AppError::from)?;
+    let self_set = self_set_for(&mut conn, &query.account_id).await?;
+    for bundle in &mut page.items {
+        apply_outbound_to_bundle(bundle, &self_set);
+    }
+    Ok(page)
 }
 
 /// 按账户及规范化地址取得或创建私聊 Session；无档案时建 observed 短名档（非通讯录）。

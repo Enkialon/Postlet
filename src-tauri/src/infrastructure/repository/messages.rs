@@ -2,8 +2,10 @@
 
 use crate::application::error::PortError;
 use crate::domain::entities::MessageWithRecipients;
-use crate::domain::value_objects::{AccountId, GraphImmutableId, MessageId, SessionId};
-use sqlx::SqliteConnection;
+use crate::domain::value_objects::{
+    AccountId, EmailAddress, GraphImmutableId, MessageId, SessionId,
+};
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
@@ -299,4 +301,60 @@ pub async fn list_session_ids(
     out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     out.dedup();
     Ok(out)
+}
+
+/// 列出会话内非远端删除的邮件 id。
+pub async fn list_ids_by_session(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    session_id: &SessionId,
+) -> Result<Vec<MessageId>, PortError> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM messages
+         WHERE account_id = ? AND session_id = ? AND sync_status != 'deleted_remote'
+         ORDER BY local_updated_at DESC",
+    )
+    .bind(account_id.as_str())
+    .bind(session_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(MessageId::new).collect())
+}
+
+/// 发件人或收件人命中给定地址的邮件（别名曾被当成对端时的纠正范围）。
+pub async fn list_ids_involving_addresses(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    addresses: &[EmailAddress],
+) -> Result<Vec<MessageId>, PortError> {
+    if addresses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT DISTINCT m.id FROM messages m
+         WHERE m.account_id = ",
+    );
+    qb.push_bind(account_id.as_str());
+    qb.push(" AND m.sync_status != 'deleted_remote' AND (m.from_address IN (");
+    {
+        let mut separated = qb.separated(", ");
+        for addr in addresses {
+            separated.push_bind(addr.as_str());
+        }
+    }
+    qb.push(
+        ") OR EXISTS (
+            SELECT 1 FROM message_recipients r
+            WHERE r.account_id = m.account_id AND r.message_id = m.id
+              AND r.normalized_address IN (",
+    );
+    {
+        let mut separated = qb.separated(", ");
+        for addr in addresses {
+            separated.push_bind(addr.as_str());
+        }
+    }
+    qb.push(")) ORDER BY m.local_updated_at DESC");
+    let rows = qb.build_query_scalar::<String>().fetch_all(&mut *conn).await?;
+    Ok(rows.into_iter().map(MessageId::new).collect())
 }

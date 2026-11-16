@@ -5,7 +5,7 @@ use crate::application::error::PortError;
 use crate::domain::entities::{Group, GroupParticipant};
 use crate::domain::value_objects::{AccountId, GroupId};
 use crate::infrastructure::repository::accounts;
-use sqlx::{QueryBuilder, SqliteConnection};
+use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
@@ -260,6 +260,31 @@ pub async fn list_participants(
     .map(super::rows::groupparticipant)
     .collect::<Result<Vec<_>, _>>()
     .map_err(Into::into)
+}
+
+/// 成员地址命中给定集合的群 id（别名曾被当成群成员时）。
+pub async fn list_group_ids_with_addresses(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    addresses: &[crate::domain::value_objects::EmailAddress],
+) -> Result<Vec<GroupId>, PortError> {
+    if addresses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT DISTINCT group_id FROM group_participants WHERE account_id = ",
+    );
+    qb.push_bind(account_id.as_str());
+    qb.push(" AND normalized_address IN (");
+    {
+        let mut separated = qb.separated(", ");
+        for addr in addresses {
+            separated.push_bind(addr.as_str());
+        }
+    }
+    qb.push(")");
+    let rows = qb.build_query_scalar::<String>().fetch_all(&mut *conn).await?;
+    Ok(rows.into_iter().map(GroupId::new).collect())
 }
 
 /// 查找 source=auto 且成员地址集合与 `members` 完全一致的群（顺序无关）

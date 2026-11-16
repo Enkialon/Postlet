@@ -4,7 +4,9 @@ use crate::application::dto::{
     ChangeOrigin, ChangeSet, DeleteMessagesCommand, MarkMessagesReadCommand, PendingMutationKind,
 };
 use crate::application::error::{AppError, PortError};
+use crate::application::self_view::apply_outbound_to_bundle;
 use crate::domain::entities::MessageWithRecipients;
+use crate::domain::services::resolve_self_addresses;
 use crate::domain::value_objects::{
     AccountId, MailAuthKind, MailTlsMode, MessageId, ReceiveProtocol, TimestampMs,
 };
@@ -50,9 +52,14 @@ pub async fn get_message(
     message_id: &MessageId,
 ) -> Result<MessageWithRecipients, AppError> {
     let mut conn = db.acquire().await?;
-    messages::get(&mut conn, account_id, message_id)
+    let mut bundle = messages::get(&mut conn, account_id, message_id)
         .await?
-        .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))
+        .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
+    let account = accounts::get(&mut conn, account_id)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    apply_outbound_to_bundle(&mut bundle, &resolve_self_addresses(&account));
+    Ok(bundle)
 }
 
 /// 确保邮件正文已加载；本地缺失时按协议补取。

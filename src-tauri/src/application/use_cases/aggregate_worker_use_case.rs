@@ -421,9 +421,18 @@ async fn apply_plan(
     };
 
     if session_id != old_session_id {
-        messages::set_session_id(conn, account_id, message_id, &session_id)
-            .await
-            .map_err(AppError::from)?;
+        // 与 reassign_messages 同写路径：迁挂 + 两侧投影
+        let old_ids = sessions::reassign_messages(
+            conn,
+            account_id,
+            std::slice::from_ref(message_id),
+            &session_id,
+        )
+        .await
+        .map_err(AppError::from)?;
+        for old in old_ids {
+            touched.insert(old.as_str().to_string());
+        }
     }
     touched.insert(session_id.as_str().to_string());
 
@@ -676,6 +685,172 @@ pub async fn requeue_account_messages(
     }
     tx.commit().await?;
     Ok(ids.len() as u32)
+}
+
+/// 别名变更后：纠正曾把别名当对端的会话（私聊 / 含别名成员的群），迁挂到真实对端。
+pub async fn relocate_self_keyed_private_sessions(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    changes: Option<&ChangeDispatcher>,
+) -> Result<u32, AppError> {
+    let (account, message_ids, stale_session_ids) = {
+        let mut conn = db.acquire().await?;
+        let account = accounts::get(&mut conn, account_id)
+            .await
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+        // 别名（非主邮箱）才是「曾被当成别人」的地址
+        let alias_addrs = account.aliases.clone();
+        let mut message_ids = Vec::new();
+        let mut stale_session_ids = Vec::new();
+
+        for addr in &alias_addrs {
+            if let Some(session) = sessions::get_private_by_address(&mut conn, account_id, addr)
+                .await
+                .map_err(AppError::from)?
+            {
+                if session.merged_into_id.is_none() {
+                    let ids = messages::list_ids_by_session(&mut conn, account_id, &session.id)
+                        .await
+                        .map_err(AppError::from)?;
+                    message_ids.extend(ids);
+                    stale_session_ids.push(session.id);
+                }
+            }
+        }
+
+        let group_ids = groups::list_group_ids_with_addresses(&mut conn, account_id, &alias_addrs)
+            .await
+            .map_err(AppError::from)?;
+        for gid in &group_ids {
+            if let Some(session) = sessions::get_group_by_group_id(&mut conn, account_id, gid)
+                .await
+                .map_err(AppError::from)?
+            {
+                if session.merged_into_id.is_none() {
+                    let ids = messages::list_ids_by_session(&mut conn, account_id, &session.id)
+                        .await
+                        .map_err(AppError::from)?;
+                    message_ids.extend(ids);
+                    stale_session_ids.push(session.id);
+                }
+            }
+        }
+
+        let involving =
+            messages::list_ids_involving_addresses(&mut conn, account_id, &alias_addrs)
+                .await
+                .map_err(AppError::from)?;
+        message_ids.extend(involving);
+
+        message_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        message_ids.dedup();
+        stale_session_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        stale_session_ids.dedup();
+        (account, message_ids, stale_session_ids)
+    };
+
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let self_set = resolve_self_addresses(&account);
+    let mut moved = 0u32;
+    let mut changeset_acc: Option<ChangeSet> = None;
+
+    for message_id in &message_ids {
+        let mut tx = db.begin().await?;
+        let Some(bundle) = messages::get(&mut tx, account_id, message_id)
+            .await
+            .map_err(AppError::from)?
+        else {
+            tx.rollback().await.ok();
+            continue;
+        };
+        if bundle.message.sync_status == MessageSyncStatus::DeletedRemote {
+            tx.rollback().await.ok();
+            continue;
+        }
+        let old_session_id = bundle.message.session_id.clone();
+        let parent = resolve_parent_hint(&mut tx, account_id, &bundle).await?;
+        let plan = match decide_aggregation(&AggregationContext {
+            message: bundle.clone(),
+            self_set: self_set.clone(),
+            parent,
+        }) {
+            Ok(p) => p,
+            Err(_) => {
+                tx.rollback().await.ok();
+                continue;
+            }
+        };
+        // Skipped 且仍挂在「别名私聊」上：无处可迁，留给后续隐藏空会话
+        if plan.session_target.is_none() {
+            tx.rollback().await.ok();
+            continue;
+        }
+        match apply_plan(&mut tx, account_id, &bundle, &plan).await {
+            Ok(cs) => {
+                let relocated = !cs.session_ids.is_empty()
+                    && cs.session_ids.iter().any(|s| s != &old_session_id);
+                tx.commit().await?;
+                if relocated {
+                    moved = moved.saturating_add(1);
+                }
+                match &mut changeset_acc {
+                    Some(acc) => {
+                        acc.message_ids.extend(cs.message_ids);
+                        acc.session_ids.extend(cs.session_ids);
+                        acc.new_incoming_ids.extend(cs.new_incoming_ids);
+                    }
+                    None => changeset_acc = Some(cs),
+                }
+            }
+            Err(_) => {
+                tx.rollback().await.ok();
+            }
+        }
+    }
+
+    // 迁空后的污染会话隐藏掉（别名私聊 / 曾含别名的群聊）
+    {
+        let mut tx = db.begin().await?;
+        let now = now_ms();
+        for sid in &stale_session_ids {
+            let remaining = messages::list_ids_by_session(&mut tx, account_id, sid)
+                .await
+                .map_err(AppError::from)?;
+            if remaining.is_empty() {
+                sessions::set_hidden_at(&mut tx, account_id, sid, Some(now), now)
+                    .await
+                    .map_err(AppError::from)?;
+                if let Some(acc) = changeset_acc.as_mut() {
+                    acc.session_ids.push(sid.clone());
+                } else {
+                    changeset_acc = Some(ChangeSet {
+                        account_id: account_id.clone(),
+                        session_ids: vec![sid.clone()],
+                        message_ids: Vec::new(),
+                        new_incoming_ids: Vec::new(),
+                        origin: ChangeOrigin::Rebuild,
+                    });
+                }
+            }
+        }
+        tx.commit().await?;
+    }
+
+    if let (Some(dispatcher), Some(mut cs)) = (changes, changeset_acc) {
+        let mut seen = HashSet::new();
+        cs.session_ids.retain(|c| seen.insert(c.clone()));
+        let mut seen_msg = HashSet::new();
+        cs.message_ids.retain(|c| seen_msg.insert(c.clone()));
+        if !cs.is_empty() {
+            dispatcher.dispatch(cs);
+        }
+    }
+
+    Ok(moved)
 }
 
 // 供同步路径创建临时私聊 Session
