@@ -29,7 +29,8 @@ import type {
 import type { SessionListItem } from '../../domain/dto';
 import { asAppError } from '../../shared/errors/asAppError';
 
-const ROW_SIZE = 128;
+/** 估算行高（含气泡间距）；实际高度由 measureElement 校正 */
+const ROW_SIZE = 148;
 
 const nav = inject(navigationKey)!;
 const ports = inject(portsKey)!;
@@ -520,7 +521,7 @@ watch(
           class="min-h-0 flex-1 bg-surface-chat"
           type="hover"
         >
-          <div class="px-5 py-5">
+          <div class="px-3 py-4 sm:px-5 sm:py-5">
             <div
               class="relative w-full"
               :style="{ height: `${messagesTotalSize}px` }"
@@ -528,10 +529,10 @@ watch(
               <div
                 v-for="row in messageVirtualItems"
                 :key="String(row.key)"
-                class="absolute top-0 left-0 box-border w-full px-1 pb-5"
+                class="absolute top-0 left-0 box-border w-full min-w-0 px-0.5 pb-8 sm:px-1"
                 :data-index="row.index"
+                :ref="messageVirtualizer.measureElement"
                 :style="{
-                  height: `${row.size}px`,
                   transform: `translateY(${row.start}px)`,
                 }"
               >

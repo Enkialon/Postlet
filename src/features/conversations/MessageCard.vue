@@ -117,7 +117,7 @@ function onMenuSelect(id: string): void {
 
 <template>
   <article
-    class="flex w-full max-w-[760px] items-start gap-2.5"
+    class="flex w-full min-w-0 max-w-full items-start gap-2.5"
     :class="outbound ? 'ml-auto flex-row-reverse' : ''"
     @contextmenu="openMenu"
   >
@@ -128,8 +128,9 @@ function onMenuSelect(id: string): void {
       class="mt-0.5 shrink-0"
     />
 
+    <!-- max 含扣掉头像，窄窗按聊天栏宽度收缩并换行，不横向撑爆 -->
     <div
-      class="grid min-w-0 max-w-[min(520px,70vw)] gap-1.5"
+      class="grid min-w-0 w-fit max-w-[min(420px,calc(100%-2.75rem))] gap-1.5"
       :class="outbound ? 'justify-items-end' : 'justify-items-start'"
     >
       <div
@@ -157,7 +158,7 @@ function onMenuSelect(id: string): void {
 
       <button
         type="button"
-        class="max-w-full cursor-pointer rounded-[14px] px-3.5 py-2.5 text-left transition-[box-shadow,background-color] duration-150"
+        class="box-border w-fit min-w-0 max-w-full cursor-pointer overflow-hidden rounded-[14px] px-3.5 py-2.5 text-left transition-[box-shadow,background-color] duration-150"
         :class="[
           outbound
             ? 'rounded-tr-md bg-bubble-outgoing'
@@ -172,7 +173,7 @@ function onMenuSelect(id: string): void {
       >
         <p
           v-if="item.message.subject"
-          class="m-0 truncate text-[13px] font-medium leading-snug text-text-primary"
+          class="m-0 text-[13px] font-medium leading-snug break-words whitespace-normal text-text-primary"
           :title="item.message.subject"
           v-no-i18n
         >
@@ -181,7 +182,7 @@ function onMenuSelect(id: string): void {
 
         <p
           v-if="previewText"
-          class="m-0 line-clamp-3 text-[13px] leading-[1.5] break-words whitespace-pre-wrap text-text-secondary"
+          class="m-0 line-clamp-4 text-[13px] leading-[1.5] break-words whitespace-pre-wrap text-text-secondary"
           :class="item.message.subject ? 'mt-1' : ''"
           v-no-i18n
         >

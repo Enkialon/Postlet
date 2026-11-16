@@ -23,9 +23,9 @@ export interface PanelWidths {
 const DEFAULT_WIDTHS: PanelWidths = {
   nav: 160,
   list: 300,
-  mail: 560,
-  detail: 280,
-  compose: 330,
+  mail: 480,
+  detail: 260,
+  compose: 280,
 };
 
 const LIST_MIN = 200;

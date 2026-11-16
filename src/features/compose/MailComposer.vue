@@ -241,7 +241,7 @@ defineExpose({
     :class="
       mode === 'full'
         ? 'absolute inset-0 z-[5]'
-        : 'relative shrink-0 border-t border-border-subtle'
+        : 'relative min-h-0 shrink-0 overflow-hidden border-t border-border-subtle'
     "
     :style="mode === 'compact' ? compactStyle : undefined"
     :aria-label="mode === 'full' ? '完整写信' : '快捷写信'"

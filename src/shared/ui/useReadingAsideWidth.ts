@@ -9,9 +9,9 @@ import {
 import { usePreferences } from '../../app/preferences';
 import { usePaneDrag } from './usePaneDrag';
 
-const MAIL_MAX_RATIO = 0.9;
-/** 阅读区去掉列表后往往偏窄，详情需更高占比才拖得动 */
-const DETAIL_MAX_RATIO = 0.82;
+/** 相对阅读区宽度；窄窗口时侧栏跟着收，避免挤死聊天气泡 */
+const MAIL_MAX_RATIO = 0.72;
+const DETAIL_MAX_RATIO = 0.55;
 
 /** 读邮件 / 会话详情侧栏宽度（可拖、持久化，随容器等比上限） */
 export function useReadingAsideWidth(
