@@ -99,17 +99,19 @@ pub fn session_login_blocking(
     };
 
     match auth {
-        ImapAuth::Password { username, password } => client
-            .login(username, password)
-            .map_err(|(e, _)| PortError::Auth {
+        ImapAuth::Password { username, password } => {
+            let username = username.trim();
+            let password = password.trim();
+            client.login(username, password).map_err(|(e, _)| PortError::Auth {
                 message: format!("IMAP 密码登录失败: {e}"),
-            }),
+            })
+        }
         ImapAuth::OAuth2 {
             username,
             access_token,
         } => {
             let xoauth = Xoauth2 {
-                user: username.clone(),
+                user: username.trim().to_string(),
                 access_token: access_token.clone(),
             };
             client

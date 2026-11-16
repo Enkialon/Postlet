@@ -313,7 +313,8 @@ impl MailAuthKind {
 pub enum MailTlsMode {
     /// 隐式 TLS（如 IMAPS 993 / SMTPS 465）
     Implicit,
-    /// STARTTLS
+    /// STARTTLS（线格式固定 `starttls`，与前端 / DB 一致；勿用 snake_case 的 start_tls）
+    #[serde(rename = "starttls")]
     StartTls,
     /// 明文（仅测试）
     Plain,
