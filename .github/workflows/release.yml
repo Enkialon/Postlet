@@ -21,9 +21,6 @@ jobs:
           - platform: macos-latest
             args: --target x86_64-apple-darwin
             rust_targets: x86_64-apple-darwin
-          - platform: ubuntu-22.04
-            args: ''
-            rust_targets: ''
           - platform: windows-latest
             args: ''
             rust_targets: ''
@@ -34,31 +31,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Node 先于 pnpm；不要用 setup-node 的 cache:pnpm（store path 易失败）
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: pnpm
+          run_install: false
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_targets }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -92,9 +80,11 @@ jobs:
             - Soft-delete mail, hide sessions without wiping history
             - Licensed under **GPL-3.0-only**
 
-            Download the installer for your platform from the assets below.
+            ### Downloads
+            - **Windows**: `.msi` / `.exe` (NSIS)
+            - **macOS**: Apple Silicon (aarch64) and Intel (x86_64) bundles
 
-            [README (EN)](./README.md) · [README (中文)](./README.zh-CN.md)
+            Installers are attached below once the workflow finishes.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

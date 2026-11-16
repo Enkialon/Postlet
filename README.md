@@ -65,7 +65,7 @@ Locales live in `src/i18n/locales/`. Default language follows the OS; override i
 
 ## Releases
 
-Pushing a `v*` tag runs [`.github/workflows/release.yml`](./.github/workflows/release.yml), which builds Windows / macOS / Linux packages and attaches them to a GitHub Release.
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](./.github/workflows/release.yml), which builds **Windows** and **macOS** (Apple Silicon + Intel) packages and attaches them to a GitHub Release.
 
 ## License
 

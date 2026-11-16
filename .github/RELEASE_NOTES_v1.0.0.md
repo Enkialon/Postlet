@@ -13,7 +13,7 @@ Contact- and conversation-first desktop mail client built with **Tauri 2**.
 
 ### Downloads
 
-Platform installers are attached by the Release workflow (Windows / macOS / Linux). If assets are still uploading, wait for the [Release](https://github.com/Enkialon/Postlet/actions) workflow to finish.
+Platform installers are attached by the Release workflow (**Windows** and **macOS** Apple Silicon + Intel). If assets are still uploading, wait for the [Release](https://github.com/Enkialon/Postlet/actions) workflow to finish.
 
 ### Docs
 

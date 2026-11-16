@@ -65,7 +65,7 @@ pnpm i18n:extract
 
 ## 发布
 
-推送 `v*` 标签会触发 [`.github/workflows/release.yml`](./.github/workflows/release.yml)，在 Windows / macOS / Linux 上打包并挂到 GitHub Release。
+推送 `v*` 标签会触发 [`.github/workflows/release.yml`](./.github/workflows/release.yml)，在 **Windows** 与 **macOS**（Apple Silicon + Intel）上打包并挂到 GitHub Release。
 
 ## 许可证
 
