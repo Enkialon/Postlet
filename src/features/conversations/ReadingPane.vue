@@ -95,6 +95,15 @@ const messagesTotalSize = computed(() =>
   messageVirtualizer.value.getTotalSize(),
 );
 
+function measureMessageRow(
+  el: Element | { $el?: unknown } | null,
+): void {
+  const node = el instanceof Element ? el : el?.$el;
+  if (node instanceof Element) {
+    messageVirtualizer.value.measureElement(node);
+  }
+}
+
 function scrollToLatest(): void {
   const len = displayMessages.value.length;
   if (len === 0) return;
@@ -557,7 +566,7 @@ watch(
                 :key="String(row.key)"
                 class="absolute top-0 left-0 box-border w-full min-w-0 px-0.5 pb-6 @[28rem]/chat:px-1 @[28rem]/chat:pb-8"
                 :data-index="row.index"
-                :ref="messageVirtualizer.measureElement"
+                :ref="measureMessageRow"
                 :style="{
                   transform: `translateY(${row.start}px)`,
                 }"
