@@ -28,6 +28,16 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
+/// 本地入队后异步冲刷远端；不阻塞用例返回（调度器仍会兜底）。
+fn spawn_flush_due_mutations(db: &SqlitePool, paths: &AppPaths, account_id: &AccountId) {
+    let db = db.clone();
+    let paths = paths.clone();
+    let account_id = account_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = flush_due_mutations(&db, &paths, &account_id, 32).await;
+    });
+}
+
 fn backoff_ms(attempts: i32) -> i64 {
     let exp = attempts.clamp(0, 6) as u32;
     (5_000i64).saturating_mul(1i64 << exp).min(15 * 60_000)
@@ -92,7 +102,7 @@ pub async fn ensure_message_body(
     }
 }
 
-/// 批量修改已读并入队远端推送；返回 ChangeSet。
+/// 批量修改已读：本地更新 + 入队后立即返回；远端由后台 flush。
 pub async fn mark_read(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -112,7 +122,9 @@ pub async fn mark_read(
     }
     tx.commit().await?;
 
-    let _ = flush_due_mutations(db, paths, &cmd.account_id, 32).await;
+    if !changed.is_empty() {
+        spawn_flush_due_mutations(db, paths, &cmd.account_id);
+    }
 
     Ok(ChangeSet {
         account_id: cmd.account_id,
@@ -123,7 +135,7 @@ pub async fn mark_read(
     })
 }
 
-/// 批量删除邮件：本地软删 + 入队远端删除，并重算会话投影。
+/// 批量删除邮件：本地软删 + 入队后立即返回；远端由后台 flush。
 pub async fn delete_messages(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -168,7 +180,9 @@ pub async fn delete_messages(
     }
     tx.commit().await?;
 
-    let _ = flush_due_mutations(db, paths, &cmd.account_id, 32).await;
+    if !changed.is_empty() {
+        spawn_flush_due_mutations(db, paths, &cmd.account_id);
+    }
 
     Ok(ChangeSet {
         account_id: cmd.account_id,

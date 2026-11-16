@@ -212,31 +212,53 @@ export function useMessages() {
     await markQueue.value;
   }
 
-  /** 删除邮件：本地标 deleted_remote；是否从气泡列表消失由前端开关决定。 */
+  /** 删除邮件：先乐观标 deleted_remote，再等本地入队；远端由后端后台 flush。 */
   async function deleteMessages(messageIds: MessageId[]): Promise<void> {
     const accountId = nav.accountId.value;
     if (!accountId || messageIds.length === 0) return;
 
     markQueue.value = markQueue.value.then(async () => {
-      await ports.message.deleteMessages({
-        account_id: accountId,
-        message_ids: messageIds,
-      });
       const now = Date.now();
+      const rollback: Array<{
+        key: string;
+        status: MessageWithRecipients['message']['sync_status'];
+        local_updated_at: number;
+      }> = [];
       for (const id of messageIds) {
         const key = cacheKey(accountId, id);
         const item = entityCache.get(key);
-        if (item) {
-          item.message.sync_status = 'deleted_remote';
-          item.message.local_updated_at = now;
-          entityCache.set(key, item);
-        }
+        if (!item) continue;
+        rollback.push({
+          key,
+          status: item.message.sync_status,
+          local_updated_at: item.message.local_updated_at,
+        });
+        item.message.sync_status = 'deleted_remote';
+        item.message.local_updated_at = now;
+        entityCache.set(key, item);
       }
       applyCacheToList(accountId);
       const nextExpanded = new Set(expandedIds.value);
       for (const id of messageIds) nextExpanded.delete(id);
       expandedIds.value = nextExpanded;
-      await conversations.refreshSoft();
+
+      try {
+        await ports.message.deleteMessages({
+          account_id: accountId,
+          message_ids: messageIds,
+        });
+      } catch (e) {
+        for (const snap of rollback) {
+          const item = entityCache.get(snap.key);
+          if (!item) continue;
+          item.message.sync_status = snap.status;
+          item.message.local_updated_at = snap.local_updated_at;
+          entityCache.set(snap.key, item);
+        }
+        applyCacheToList(accountId);
+        throw e;
+      }
+      void conversations.refreshSoft();
     });
     await markQueue.value;
   }
