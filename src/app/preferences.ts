@@ -2,8 +2,8 @@ import { reactive } from 'vue';
 import {
   detectInitialLocale,
   persistLocale,
+  setI18nLocale,
   type AppLocale,
-  i18n,
 } from '../i18n';
 
 const WIDTH_KEY = 'postlet.panelWidths';
@@ -89,7 +89,7 @@ export function usePreferences() {
   function setLocale(locale: AppLocale): void {
     preferences.locale = locale;
     persistLocale(locale);
-    i18n.global.locale.value = locale;
+    setI18nLocale(locale);
   }
 
   function setPanelWidths(widths: Partial<PanelWidths>): void {

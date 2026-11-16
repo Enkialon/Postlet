@@ -1,6 +1,6 @@
-import { createI18n } from 'vue-i18n';
-import { zhCN } from './messages/zh-CN';
-import { enUS } from './messages/en-US';
+import { createI18n, type PathValue } from 'vue-i18n';
+import zhCN from './locales/zh-CN.json';
+import enUS from './locales/en-US.json';
 
 export type AppLocale = 'zh-CN' | 'en-US';
 
@@ -18,6 +18,16 @@ export function persistLocale(locale: AppLocale): void {
   localStorage.setItem(STORAGE_KEY, locale);
 }
 
+/**
+ * 中文原文作 Key，可能含 `.` 等字符；用扁平查找，避免 vue-i18n 按路径拆分。
+ */
+function flatMessageResolver(obj: unknown, path: string): PathValue {
+  if (obj != null && typeof obj === 'object' && path in (obj as object)) {
+    return (obj as Record<string, PathValue>)[path] ?? null;
+  }
+  return null;
+}
+
 export const i18n = createI18n({
   legacy: false,
   locale: detectInitialLocale(),
@@ -26,7 +36,12 @@ export const i18n = createI18n({
     'zh-CN': zhCN,
     'en-US': enUS,
   },
+  messageResolver: flatMessageResolver,
 });
+
+export function setI18nLocale(locale: AppLocale): void {
+  i18n.global.locale.value = locale;
+}
 
 /** 动态文案辅助：显式国际化 */
 export function tDynamic(

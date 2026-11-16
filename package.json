@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "i18n:extract": "node plugins/vite-plugin-auto-i18n/extract.mjs",
     "test:conversation-order": "npx --yes tsx src/features/conversations/conversationListOrder.selftest.ts"
   },
   "dependencies": {
