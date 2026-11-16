@@ -1,3 +1,6 @@
+# Vite 临时 config 从 node_modules/.vite-temp 解析依赖，需要扁平布局。
+nodeLinker: hoisted
+
 minimumReleaseAgeExclude:
   - '@intlify/core-base@11.4.19'
   - '@intlify/devtools-types@11.4.19'
