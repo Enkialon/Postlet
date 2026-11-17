@@ -18,7 +18,7 @@
 | 03 | [持久化草稿和受管理附件](03-attachment-storage.md)（已完成） | I-07；为 I-08 提供内容引用，队列归 Task 08 | 01 |
 | 04 | [移除用例反向依赖并提供受控 worker 入口](04-application-runtime-boundary.md)（已完成） | A-03、A-02 | 01、02 |
 | 05 | [持久化账号变更版本并恢复前端刷新](05-change-version.md)（已完成） | A-03 | 04 |
-| 06 | [生成可重放的发送内容和正确回复头](06-outbound-snapshot.md) | I-07、I-08、I-11、A-06 | 03、04 |
+| 06 | [生成可重放的发送内容和正确回复头](06-outbound-snapshot.md)（已完成） | I-07、I-08、I-11、A-06 | 03、04 |
 | 07 | [分类 SMTP 错误与不确定结果](07-smtp-results.md) | I-18、I-08 | 01、06 |
 | 08 | [持久化发送队列及前端状态](08-send-queue.md) | I-08、I-07、A-06 | 05、06、07 |
 | 09 | [识别特殊文件夹及控制展示范围](09-folder-roles.md) | I-12；仅为后续 Trash 删除提供角色 | 05 |

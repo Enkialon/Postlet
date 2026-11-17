@@ -8,5 +8,6 @@ pub mod jobs;
 pub mod mail_transports;
 pub mod messages;
 pub mod mutations;
+pub mod outbound_snapshots;
 pub mod sessions;
 mod rows;

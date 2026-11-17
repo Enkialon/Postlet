@@ -361,3 +361,42 @@ CREATE TABLE message_attachments (
 
 CREATE INDEX idx_message_attachments_content
     ON message_attachments(account_id, content_id);
+
+-- Task 06：外发快照（不可变 MIME / envelope），重试复用同一内容
+CREATE TABLE outbound_snapshots (
+    snapshot_id         TEXT NOT NULL,
+    account_id          TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    content_version     INTEGER NOT NULL DEFAULT 1,
+    internet_message_id TEXT NOT NULL,
+    date                TEXT NOT NULL,
+    -- 完整 MIME 字节的受管理内容引用（attachment_contents）
+    mime_content_id     TEXT NOT NULL,
+    envelope_json       TEXT NOT NULL DEFAULT '{}',
+    subject             TEXT NOT NULL DEFAULT '',
+    text_body           TEXT NOT NULL DEFAULT '',
+    html_body           TEXT,
+    in_reply_to         TEXT,
+    -- `references` 是 SQLite 保留字，统一用 references_header
+    references_header   TEXT,
+    created_at          INTEGER NOT NULL,
+    PRIMARY KEY (account_id, snapshot_id),
+    FOREIGN KEY (account_id, mime_content_id) REFERENCES attachment_contents(account_id, content_id)
+);
+
+CREATE INDEX idx_outbound_snapshots_account
+    ON outbound_snapshots(account_id, created_at);
+
+CREATE TABLE snapshot_attachments (
+    account_id   TEXT NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    content_id   TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    mime         TEXT NOT NULL,
+    sort_order   INTEGER NOT NULL DEFAULT 0 CHECK(sort_order >= 0),
+    PRIMARY KEY (account_id, snapshot_id, content_id),
+    FOREIGN KEY (account_id, snapshot_id) REFERENCES outbound_snapshots(account_id, snapshot_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, content_id) REFERENCES attachment_contents(account_id, content_id)
+);
+
+CREATE INDEX idx_snapshot_attachments_content
+    ON snapshot_attachments(account_id, content_id);

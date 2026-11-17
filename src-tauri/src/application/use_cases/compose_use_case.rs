@@ -4,7 +4,7 @@ use crate::application::dto::{
     ComposeAttachmentDraft, ComposeDraft, ComposeRecipientRef, ImportAttachmentCommand,
     SaveComposeDraftCommand, SendComposedMailCommand,
 };
-use crate::application::error::AppError;
+use crate::application::error::{AppError, AppErrorCode};
 use crate::application::use_cases::attachment_use_case;
 use crate::domain::entities::{Message, MessageRecipient, MessageWithRecipients};
 use crate::domain::value_objects::{
@@ -12,8 +12,14 @@ use crate::domain::value_objects::{
     RecipientRole, SessionId, TimestampMs,
 };
 use crate::infrastructure::attachment_store;
+use crate::infrastructure::mail::outbound_content::{
+    build_snapshot, build_references, new_internet_message_id, SnapshotAttachmentBytes,
+    SnapshotInput, SnapshotRecipient,
+};
 use crate::infrastructure::paths::AppPaths;
-use crate::infrastructure::repository::{accounts, attachments, messages, sessions};
+use crate::infrastructure::repository::{
+    accounts, attachments, messages, outbound_snapshots, sessions,
+};
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -306,6 +312,98 @@ pub async fn import_attachment(
     attachment_use_case::import_attachment(db, paths, cmd).await
 }
 
+
+/// 持久化不可变外发快照：MIME 字节进受管理内容存储，元数据进 outbound_snapshots。
+///
+/// 调用方必须已持有该账号附件锁（读取附件与安装 MIME 在同一锁窗口内）。
+async fn persist_snapshot(
+    tx: &mut sqlx::SqliteConnection,
+    paths: &AppPaths,
+    input: &SnapshotInput,
+) -> Result<(String, String), AppError> {
+    let internet_message_id = new_internet_message_id();
+    let built = build_snapshot(input, &internet_message_id).map_err(AppError::from)?;
+
+    // MIME 字节复用受管理内容存储（同名同摘要去重由调用方保证一次性）
+    let (temp_path, digest) = attachment_store::write_temp(
+        &paths.attachments_dir,
+        &input.account_id,
+        &built.mime,
+    )
+    .map_err(AppError::from)?;
+    let mime_content_id = format!("mime-{}", Uuid::new_v4().as_hyphenated());
+    let installed = attachment_store::install_from_temp(
+        &paths.attachments_dir,
+        &input.account_id,
+        &temp_path,
+        &mime_content_id,
+        built.mime.len() as u64,
+        &digest,
+    )
+    .map_err(AppError::from)?;
+    let storage_key = installed
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&mime_content_id)
+        .to_string();
+
+    attachments::insert_content(
+        tx,
+        &attachments::AttachmentContentRow {
+            content_id: mime_content_id.clone(),
+            account_id: input.account_id.clone(),
+            storage_key,
+            byte_length: built.mime.len() as i64,
+            digest,
+            created_at: now_ms(),
+        },
+    )
+    .await
+    .map_err(AppError::from)?;
+
+    let snapshot_id = format!("snap-{}", Uuid::new_v4().as_hyphenated());
+    let envelope_json = serde_json::to_string(&built.envelope)
+        .map_err(|e| AppError::internal(format!("envelope 序列化失败: {e}")))?;
+    let row = outbound_snapshots::OutboundSnapshotRow {
+        snapshot_id: snapshot_id.clone(),
+        account_id: input.account_id.clone(),
+        content_version: 1,
+        internet_message_id: built.internet_message_id.clone(),
+        date: built.date.clone(),
+        mime_content_id,
+        envelope_json,
+        subject: built.subject.clone(),
+        text_body: built.text_body.clone(),
+        html_body: built.html_body.clone(),
+        in_reply_to: built.in_reply_to.clone(),
+        references: built.references.clone(),
+        created_at: now_ms(),
+    };
+    let atts: Vec<outbound_snapshots::SnapshotAttachmentRow> = built
+        .attachments
+        .iter()
+        .map(|a| outbound_snapshots::SnapshotAttachmentRow {
+            content_id: a.content_id.clone(),
+            name: a.name.clone(),
+            mime: a.mime.clone(),
+            sort_order: a.sort_order,
+        })
+        .collect();
+    outbound_snapshots::insert_snapshot(tx, &row, &atts)
+        .await
+        .map_err(AppError::from)?;
+    Ok((snapshot_id, built.internet_message_id))
+}
+
+fn snapshot_recipients(list: &[ComposeRecipientRef]) -> Vec<SnapshotRecipient> {
+    list.iter()
+        .map(|r| SnapshotRecipient {
+            address: r.address.as_str().to_string(),
+            name: r.display_name.clone(),
+        })
+        .collect()
+}
+
 /// 本地发送：落库 outbound 邮件到指定 Session；清除草稿。附件发送仍拒绝至 Task 08。
 pub async fn send(
     db: &SqlitePool,
@@ -317,6 +415,19 @@ pub async fn send(
             "附件内容存储尚未接通发送通道，无法发送含附件的邮件；草稿已保留",
         ));
     }
+
+    // 持锁覆盖附件读取与 MIME 持久化；失败即回滚，草稿保持原样
+    let _lock = attachment_store::lock_account(&paths.attachments_dir, &cmd.account_id).map_err(
+        |err| match err {
+            crate::infrastructure::error::InfraError::Conflict { message } => AppError {
+                code: AppErrorCode::Conflict,
+                message,
+                retryable: true,
+            },
+            other => other.into(),
+        },
+    )?;
+
     let mut tx = db.begin().await?;
 
     let account = accounts::get(&mut tx, &cmd.account_id)
@@ -348,6 +459,7 @@ pub async fn send(
     }
 
     let mut in_reply_to: Option<String> = None;
+    let mut references: Option<String> = None;
     let mut subject = cmd.subject.trim().to_string();
 
     if let Some(reply_id) = &cmd.reply_to_message_id {
@@ -358,10 +470,52 @@ pub async fn send(
             return Err(AppError::not_found("回复目标邮件不存在"));
         }
         in_reply_to = reply.message.internet_message_id.clone();
+        // 父信完整 References 链在后续 MIME 摄取任务补齐；当前至少包含父信 ID
+        references = build_references(None, reply.message.internet_message_id.as_deref());
         if subject.is_empty() {
             subject = reply_subject(&reply.message.subject);
         }
     }
+
+    // 首次派发前固定 Message-ID / Date / MIME / envelope
+    let mut attachment_bytes = Vec::new();
+    for draft in &cmd.attachments {
+        let row = attachments::get_content(&mut tx, &cmd.account_id, &draft.content_id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("附件内容不存在: {}", draft.content_id)))?;
+        let bytes = attachment_store::load_bytes(
+            &paths.attachments_dir,
+            &cmd.account_id,
+            &row.storage_key,
+        )
+        .map_err(AppError::from)?;
+        attachment_bytes.push(SnapshotAttachmentBytes {
+            content_id: draft.content_id.clone(),
+            name: draft.name.clone(),
+            mime: draft.mime.clone(),
+            sort_order: attachment_bytes.len() as i32,
+            bytes,
+        });
+    }
+    let snapshot_input = SnapshotInput {
+        account_id: cmd.account_id.clone(),
+        from: account.email.as_str().to_string(),
+        from_name: if account.display_name.trim().is_empty() {
+            account.email.as_str().to_string()
+        } else {
+            account.display_name.clone()
+        },
+        to: snapshot_recipients(&to),
+        cc: snapshot_recipients(&cc),
+        bcc: snapshot_recipients(&bcc),
+        subject: subject.clone(),
+        text_body: plain.clone(),
+        html_body: Some(cmd.body_html.clone()).filter(|h| !h.trim().is_empty()),
+        in_reply_to: in_reply_to.clone(),
+        references: references.clone(),
+        attachments: attachment_bytes,
+    };
+    let (_snapshot_id, internet_message_id) = persist_snapshot(&mut tx, paths, &snapshot_input).await?;
 
     let t = now_ms();
     let message_id = MessageId::new(next_local_id("msg"));
@@ -372,7 +526,7 @@ pub async fn send(
         remote_key: None,
         location_status: None,
         location_revision: 0,
-        internet_message_id: None,
+        internet_message_id: Some(internet_message_id),
         in_reply_to,
         subject,
         body_preview: plain.chars().take(160).collect(),
