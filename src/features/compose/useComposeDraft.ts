@@ -192,20 +192,44 @@ export function useComposeDraft() {
     fields.replyToMessageId = null;
   }
 
-  function addAttachments(files: FileList | File[]): void {
+  async function fileToBase64(file: File): Promise<string> {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  async function addAttachments(files: FileList | File[]): Promise<void> {
+    const aid = accountId.value;
+    const sid = sessionId.value;
+    if (!aid || !sid) return;
     const list = Array.from(files);
     for (const file of list) {
-      fields.attachments.push({
-        id: `att-${Math.random().toString(36).slice(2, 10)}`,
-        name: file.name,
-        size: file.size,
-        mime: file.type || 'application/octet-stream',
-      });
+      try {
+        const content_base64 = await fileToBase64(file);
+        const att = await ports.compose.importAttachment({
+          account_id: aid,
+          session_id: sid,
+          name: file.name,
+          mime: file.type || 'application/octet-stream',
+          byte_length: file.size,
+          content_base64,
+        });
+        fields.attachments.push({ ...att });
+        error.value = null;
+      } catch (e) {
+        error.value = asAppError(e).message;
+      }
     }
   }
 
-  function removeAttachment(id: string): void {
-    fields.attachments = fields.attachments.filter((a) => a.id !== id);
+  function removeAttachment(contentId: string): void {
+    fields.attachments = fields.attachments.filter(
+      (a) => a.content_id !== contentId,
+    );
   }
 
   async function send(bodyHtml: string): Promise<MessageWithRecipients | null> {

@@ -236,7 +236,7 @@ pub async fn clear_local_data(state: &AppState, account_id: &AccountId) -> Resul
         .map_err(AppError::from)?;
     tx.commit().await?;
 
-    compose_use_case::clear_drafts_for_account(state, account_id)?;
+    compose_use_case::clear_drafts_for_account(state, account_id).await?;
 
     let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
     changeset.account_cleared = true;

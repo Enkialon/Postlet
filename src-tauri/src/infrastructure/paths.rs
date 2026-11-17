@@ -6,7 +6,7 @@
 //!
 //! app_local_data_dir/             # 机器本地大数据
 //!   data/postlet.db               # 邮件 / 会话库
-//!   attachments/                  # 附件二进制（预留）
+//!   attachments/{account_id}/     # 受管理附件（tmp / objects / lock）
 //!   credentials/                  # 机密（预留；勿明文长期存放）
 //! ```
 

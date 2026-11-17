@@ -236,12 +236,24 @@ export interface SetFolderSyncEnabledCommand {
   sync_enabled: boolean;
 }
 
-/** 写信附件草稿（仅元数据，无真实上传） */
+/** 写信附件草稿（稳定 content_id 引用受管理内容） */
 export interface ComposeAttachmentDraft {
-  id: string;
+  content_id: string;
   name: string;
   size: number;
   mime: string;
+}
+
+/** 导入附件到受管理存储并挂到会话草稿 */
+export interface ImportAttachmentCommand {
+  account_id: AccountId;
+  session_id: SessionId;
+  name: string;
+  mime: string;
+  /** 声明字节数，须与解码后长度一致 */
+  byte_length: number;
+  /** 标准 Base64 编码的文件内容 */
+  content_base64: string;
 }
 
 /** 写信收件人（标签展示名 + 地址） */

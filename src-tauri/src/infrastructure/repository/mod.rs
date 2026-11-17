@@ -1,5 +1,6 @@
 //! 所有函数借用调用方连接，不自行提交事务。
 pub mod accounts;
+pub mod attachments;
 pub mod contacts;
 pub mod folder_states;
 pub mod groups;

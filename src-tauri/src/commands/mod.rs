@@ -2,11 +2,12 @@
 
 use crate::query_page::CursorPage;
 use crate::application::dto::{
-    ComposeDraft, ContactListQuery, ContactSyncProgress, CreateManualGroupCommand,     DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
-    EnsurePrivateSessionCommand, GroupListQuery, MailSyncProgress, MarkMessagesReadCommand,
-    MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
-    SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,
-    SessionListQuery, SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
+    ComposeAttachmentDraft, ComposeDraft, ContactListQuery, ContactSyncProgress,
+    CreateManualGroupCommand, DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
+    EnsurePrivateSessionCommand, GroupListQuery, ImportAttachmentCommand, MailSyncProgress,
+    MarkMessagesReadCommand, MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
+    SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem, SessionListQuery,
+    SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
     TriggerMailSyncCommand, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
     UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
 };
@@ -375,10 +376,11 @@ pub async fn compose_get_draft(
     session_id: String,
 ) -> Result<Option<ComposeDraft>, AppError> {
     compose_use_case::get_draft(
-        &state,
+        &state.db,
         &AccountId::new(account_id),
         &SessionId::new(session_id),
     )
+    .await
 }
 
 #[tauri::command]
@@ -400,6 +402,15 @@ pub async fn compose_clear_draft(
         &AccountId::new(account_id),
         &SessionId::new(session_id),
     )
+    .await
+}
+
+#[tauri::command]
+pub async fn compose_import_attachment(
+    state: State<'_, AppState>,
+    cmd: ImportAttachmentCommand,
+) -> Result<ComposeAttachmentDraft, AppError> {
+    compose_use_case::import_attachment(&state, cmd).await
 }
 
 #[tauri::command]

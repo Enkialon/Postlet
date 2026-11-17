@@ -161,8 +161,9 @@ function pickFiles(): void {
 function onFilesSelected(e: Event): void {
   const input = e.target as HTMLInputElement;
   if (input.files?.length) {
-    addAttachments(input.files);
-    scheduleSave(mailEditor.getHtml());
+    void addAttachments(input.files).then(() => {
+      scheduleSave(mailEditor.getHtml());
+    });
   }
   input.value = '';
 }
@@ -191,8 +192,9 @@ function onDrop(e: DragEvent): void {
     })();
   }
   if (others.length) {
-    addAttachments(others);
-    scheduleSave(mailEditor.getHtml());
+    void addAttachments(others).then(() => {
+      scheduleSave(mailEditor.getHtml());
+    });
   }
 }
 
@@ -359,7 +361,7 @@ defineExpose({
     >
       <li
         v-for="att in fields.attachments"
-        :key="att.id"
+        :key="att.content_id"
         class="flex items-center gap-1 rounded-pill bg-surface-muted px-2 py-0.5 text-[12px] text-text-secondary"
       >
         <span class="max-w-[10rem] truncate" v-no-i18n>{{ att.name }}</span>
@@ -368,7 +370,7 @@ defineExpose({
           class="border-0 bg-transparent p-0 text-text-tertiary hover:text-danger"
           :aria-label="`移除 ${att.name}`"
           @click="
-            removeAttachment(att.id);
+            removeAttachment(att.content_id);
             scheduleSave(mailEditor.getHtml());
           "
         >

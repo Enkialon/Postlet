@@ -2,13 +2,26 @@
 
 use crate::domain::value_objects::{AccountId, EmailAddress, MessageId, SessionId, TimestampMs};
 
-/// 写信附件草稿（仅元数据）
+/// 写信附件草稿（稳定 content_id 引用受管理内容）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ComposeAttachmentDraft {
-    pub id: String,
+    pub content_id: String,
     pub name: String,
     pub size: i64,
     pub mime: String,
+}
+
+/// 导入附件到受管理存储并挂到会话草稿
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImportAttachmentCommand {
+    pub account_id: AccountId,
+    pub session_id: SessionId,
+    pub name: String,
+    pub mime: String,
+    /// 声明字节数，须与解码后长度一致
+    pub byte_length: i64,
+    /// 标准 Base64 编码的文件内容
+    pub content_base64: String,
 }
 
 /// 写信收件人（标签展示名 + 地址）

@@ -296,3 +296,66 @@ CREATE TABLE pending_message_mutations (
 
 CREATE INDEX idx_pending_message_mutations_due
     ON pending_message_mutations(account_id, available_at);
+
+-- Task 03：受管理附件内容 + 持久化写信草稿（稳定 content_id 引用）
+CREATE TABLE attachment_contents (
+    content_id   TEXT NOT NULL,
+    account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    storage_key  TEXT NOT NULL,
+    byte_length  INTEGER NOT NULL CHECK(byte_length >= 0),
+    digest       TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (account_id, content_id),
+    UNIQUE (account_id, storage_key)
+);
+
+CREATE INDEX idx_attachment_contents_account
+    ON attachment_contents(account_id);
+
+CREATE TABLE compose_drafts (
+    draft_id              TEXT NOT NULL,
+    account_id            TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    session_id            TEXT NOT NULL,
+    reply_to_message_id   TEXT,
+    to_json               TEXT NOT NULL DEFAULT '[]',
+    cc_json               TEXT NOT NULL DEFAULT '[]',
+    bcc_json              TEXT NOT NULL DEFAULT '[]',
+    subject               TEXT NOT NULL DEFAULT '',
+    body_html             TEXT NOT NULL DEFAULT '',
+    updated_at            INTEGER NOT NULL,
+    PRIMARY KEY (account_id, draft_id),
+    UNIQUE (account_id, session_id)
+);
+
+CREATE INDEX idx_compose_drafts_session
+    ON compose_drafts(account_id, session_id);
+
+CREATE TABLE draft_attachments (
+    account_id   TEXT NOT NULL,
+    draft_id     TEXT NOT NULL,
+    content_id   TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    mime         TEXT NOT NULL,
+    sort_order   INTEGER NOT NULL DEFAULT 0 CHECK(sort_order >= 0),
+    PRIMARY KEY (account_id, draft_id, content_id),
+    FOREIGN KEY (account_id, draft_id) REFERENCES compose_drafts(account_id, draft_id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, content_id) REFERENCES attachment_contents(account_id, content_id)
+);
+
+CREATE INDEX idx_draft_attachments_content
+    ON draft_attachments(account_id, content_id);
+
+CREATE TABLE message_attachments (
+    account_id   TEXT NOT NULL,
+    message_id   TEXT NOT NULL,
+    content_id   TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    mime         TEXT NOT NULL,
+    sort_order   INTEGER NOT NULL DEFAULT 0 CHECK(sort_order >= 0),
+    PRIMARY KEY (account_id, message_id, content_id),
+    FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, content_id) REFERENCES attachment_contents(account_id, content_id)
+);
+
+CREATE INDEX idx_message_attachments_content
+    ON message_attachments(account_id, content_id);

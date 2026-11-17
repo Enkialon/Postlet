@@ -6,10 +6,12 @@ import type {
   CreateManualGroupCommand,
   CursorPage,
   DeleteMessagesCommand,
+  ComposeAttachmentDraft,
   HideGroupCommand,
   EnsureGroupSessionCommand,
   EnsurePrivateSessionCommand,
   GroupListQuery,
+  ImportAttachmentCommand,
   MailSyncProgress,
   MarkMessagesReadCommand,
   MergeSessionsCommand,
@@ -145,6 +147,8 @@ export function createTauriPorts(): AppPorts {
         invoke<ComposeDraft>('compose_save_draft', { cmd }),
       clearDraft: (accountId: AccountId, sessionId: SessionId) =>
         invoke<void>('compose_clear_draft', { accountId, sessionId }),
+      importAttachment: (cmd: ImportAttachmentCommand) =>
+        invoke<ComposeAttachmentDraft>('compose_import_attachment', { cmd }),
       send: (cmd: SendComposedMailCommand) =>
         invoke<MessageWithRecipients>('compose_send', { cmd }),
     },

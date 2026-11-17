@@ -1,7 +1,9 @@
 import type { ComposePort } from '../../ports/composePort';
 import type {
+  ComposeAttachmentDraft,
   ComposeDraft,
   ComposeRecipientRef,
+  ImportAttachmentCommand,
   SaveComposeDraftCommand,
   SendComposedMailCommand,
 } from '../../domain/dto';
@@ -51,8 +53,27 @@ function normalizeRecipients(
   return out;
 }
 
+function decodeBase64(raw: string): Uint8Array | null {
+  try {
+    const binary = atob(raw.trim());
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+type StoredContent = {
+  bytes: Uint8Array;
+  byte_length: number;
+  refs: Set<string>;
+};
+
+/** 内存写信适配器：与 Rust 同一契约（content_id 引用 + 导入挂草稿） */
 export class MemoryComposeAdapter implements ComposePort {
   private readonly drafts = new Map<string, ComposeDraft>();
+  private readonly contents = new Map<string, StoredContent>();
 
   constructor(private readonly store: MemoryStore) {}
 
@@ -60,17 +81,82 @@ export class MemoryComposeAdapter implements ComposePort {
     return `${accountId}:${sessionId}`;
   }
 
+  private contentKey(accountId: AccountId, contentId: string): string {
+    return `${accountId}:${contentId}`;
+  }
+
+  private draftRefKey(accountId: AccountId, sessionId: SessionId): string {
+    return `draft:${accountId}:${sessionId}`;
+  }
+
+  private ensureDraftShell(
+    accountId: AccountId,
+    sessionId: SessionId,
+  ): ComposeDraft {
+    const key = this.draftKey(accountId, sessionId);
+    const existing = this.drafts.get(key);
+    if (existing) return existing;
+    const draft: ComposeDraft = {
+      account_id: accountId,
+      session_id: sessionId,
+      reply_to_message_id: null,
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: '',
+      body_html: '',
+      attachments: [],
+      updated_at: Date.now(),
+    };
+    this.drafts.set(key, draft);
+    return draft;
+  }
+
+  private releaseDraftRefs(accountId: AccountId, sessionId: SessionId): void {
+    const refKey = this.draftRefKey(accountId, sessionId);
+    for (const [ck, stored] of this.contents) {
+      if (!ck.startsWith(`${accountId}:`)) continue;
+      stored.refs.delete(refKey);
+      if (stored.refs.size === 0) this.contents.delete(ck);
+    }
+  }
+
   async getDraft(
     accountId: AccountId,
     sessionId: SessionId,
   ): Promise<ComposeDraft | null> {
     this.store.requireAccount(accountId);
-    return this.drafts.get(this.draftKey(accountId, sessionId)) ?? null;
+    const draft = this.drafts.get(this.draftKey(accountId, sessionId));
+    if (!draft) return null;
+    return {
+      ...draft,
+      to: draft.to.map((r) => ({ ...r })),
+      cc: draft.cc.map((r) => ({ ...r })),
+      bcc: draft.bcc.map((r) => ({ ...r })),
+      attachments: draft.attachments.map((a) => ({ ...a })),
+    };
   }
 
   async saveDraft(cmd: SaveComposeDraftCommand): Promise<ComposeDraft> {
     this.store.requireAccount(cmd.account_id);
-    const key = this.draftKey(cmd.account_id, cmd.session_id);
+    for (const att of cmd.attachments) {
+      const stored = this.contents.get(
+        this.contentKey(cmd.account_id, att.content_id),
+      );
+      if (!stored) {
+        this.store.failValidation(`附件内容不存在: ${att.content_id}`);
+      }
+    }
+
+    this.releaseDraftRefs(cmd.account_id, cmd.session_id);
+    const refKey = this.draftRefKey(cmd.account_id, cmd.session_id);
+    for (const att of cmd.attachments) {
+      const stored = this.contents.get(
+        this.contentKey(cmd.account_id, att.content_id),
+      )!;
+      stored.refs.add(refKey);
+    }
+
     const draft: ComposeDraft = {
       account_id: cmd.account_id,
       session_id: cmd.session_id,
@@ -83,16 +169,57 @@ export class MemoryComposeAdapter implements ComposePort {
       attachments: cmd.attachments.map((a) => ({ ...a })),
       updated_at: Date.now(),
     };
-    this.drafts.set(key, draft);
-    return draft;
+    this.drafts.set(this.draftKey(cmd.account_id, cmd.session_id), draft);
+    return {
+      ...draft,
+      attachments: draft.attachments.map((a) => ({ ...a })),
+    };
   }
 
   async clearDraft(accountId: AccountId, sessionId: SessionId): Promise<void> {
     this.store.requireAccount(accountId);
+    this.releaseDraftRefs(accountId, sessionId);
     this.drafts.delete(this.draftKey(accountId, sessionId));
   }
 
+  async importAttachment(
+    cmd: ImportAttachmentCommand,
+  ): Promise<ComposeAttachmentDraft> {
+    this.store.requireAccount(cmd.account_id);
+    const name = cmd.name.trim();
+    if (!name) this.store.failValidation('附件名称不能为空');
+    const bytes = decodeBase64(cmd.content_base64);
+    if (!bytes) this.store.failValidation('附件内容 Base64 无效');
+    if (bytes.length !== cmd.byte_length) {
+      this.store.failValidation('附件长度与声明不一致');
+    }
+    const contentId = this.store.nextId('att');
+    const att: ComposeAttachmentDraft = {
+      content_id: contentId,
+      name,
+      size: bytes.length,
+      mime: cmd.mime.trim() || 'application/octet-stream',
+    };
+    const draft = this.ensureDraftShell(cmd.account_id, cmd.session_id);
+    const refKey = this.draftRefKey(cmd.account_id, cmd.session_id);
+    this.contents.set(this.contentKey(cmd.account_id, contentId), {
+      bytes,
+      byte_length: bytes.length,
+      refs: new Set([refKey]),
+    });
+    draft.attachments = [...draft.attachments, att];
+    draft.updated_at = Date.now();
+    this.drafts.set(this.draftKey(cmd.account_id, cmd.session_id), draft);
+    return { ...att };
+  }
+
   async send(cmd: SendComposedMailCommand): Promise<MessageWithRecipients> {
+    if (cmd.attachments.length > 0) {
+      this.store.failValidation(
+        '附件内容存储尚未接通发送通道，无法发送含附件的邮件；草稿已保留',
+      );
+    }
+
     const account = this.store.requireAccount(cmd.account_id);
     const sessKey = this.store.sessionKey(cmd.account_id, cmd.session_id);
     const session = this.store.sessions.get(sessKey);
@@ -186,6 +313,7 @@ export class MemoryComposeAdapter implements ComposePort {
     this.store.messages.set(msgKey, message);
     this.store.recipients.set(msgKey, recipients);
     this.store.recomputeSession(cmd.account_id, cmd.session_id);
+    this.releaseDraftRefs(cmd.account_id, cmd.session_id);
     this.drafts.delete(this.draftKey(cmd.account_id, cmd.session_id));
 
     return { message, recipients };
