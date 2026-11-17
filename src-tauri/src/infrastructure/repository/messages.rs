@@ -104,11 +104,13 @@ pub async fn upsert_with_recipients(
 ) -> Result<(), InfraError> {
     let m = &bundle.message;
     sqlx::query(
-        "INSERT INTO messages (id, account_id, session_id, remote_key, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, remote_is_read, remote_is_draft, remote_is_deleted, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO messages (id, account_id, session_id, remote_key, location_status, location_revision, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, remote_is_read, remote_is_draft, remote_is_deleted, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             session_id=excluded.session_id,
             remote_key=excluded.remote_key,
+            location_status=excluded.location_status,
+            location_revision=excluded.location_revision,
             internet_message_id=excluded.internet_message_id,
             in_reply_to=excluded.in_reply_to,
             subject=excluded.subject,
@@ -137,6 +139,8 @@ pub async fn upsert_with_recipients(
     .bind(m.account_id.as_str())
     .bind(m.session_id.as_str())
     .bind(m.remote_key.as_ref().map(|g| g.as_str()))
+    .bind(m.location_status.map(|status| status.as_str()))
+    .bind(m.location_revision)
     .bind(&m.internet_message_id)
     .bind(&m.in_reply_to)
     .bind(&m.subject)
@@ -263,6 +267,17 @@ pub async fn mark_deleted_remote(
     Ok(())
 }
 
+/// 位置有效性与用户删除意图分开；失效后保留旧唯一键及全部内容。
+pub async fn set_location_status(
+    conn: &mut SqliteConnection, account_id: &AccountId, message_id: &MessageId,
+    status: crate::domain::mail::LocationStatus,
+) -> Result<(), InfraError> {
+    sqlx::query("UPDATE messages SET location_status = ?, location_revision = location_revision + 1 WHERE account_id = ? AND id = ? AND location_status != ? AND (location_status != 'invalidated' OR ? = 'invalidated')")
+        .bind(status.as_str()).bind(account_id.as_str()).bind(message_id.as_str()).bind(status.as_str()).bind(status.as_str())
+        .execute(conn).await?;
+    Ok(())
+}
+
 pub async fn delete_physical(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -310,7 +325,7 @@ pub async fn list_ids_by_session(
 ) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
-         WHERE account_id = ? AND session_id = ? AND sync_status != 'deleted_remote'
+         WHERE account_id = ? AND session_id = ? AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
          ORDER BY local_updated_at DESC",
     )
     .bind(account_id.as_str())
@@ -334,7 +349,7 @@ pub async fn list_ids_involving_addresses(
          WHERE m.account_id = ",
     );
     qb.push_bind(account_id.as_str());
-    qb.push(" AND m.sync_status != 'deleted_remote' AND (m.from_address IN (");
+    qb.push(" AND m.sync_status != 'deleted_remote' AND (m.location_status = 'present' OR (m.location_status IS NULL AND m.sync_status = 'pending_local')) AND (m.from_address IN (");
     {
         let mut separated = qb.separated(", ");
         for addr in addresses {

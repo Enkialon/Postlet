@@ -181,7 +181,8 @@ pub async fn aggregate_message(
         return Ok((AggregationOutcome::Skipped, None));
     };
 
-    if bundle.message.sync_status == MessageSyncStatus::DeletedRemote {
+    if bundle.message.sync_status == MessageSyncStatus::DeletedRemote
+        || bundle.message.location_status.is_some_and(|status| status != crate::domain::mail::LocationStatus::Present) {
         jobs::complete(
             &mut tx,
             &claim.account_id,

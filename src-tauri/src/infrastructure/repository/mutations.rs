@@ -20,6 +20,8 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<PendingMessageMutation, Infr
         is_active: row.try_get("is_active")?,
         target_folder_id: crate::domain::value_objects::FolderId::new(row.try_get::<String, _>("target_folder_id")?),
         target_remote_key: crate::domain::value_objects::RemoteKey::new(row.try_get::<String, _>("target_remote_key")?),
+        target_location_revision: row.try_get("target_location_revision")?,
+        target_binding_revision: row.try_get("target_binding_revision")?,
         desired_is_read,
         version: row.try_get("version")?,
         attempts: row.try_get::<i64, _>("attempts")? as i32,
@@ -45,12 +47,15 @@ pub async fn put_read(
     let now = now_ms();
     sqlx::query(
         "INSERT INTO pending_message_mutations (
-            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key
-         ) SELECT account_id, id, 'read', ?, 1, 0, ?, NULL, folder_id, remote_key
-           FROM messages WHERE account_id = ? AND id = ? AND folder_id IS NOT NULL AND remote_key IS NOT NULL
+            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key, target_location_revision, target_binding_revision
+         ) SELECT m.account_id, m.id, 'read', ?, 1, 0, ?, NULL, m.folder_id, m.remote_key, m.location_revision, f.binding_revision
+           FROM messages m JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+           WHERE m.account_id = ? AND m.id = ? AND m.location_status = 'present' AND f.is_retired = 0
          ON CONFLICT(account_id, message_id) DO UPDATE SET
             target_folder_id=excluded.target_folder_id,
             target_remote_key=excluded.target_remote_key,
+            target_location_revision=excluded.target_location_revision,
+            target_binding_revision=excluded.target_binding_revision,
             kind='read',
             is_active=1,
             desired_is_read=excluded.desired_is_read,
@@ -77,12 +82,15 @@ pub async fn put_delete(
     let now = now_ms();
     sqlx::query(
         "INSERT INTO pending_message_mutations (
-            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key
-         ) SELECT account_id, id, 'delete', NULL, 1, 0, ?, NULL, folder_id, remote_key
-           FROM messages WHERE account_id = ? AND id = ? AND folder_id IS NOT NULL AND remote_key IS NOT NULL
+            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key, target_location_revision, target_binding_revision
+         ) SELECT m.account_id, m.id, 'delete', NULL, 1, 0, ?, NULL, m.folder_id, m.remote_key, m.location_revision, f.binding_revision
+           FROM messages m JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+           WHERE m.account_id = ? AND m.id = ? AND m.location_status = 'present' AND f.is_retired = 0
          ON CONFLICT(account_id, message_id) DO UPDATE SET
             target_folder_id=excluded.target_folder_id,
             target_remote_key=excluded.target_remote_key,
+            target_location_revision=excluded.target_location_revision,
+            target_binding_revision=excluded.target_binding_revision,
             kind='delete',
             is_active=1,
             desired_is_read=NULL,
@@ -132,6 +140,18 @@ pub async fn list_due(
     .fetch_all(&mut *conn)
     .await?;
     rows.iter().map(map_row).collect()
+}
+
+/// 展示只叠加当前有效位置/绑定上的意图；保留但失效的任务不会遮盖真实观测。
+pub async fn get_effective(conn: &mut SqliteConnection, account_id: &AccountId, message_id: &MessageId) -> Result<Option<PendingMessageMutation>, InfraError> {
+    let row = sqlx::query("SELECT p.* FROM pending_message_mutations p
+        JOIN messages m ON m.account_id = p.account_id AND m.id = p.message_id
+        JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+        WHERE p.account_id = ? AND p.message_id = ? AND p.is_active = 1 AND m.location_status = 'present' AND f.is_retired = 0
+          AND m.folder_id = p.target_folder_id AND m.remote_key = p.target_remote_key
+          AND m.location_revision = p.target_location_revision AND f.binding_revision = p.target_binding_revision")
+        .bind(account_id.as_str()).bind(message_id.as_str()).fetch_optional(conn).await?;
+    row.as_ref().map(map_row).transpose()
 }
 
 pub async fn acknowledge(
@@ -187,4 +207,27 @@ pub async fn stop_for_message(
     sqlx::query("UPDATE pending_message_mutations SET is_active = 0, last_error = ? WHERE account_id = ? AND message_id = ?")
         .bind(error).bind(account_id.as_str()).bind(message_id.as_str()).execute(conn).await?;
     Ok(())
+}
+
+pub async fn stop_if_version(conn: &mut SqliteConnection, mutation: &PendingMessageMutation, error: &str) -> Result<(), InfraError> {
+    sqlx::query("UPDATE pending_message_mutations SET is_active = 0, last_error = ? WHERE account_id = ? AND message_id = ? AND version = ?")
+        .bind(error).bind(mutation.account_id.as_str()).bind(mutation.message_id.as_str()).bind(mutation.version).execute(conn).await?;
+    Ok(())
+}
+
+/// 校验已登录账号、有效位置、固定目标及绑定修订；只返回已经核对的远端绑定。
+pub async fn validate_target(
+    conn: &mut SqliteConnection, mutation: &PendingMessageMutation,
+    protocol: crate::domain::value_objects::ReceiveProtocol,
+) -> Result<Option<String>, InfraError> {
+    Ok(sqlx::query_scalar("SELECT f.remote_binding FROM pending_message_mutations p
+        JOIN messages m ON m.account_id = p.account_id AND m.id = p.message_id
+        JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+        JOIN accounts a ON a.id = m.account_id
+        WHERE p.account_id = ? AND p.message_id = ? AND p.version = ? AND p.is_active = 1
+          AND a.is_signed_in = 1 AND m.location_status = 'present' AND f.is_retired = 0 AND f.protocol = ?
+          AND m.folder_id = p.target_folder_id AND m.remote_key = p.target_remote_key
+          AND m.location_revision = p.target_location_revision AND f.binding_revision = p.target_binding_revision")
+        .bind(mutation.account_id.as_str()).bind(mutation.message_id.as_str()).bind(mutation.version).bind(protocol.as_str())
+        .fetch_optional(conn).await?)
 }

@@ -13,8 +13,18 @@ use std::collections::{HashMap, HashSet};
 const FETCH_CHUNK: usize = 8;
 
 #[derive(Debug, Clone)]
+pub struct FolderSyncRequest {
+    pub folder_id: crate::domain::value_objects::FolderId,
+    pub remote_binding: String,
+    pub binding_revision: i64,
+    pub stored_generation: Option<String>,
+    pub known_messages: Vec<(crate::domain::value_objects::RemoteKey, bool)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FolderSyncResult {
-    pub folder: String,
+    pub folder_id: crate::domain::value_objects::FolderId,
+    pub binding_revision: i64,
     pub uidvalidity: u32,
     pub generation_changed: bool,
     /// 向前水位
@@ -28,11 +38,12 @@ pub struct FolderSyncResult {
 /// 同步单个邮箱（阻塞）。
 pub fn sync_folder(
     session: &mut ImapSession,
-    folder: &str,
-    stored_generation: Option<&str>,
-    known_messages: &[(crate::domain::value_objects::RemoteKey, bool)],
+    request: &FolderSyncRequest,
     page_limit: u32,
 ) -> Result<FolderSyncResult, InfraError> {
+    let folder = request.remote_binding.as_str();
+    let stored_generation = request.stored_generation.as_deref();
+    let known_messages = &request.known_messages;
     let mailbox = session.select(folder).map_err(|e| InfraError::Remote {
         message: format!("IMAP SELECT {folder} 失败: {e}"),
         retryable: true,
@@ -54,7 +65,7 @@ pub fn sync_folder(
     };
     let remote_uids = search_uids(session, "ALL")?;
     let page = missing_imap_page(&remote_uids, &known, page_limit);
-    let fetched = fetch_uid_page(session, folder, uidvalidity, &page)?;
+    let fetched = fetch_uid_page(session, &request.folder_id, uidvalidity, &page)?;
     if !page.is_empty() && fetched.ok_uids.is_empty() {
         return Err(InfraError::Remote {
             message: format!(
@@ -107,7 +118,8 @@ pub fn sync_folder(
     changes.extend(observed.into_iter().map(|(remote_key, flags)| RemoteMessageChange::FlagsChanged { remote_key, flags }));
 
     Ok(FolderSyncResult {
-        folder: folder.to_string(),
+        folder_id: request.folder_id.clone(),
+        binding_revision: request.binding_revision,
         uidvalidity,
         generation_changed: stored_generation.is_some_and(|generation| generation != current_generation),
         last_uid: high_uid,
@@ -131,7 +143,7 @@ struct FetchPageResult {
 
 fn fetch_uid_page(
     session: &mut ImapSession,
-    folder: &str,
+    folder: &crate::domain::value_objects::FolderId,
     uidvalidity: u32,
     uid_list: &[u32],
 ) -> Result<FetchPageResult, InfraError> {
@@ -194,7 +206,7 @@ fn fetch_uid_page(
 
 fn fetch_one_rfc822(
     session: &mut ImapSession,
-    folder: &str,
+    folder: &crate::domain::value_objects::FolderId,
     uidvalidity: u32,
     uid: u32,
 ) -> Result<Option<RemoteMessage>, InfraError> {

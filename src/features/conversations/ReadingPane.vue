@@ -71,8 +71,9 @@ let loadingOlder = false;
 
 /** 后端返回含已删；默认前端隐藏 */
 const displayMessages = computed(() => {
-  if (preferences.showDeletedInThread) return messageState.items;
-  return messageState.items.filter(
+  const effective = messageState.items.filter(item => item.message.location_status === 'present' || (item.message.location_status === null && item.message.sync_status === 'pending_local'));
+  if (preferences.showDeletedInThread) return effective;
+  return effective.filter(
     (item) => item.message.sync_status !== 'deleted_remote',
   );
 });

@@ -18,13 +18,15 @@ async fn only_enabled_unfinished_folders_keep_history_running_after_commit() {
     let b = AccountId::new("b");
     let mut folder = MailFolderSyncState {
         account_id: a.clone(),
-        folder_id: FolderId::new("INBOX"),
+        folder_id: FolderId::new("local-inbox"),
+        protocol: postlet_lib::domain::value_objects::ReceiveProtocol::Imap,
+        remote_binding: "INBOX".into(), binding_revision: 1, is_retired: false,
         parent_folder_id: None,
         display_name: "INBOX".into(),
         sync_enabled: true,
         generation: None,
-        delta_link: None,
-        next_link: None,
+        sync_cursor: None,
+        page_cursor: None,
         synced_at: None,
         sync_status: SyncStatus::Idle,
         last_error: None,
@@ -39,17 +41,18 @@ async fn only_enabled_unfinished_folders_keep_history_running_after_commit() {
     assert!(has_pending_imap_history(&db, &a).await.unwrap());
     assert!(!has_pending_imap_history(&db, &b).await.unwrap());
 
-    folder.delta_link = Some(encode_uidvalidity(7));
-    folder.next_link = Some(encode_uid_cursor(1000, 999));
+    folder.sync_cursor = Some(encode_uidvalidity(7));
+    folder.page_cursor = Some(encode_uid_cursor(1000, 999));
     save(&db, &folder).await;
     assert!(has_pending_imap_history(&db, &a).await.unwrap());
 
-    folder.next_link = Some(encode_uid_cursor(1000, 1));
+    folder.page_cursor = Some(encode_uid_cursor(1000, 1));
     save(&db, &folder).await;
     assert!(!has_pending_imap_history(&db, &a).await.unwrap());
 
-    folder.folder_id = FolderId::new("Archive");
-    folder.next_link = None;
+    folder.folder_id = FolderId::new("local-archive");
+    folder.remote_binding = "Archive".into();
+    folder.page_cursor = None;
     save(&db, &folder).await;
     assert!(has_pending_imap_history(&db, &a).await.unwrap());
     folder.sync_enabled = false;

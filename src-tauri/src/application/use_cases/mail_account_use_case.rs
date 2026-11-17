@@ -123,13 +123,10 @@ async fn persist_account(
     let existing = accounts::get_by_email(&mut tx, &email)
         .await
         .map_err(AppError::from)?;
-    let old_ref = if let Some(account) = &existing {
-        mail_transports::get(&mut tx, &account.id)
-            .await?
-            .and_then(|transport| transport.credential_ref)
-    } else {
-        None
-    };
+    let previous_transport = if let Some(account) = &existing {
+        mail_transports::get(&mut tx, &account.id).await?
+    } else { None };
+    let old_ref = previous_transport.as_ref().and_then(|transport| transport.credential_ref.clone());
     let account = if let Some(mut acc) = existing {
         acc.display_name = if cmd.display_name.trim().is_empty() {
             email.as_str().to_string()
@@ -187,6 +184,22 @@ async fn persist_account(
         imap_idle_supported: None,
         updated_at: now,
     };
+    if previous_transport.as_ref().is_some_and(|old| old.receive_protocol != transport.receive_protocol
+        || old.imap_host != transport.imap_host || old.imap_port != transport.imap_port
+        || old.imap_tls != transport.imap_tls || old.username != transport.username) {
+        let folders = crate::infrastructure::repository::folder_states::list_by_account(&mut tx, &account.id).await?;
+        for folder in folders {
+            crate::infrastructure::repository::folder_states::retire(&mut tx, &account.id, &folder.folder_id, now).await?;
+            let affected = sqlx::query_as::<_, (String, String)>("SELECT id, session_id FROM messages WHERE account_id = ? AND folder_id = ?")
+                .bind(account.id.as_str()).bind(folder.folder_id.as_str()).fetch_all(&mut *tx).await?;
+            for (mid, sid) in affected {
+                let mid = crate::domain::value_objects::MessageId::new(mid);
+                crate::infrastructure::repository::messages::set_location_status(&mut tx, &account.id, &mid, crate::domain::mail::LocationStatus::Invalidated).await?;
+                crate::infrastructure::repository::mutations::stop_for_message(&mut tx, &account.id, &mid, "收信身份或端点已改变，旧操作已停止").await?;
+                crate::infrastructure::repository::sessions::recompute_projection(&mut tx, &account.id, &crate::domain::value_objects::SessionId::new(sid)).await?;
+            }
+        }
+    }
     mail_transports::upsert(&mut tx, &transport)
         .await
         .map_err(AppError::from)?;

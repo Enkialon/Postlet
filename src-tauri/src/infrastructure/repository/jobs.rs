@@ -280,7 +280,7 @@ pub async fn list_message_ids_for_reaggregate(
 ) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
-         WHERE account_id = ? AND sync_status != 'deleted_remote'
+         WHERE account_id = ? AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
          ORDER BY local_updated_at DESC
          LIMIT ?",
     )

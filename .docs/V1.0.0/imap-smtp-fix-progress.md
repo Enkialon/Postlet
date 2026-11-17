@@ -73,3 +73,15 @@
 - Graph 稀疏 Delta 先在原文件夹范围内补完整快照，404 仅移出原位置，不跨夹追踪或用空值覆盖。Graph 缺失标志保持未知。只有明确非 Draft 的新增消息才具备通知资格。
 - 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests` 31 项通过、2 项原生钥匙串测试默认跳过；`pnpm build` 通过。覆盖缺失/空/完整 FLAGS、危险误用序号、非法响应、观测与本地意图并存、字段保留、空标题及 Graph 稀疏快照分类。Graph HTTP 补取路径尚未连接真实邮箱验证。
 - 发送任务、归档任务及定位状态/修订仍需后续拆分，未将整项 A-06 标为解决。
+
+## A-01 / I-06：本地 Folder 身份与定位有效性已接通（追加）
+
+- FolderId 由本地生成，远端绑定、协议、generation、绑定修订及退役状态独立保存。完整目录发现按有效绑定复用本地 ID；退役后的同名路径新建 ID，不继承勾选、游标或旧任务。父子关系使用同账号本地 ID。游标字段改为通用 sync_cursor/page_cursor。
+- Message 定位显式区分 present/missing/invalidated 并保存单调修订。三列位置唯一键覆盖失效旧记录；字段组 CHECK 与同账号 Folder 外键约束归属。数据库禁止替换既有位置、倒退修订及复活 invalidated 定位；无位置发送记录首次绑定确定位置仍允许。
+- 位置消失/代次失效保留正文、附件标记、Session 和错误，普通列表/预览/未读排除无效位置。missing 同代权威重现可恢复原实体并升修订；invalidated 不恢复。
+- mutation 同事务冻结位置与绑定修订；派发前校验登录态、协议、有效位置、目标及修订，失效时保留错误记录并停止，不读取当前路径来改写目标。展示也只覆盖仍有效的目标意图。
+- IMAP 请求用远端绑定 SELECT、用本地 ID 输出事实；Graph 读取/写入采用已核对的原文件夹范围，不跨位置追踪。异步正文补取仅条件更新正文，不能用旧整行覆盖最新已读/定位状态。旧绑定同步结果在提交前拒绝。
+- 变更收信主机、端口、TLS、用户名或协议时，同一配置事务退役原文件夹、失效位置和停止任务；仅替换密码保留原身份。SQL 失败时这些变更和新配置一起回滚。
+- Graph 目录发现使用完整 BFS；缺失绑定/子目录数量或中途失败不提交退役，根及子目录都显式包括隐藏目录，避免不同枚举范围误判删除。依据 [List mailFolders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders) 与 [List childFolders](https://learn.microsoft.com/en-us/graph/api/mailfolder-list-childfolders)；邮件内容 Delta 保留，未增加 folder Delta 状态双轨。
+- 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 36 项通过，含真实 Windows 钥匙串；前端构建通过。新增同名重建/父子本地 ID、退役不可复活、绑定/位置修订拒绝旧任务、位置不可替换、首次绑定、同账号 Folder 外键、端点变更原子回滚/密码替换保留身份，以及不把未知子目录数量视为 0 的测试。
+- 尚需 I-10/A-03/I-14 处理网络请求串行、认领恢复、旧 FLAGS 晚到、前端失败展示、账号任务取消及提交版本；协议真实收发和 Tauri 安装包安全验收仍不以以上模型测试替代。

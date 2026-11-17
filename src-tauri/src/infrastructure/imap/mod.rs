@@ -12,5 +12,5 @@ pub use client::{
     ImapAuth, ImapEndpoint, ImapFolderNode,
 };
 pub use idle::{run_idle_until_cancel, IdleOutcome};
-pub use session_ops::{sync_account_blocking, FolderSyncRequest, ImapSyncBatch};
-pub use sync::{sync_folder, FolderSyncResult};
+pub use session_ops::{sync_account_blocking, ImapSyncBatch};
+pub use sync::{FolderSyncRequest, FolderSyncResult};

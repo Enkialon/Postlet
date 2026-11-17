@@ -174,6 +174,8 @@ pub(super) fn message(row: &SqliteRow) -> Result<Message, sqlx::Error> {
         remote_key: row
             .try_get::<Option<String>, _>("remote_key")?
             .map(RemoteKey::new),
+        location_status: row.try_get::<Option<String>, _>("location_status")?.map(|value| crate::domain::mail::LocationStatus::parse(&value).ok_or_else(|| sqlx::Error::Decode("无效定位状态".into()))).transpose()?,
+        location_revision: row.try_get("location_revision")?,
         internet_message_id: row.try_get("internet_message_id")?,
         in_reply_to: row.try_get("in_reply_to")?,
         subject: row.try_get("subject")?,
@@ -223,12 +225,16 @@ pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState
     Ok(MailFolderSyncState {
         account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
         folder_id: FolderId::new(row.try_get::<String, _>("folder_id")?),
+        protocol: ReceiveProtocol::parse(&row.try_get::<String, _>("protocol")?).ok_or_else(|| sqlx::Error::Decode("无效文件夹协议".into()))?,
+        remote_binding: row.try_get("remote_binding")?,
+        binding_revision: row.try_get("binding_revision")?,
+        is_retired: row.try_get("is_retired")?,
         parent_folder_id: parent.filter(|s| !s.is_empty()).map(FolderId::new),
         display_name: row.try_get::<String, _>("display_name").unwrap_or_default(),
         sync_enabled: sync_enabled != 0,
         generation: row.try_get("generation")?,
-        delta_link: row.try_get("delta_link")?,
-        next_link: row.try_get("next_link")?,
+        sync_cursor: row.try_get("sync_cursor")?,
+        page_cursor: row.try_get("page_cursor")?,
         synced_at: row.try_get("synced_at")?,
         sync_status: parse_syncstatus(row.try_get("sync_status")?)?,
         last_error: row.try_get("last_error")?,

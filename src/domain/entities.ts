@@ -49,6 +49,10 @@ export interface Account {
 export interface MailFolderSyncState {
   account_id: AccountId;
   folder_id: FolderId;
+  protocol: 'graph' | 'imap';
+  remote_binding: string;
+  binding_revision: number;
+  is_retired: boolean;
   /** 父文件夹；根为 null */
   parent_folder_id: FolderId | null;
   display_name: string;
@@ -56,9 +60,9 @@ export interface MailFolderSyncState {
   sync_enabled: boolean;
   generation: string | null;
   /** 最近完成轮次的增量游标 */
-  delta_link: string | null;
+  sync_cursor: string | null;
   /** 当前未完成轮次的分页续传位置 */
-  next_link: string | null;
+  page_cursor: string | null;
   synced_at: TimestampMs | null;
   sync_status: SyncStatus;
   last_error: string | null;
@@ -86,6 +90,8 @@ export interface Message {
   session_id: SessionId;
   /** 当前位置的不透明远端键；本地草稿可空 */
   remote_key: RemoteKey | null;
+  location_status: 'present' | 'missing' | 'invalidated' | null;
+  location_revision: number;
   /** RFC Message-ID */
   internet_message_id: string | null;
   /** RFC In-Reply-To（用于找父信进同一 Session） */

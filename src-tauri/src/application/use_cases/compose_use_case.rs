@@ -229,6 +229,8 @@ pub async fn send(
         account_id: cmd.account_id.clone(),
         session_id: session_id.clone(),
         remote_key: None,
+        location_status: None,
+        location_revision: 0,
         internet_message_id: None,
         in_reply_to,
         subject,

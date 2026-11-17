@@ -93,12 +93,13 @@ async fn ensure_success(
 pub async fn delta_messages(
     access_token: &str,
     folder_id: &FolderId,
+    remote_binding: &str,
     delta_or_next_link: Option<&str>,
 ) -> Result<MailDeltaPage, InfraError> {
     let response = if let Some(link) = delta_or_next_link.filter(|s| !s.is_empty()) {
         get_absolute(access_token, link).await?
     } else {
-        let folder = folder_id.as_str();
+        let folder = remote_binding;
         let response = client(access_token)
             .me()
             .mail_folder(folder)
@@ -131,7 +132,7 @@ pub async fn delta_messages(
                 message: "Graph 变更缺少定位键".into(), retryable: false,
             })?.to_owned();
             // Hydrate only within this source folder; never follow an ID into another location.
-            let response = client(access_token).me().mail_folder(folder_id.as_str()).messages_id(&id)
+            let response = client(access_token).me().mail_folder(remote_binding).messages_id(&id)
                 .get_messages().select(MESSAGE_SELECT).send().await
                 .map_err(|error| map_http_err("Graph hydrate snapshot", error))?;
             if response.status().as_u16() == 404 {
@@ -164,11 +165,12 @@ pub async fn delta_messages(
 
 pub async fn get_message_body(
     access_token: &str,
+    remote_binding: &str,
     remote_key: &RemoteKey,
 ) -> Result<(BodyContentType, String), InfraError> {
     let response = client(access_token)
         .me()
-        .message(remote_key.as_str())
+        .mail_folder(remote_binding).messages_id(remote_key.as_str())
         .get_messages()
         .select(&["id", "body"])
         .send()
@@ -201,12 +203,13 @@ pub async fn get_message_body(
 
 pub async fn patch_message_read(
     access_token: &str,
+    remote_binding: &str,
     remote_key: &RemoteKey,
     is_read: bool,
 ) -> Result<(), InfraError> {
     let response = client(access_token)
         .me()
-        .message(remote_key.as_str())
+        .mail_folder(remote_binding).messages_id(remote_key.as_str())
         .update_messages(&json!({ "isRead": is_read }))
         .send()
         .await
@@ -218,11 +221,12 @@ pub async fn patch_message_read(
 /// 删除邮件（通常进入「已删除邮件」）。
 pub async fn delete_message(
     access_token: &str,
+    remote_binding: &str,
     remote_key: &RemoteKey,
 ) -> Result<(), InfraError> {
     let response = client(access_token)
         .me()
-        .message(remote_key.as_str())
+        .mail_folder(remote_binding).messages_id(remote_key.as_str())
         .delete_messages()
         .send()
         .await
@@ -290,15 +294,10 @@ struct ListedFolder {
     child_folder_count: i64,
 }
 
-/// 列出邮箱全部 mailFolder。
-///
-/// 优先 `mailFolders/delta`（一次分页拿全树）；失败再回退 BFS。
-/// Graph v1.0 无 `wellKnownName`，收件箱通过 well-known 路径解析 id 后标注。
+/// 完整枚举目录树（含隐藏绑定），成功后才能据此核对目录退役。
+/// 目录刷新不持久化 Delta 进度；这里不叠加第二套发现算法。
 pub async fn list_mail_folders(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
-    let mut out = match list_mail_folders_delta(access_token).await {
-        Ok(folders) if !folders.is_empty() => folders,
-        _ => list_mail_folders_bfs(access_token).await?,
-    };
+    let mut out = list_mail_folders_bfs(access_token).await?;
     annotate_inbox_well_known(access_token, &mut out).await;
     Ok(out)
 }
@@ -313,86 +312,9 @@ async fn annotate_inbox_well_known(access_token: &str, folders: &mut [RemoteMail
     }
 }
 
-/// `GET /me/mailFolders/delta`：扁平返回整棵树（含多级），避免逐层 HTTP。
-async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
-    use std::collections::HashSet;
-
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let mut next: Option<String> = Some(
-        "https://graph.microsoft.com/v1.0/me/mailFolders/delta?$select=id,displayName,parentFolderId"
-            .into(),
-    );
-
-    while let Some(link) = next.take() {
-        let response = get_absolute(access_token, &link).await?;
-        let page: ODataList = response.json().await.map_err(|_| InfraError::Remote {
-            message: "无法解析 Graph 文件夹 delta".into(),
-            retryable: true,
-        })?;
-
-        for item in page.value {
-            if item.get("@removed").is_some() {
-                continue;
-            }
-            let id = item
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if id.is_empty() || !seen.insert(id.clone()) {
-                continue;
-            }
-            let display_name = item
-                .get("displayName")
-                .and_then(|v| v.as_str())
-                .unwrap_or(id.as_str())
-                .to_string();
-            // msgfolderroot 等不在本集合内的父 → None，前端当根渲染
-            let parent_id = item
-                .get("parentFolderId")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            out.push(RemoteMailFolder {
-                id,
-                display_name,
-                parent_id,
-                well_known_name: None,
-            });
-        }
-
-        if let Some(delta) = page.delta_link.filter(|s| !s.is_empty()) {
-            // 首轮同步结束：有 deltaLink 即完整快照
-            let _ = delta;
-            break;
-        }
-        match page.next_link {
-            Some(link) if !link.is_empty() => next = Some(link),
-            _ => break,
-        }
-    }
-
-    // 把父不在集合内的 parent_id 清掉，避免悬空引用
-    let ids: HashSet<String> = out.iter().map(|f| f.id.clone()).collect();
-    for f in &mut out {
-        if f.parent_id
-            .as_ref()
-            .is_some_and(|p| !ids.contains(p))
-        {
-            f.parent_id = None;
-        }
-    }
-    Ok(out)
-}
-
-/// 根 + childFolders BFS；跳过 searchfolders 子树，避免搜索夹爆炸拖死刷新。
+/// 根 + childFolders BFS；仅完整树成功后才允许核对目录退役。
 async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
     use std::collections::{HashSet, VecDeque};
-
-    let searchfolders_id = resolve_well_known_folder_id(access_token, "searchfolders")
-        .await
-        .ok();
 
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -405,10 +327,7 @@ async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolde
             if !seen.insert(item.id.clone()) {
                 continue;
             }
-            let skip_children = searchfolders_id
-                .as_ref()
-                .is_some_and(|sid| sid == &item.id);
-            let has_children = item.child_folder_count > 0 && !skip_children;
+            let has_children = item.child_folder_count > 0;
             out.push(RemoteMailFolder {
                 id: item.id.clone(),
                 display_name: item.display_name,
@@ -467,6 +386,7 @@ async fn list_folders_under(
                 .mail_folder(pid)
                 .child_folders()
                 .list_child_folders()
+                .query(&[("includeHiddenFolders", "true")])
                 .select(FOLDER_SELECT)
                 .send()
                 .await
@@ -477,6 +397,7 @@ async fn list_folders_under(
                 .me()
                 .mail_folders()
                 .list_mail_folders()
+                .query(&[("includeHiddenFolders", "true")])
                 .select(FOLDER_SELECT)
                 .send()
                 .await
@@ -495,18 +416,13 @@ async fn list_folders_under(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            if id.is_empty() {
-                continue;
-            }
+            if id.is_empty() { return Err(InfraError::Remote { message: "Graph 目录项缺少绑定，未确认完整快照".into(), retryable: true }); }
             let display_name = item
                 .get("displayName")
                 .and_then(|v| v.as_str())
                 .unwrap_or(id.as_str())
                 .to_string();
-            let child_folder_count = item
-                .get("childFolderCount")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let child_folder_count = child_count(&item)?;
             out.push(ListedFolder {
                 id,
                 display_name,
@@ -520,6 +436,11 @@ async fn list_folders_under(
         }
     }
     Ok(out)
+}
+
+fn child_count(value: &Value) -> Result<i64, InfraError> {
+    value.get("childFolderCount").and_then(Value::as_i64).filter(|count| *count >= 0)
+        .ok_or_else(|| InfraError::Remote { message: "Graph 未返回有效子目录数量，未确认完整目录快照".into(), retryable: true })
 }
 
 async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, InfraError> {
@@ -683,6 +604,15 @@ fn parse_graph_time(node: Option<&Value>) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_traversal_never_treats_unknown_child_count_as_empty() {
+        assert_eq!(child_count(&json!({"childFolderCount": 0})).unwrap(), 0);
+        assert_eq!(child_count(&json!({"childFolderCount": 12})).unwrap(), 12);
+        for value in [json!({}), json!({"childFolderCount": null}), json!({"childFolderCount": -1}), json!({"childFolderCount": "0"})] {
+            assert!(child_count(&value).is_err());
+        }
+    }
 
     #[test]
     fn maps_graph_message_json() {

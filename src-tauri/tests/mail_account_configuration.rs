@@ -195,6 +195,40 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
                 .is_none()
         );
 
+        // 同一账号更换密码保留位置；更换收信身份/端点必须原子退役旧位置和任务。
+        sqlx::query("INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,display_name,sync_enabled,generation,updated_at) VALUES (?, 'test-folder', 'imap', 'INBOX', 'Inbox', 1, '1', 1)")
+            .bind(account.id.as_str()).execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO sessions(id,account_id,kind,normalized_address,created_at,updated_at) VALUES ('scope-session',?,'private','peer@example.com',1,1)")
+            .bind(account.id.as_str()).execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO messages(id,account_id,session_id,remote_key,location_status,location_revision,folder_id,body_content,local_updated_at) VALUES ('scope-message',?,'scope-session','imap:1:1','present',1,'test-folder','retained body',1)")
+            .bind(account.id.as_str()).execute(&db).await.unwrap();
+        let message_id = postlet_lib::domain::value_objects::MessageId::new("scope-message");
+        let folder_id = postlet_lib::domain::value_objects::FolderId::new("test-folder");
+        use postlet_lib::infrastructure::repository::{folder_states, messages, mutations};
+        mutations::put_read(&mut *db.acquire().await.unwrap(), &account.id, &message_id, true).await.unwrap();
+        mail_account_use_case::upsert_imap_smtp_account(&db, &paths, command()).await.unwrap();
+        let folder = folder_states::get(&mut *db.acquire().await.unwrap(), &account.id, &folder_id).await.unwrap().unwrap();
+        assert!(!folder.is_retired); assert_eq!(folder.binding_revision, 1);
+        let mut changed_endpoint = command(); changed_endpoint.imap_host = "other-imap.example.com".into();
+        sqlx::query("CREATE TRIGGER fail_endpoint_update BEFORE UPDATE ON account_mail_transport BEGIN SELECT RAISE(ABORT, 'test endpoint rollback'); END").execute(&db).await.unwrap();
+        assert!(mail_account_use_case::upsert_imap_smtp_account(&db, &paths, changed_endpoint.clone()).await.is_err());
+        sqlx::query("DROP TRIGGER fail_endpoint_update").execute(&db).await.unwrap();
+        let folder = folder_states::get(&mut *db.acquire().await.unwrap(), &account.id, &folder_id).await.unwrap().unwrap();
+        assert!(!folder.is_retired); assert!(folder.sync_enabled); assert_eq!(folder.generation.as_deref(), Some("1"));
+        let pending = mutations::get(&mut *db.acquire().await.unwrap(), &account.id, &message_id).await.unwrap().unwrap();
+        assert!(pending.is_active); assert!(pending.last_error.is_none());
+        let retained = messages::get(&mut *db.acquire().await.unwrap(), &account.id, &message_id).await.unwrap().unwrap();
+        assert_eq!(retained.message.location_status, Some(postlet_lib::domain::mail::LocationStatus::Present));
+        mail_account_use_case::upsert_imap_smtp_account(&db, &paths, changed_endpoint).await.unwrap();
+        let folder = folder_states::get(&mut *db.acquire().await.unwrap(), &account.id, &folder_id).await.unwrap().unwrap();
+        assert!(folder.is_retired); assert_eq!(folder.binding_revision, 2);
+        let pending = mutations::get(&mut *db.acquire().await.unwrap(), &account.id, &message_id).await.unwrap().unwrap();
+        assert!(!pending.is_active); assert!(pending.last_error.is_some());
+        let retained = messages::get(&mut *db.acquire().await.unwrap(), &account.id, &message_id).await.unwrap().unwrap();
+        assert_eq!(retained.message.body_content.as_deref(), Some("retained body"));
+        assert_eq!(retained.message.location_status, Some(postlet_lib::domain::mail::LocationStatus::Invalidated));
+        let current = mail_transports::get(&mut *db.acquire().await.unwrap(), &account.id).await.unwrap().unwrap();
+
         // 删除失败应可见、可重试，不能先改为已退出。
         let file = std::fs::read_dir(&paths.credentials_dir)
             .unwrap()

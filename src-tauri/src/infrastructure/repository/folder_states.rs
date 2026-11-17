@@ -2,7 +2,8 @@
 
 use crate::infrastructure::error::InfraError;
 use crate::domain::entities::MailFolderSyncState;
-use crate::domain::value_objects::{AccountId, FolderId};
+use crate::domain::value_objects::{AccountId, FolderId, ReceiveProtocol, SyncStatus};
+use crate::domain::mail::DiscoveredFolder;
 use sqlx::SqliteConnection;
 
 pub async fn get(
@@ -28,7 +29,7 @@ pub async fn list_by_account(
     account_id: &AccountId,
 ) -> Result<Vec<MailFolderSyncState>, InfraError> {
     sqlx::query(
-        "SELECT * FROM mail_folder_sync_state WHERE account_id = ?
+        "SELECT * FROM mail_folder_sync_state WHERE account_id = ? AND is_retired = 0
          ORDER BY display_name COLLATE NOCASE, folder_id",
     )
     .bind(account_id.as_str())
@@ -46,7 +47,7 @@ pub async fn list_sync_enabled(
 ) -> Result<Vec<MailFolderSyncState>, InfraError> {
     sqlx::query(
         "SELECT * FROM mail_folder_sync_state
-         WHERE account_id = ? AND sync_enabled = 1
+         WHERE account_id = ? AND sync_enabled = 1 AND is_retired = 0
          ORDER BY folder_id",
     )
     .bind(account_id.as_str())
@@ -65,15 +66,19 @@ pub async fn upsert(
     sqlx::query(
         "INSERT INTO mail_folder_sync_state (
             account_id, folder_id, parent_folder_id, display_name, sync_enabled,
-            delta_link, next_link, synced_at, sync_status, last_error, updated_at, generation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            sync_cursor, page_cursor, synced_at, sync_status, last_error, updated_at, generation, protocol, remote_binding, binding_revision, is_retired
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, folder_id) DO UPDATE SET
+            protocol=excluded.protocol,
+            remote_binding=excluded.remote_binding,
+            binding_revision=excluded.binding_revision,
+            is_retired=excluded.is_retired,
             parent_folder_id=excluded.parent_folder_id,
             display_name=excluded.display_name,
             sync_enabled=excluded.sync_enabled,
             generation=excluded.generation,
-            delta_link=excluded.delta_link,
-            next_link=excluded.next_link,
+            sync_cursor=excluded.sync_cursor,
+            page_cursor=excluded.page_cursor,
             synced_at=excluded.synced_at,
             sync_status=excluded.sync_status,
             last_error=excluded.last_error,
@@ -84,50 +89,72 @@ pub async fn upsert(
     .bind(state.parent_folder_id.as_ref().map(|f| f.as_str()))
     .bind(&state.display_name)
     .bind(if state.sync_enabled { 1 } else { 0 })
-    .bind(&state.delta_link)
-    .bind(&state.next_link)
+    .bind(&state.sync_cursor)
+    .bind(&state.page_cursor)
     .bind(state.synced_at)
     .bind(state.sync_status.as_str())
     .bind(&state.last_error)
     .bind(state.updated_at)
     .bind(&state.generation)
+    .bind(state.protocol.as_str())
+    .bind(&state.remote_binding)
+    .bind(state.binding_revision)
+    .bind(state.is_retired)
     .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-/// 发现目录时合并：保留已有游标与用户勾选；新夹按 default_enabled。
-pub async fn upsert_discovered(
+/// 完整目录快照：按有效绑定复用本地身份；已退役的同名绑定永不复用。
+/// 返回本次退役的 FolderId，调用方在同一事务失效其消息和任务。
+pub async fn reconcile_discovered(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-    folder_id: &FolderId,
-    parent_folder_id: Option<&FolderId>,
-    display_name: &str,
-    default_enabled: bool,
+    protocol: ReceiveProtocol,
+    folders: &[DiscoveredFolder],
     now: i64,
-) -> Result<(), InfraError> {
-    let existing = get(conn, account_id, folder_id).await?;
-    let state = MailFolderSyncState {
-        account_id: account_id.clone(),
-        folder_id: folder_id.clone(),
-        parent_folder_id: parent_folder_id.cloned(),
-        display_name: display_name.to_owned(),
-        sync_enabled: existing
-            .as_ref()
-            .map(|e| e.sync_enabled)
-            .unwrap_or(default_enabled),
-        generation: existing.as_ref().and_then(|e| e.generation.clone()),
-        delta_link: existing.as_ref().and_then(|e| e.delta_link.clone()),
-        next_link: existing.as_ref().and_then(|e| e.next_link.clone()),
-        synced_at: existing.as_ref().and_then(|e| e.synced_at),
-        sync_status: existing
-            .as_ref()
-            .map(|e| e.sync_status)
-            .unwrap_or(crate::domain::value_objects::SyncStatus::Idle),
-        last_error: existing.as_ref().and_then(|e| e.last_error.clone()),
-        updated_at: now,
-    };
-    upsert(conn, &state).await
+) -> Result<Vec<FolderId>, InfraError> {
+    use std::collections::{HashMap, HashSet};
+    let mut bindings = HashSet::new();
+    for folder in folders {
+        if folder.remote_binding.is_empty() || !bindings.insert(folder.remote_binding.as_str()) {
+            return Err(InfraError::Conflict { message: "目录快照包含空绑定或重复绑定".into() });
+        }
+    }
+    let active = list_by_account(conn, account_id).await?;
+    let mut states = HashMap::new();
+    for folder in folders {
+        let state = active.iter().find(|state| state.protocol == protocol && state.remote_binding == folder.remote_binding)
+            .cloned().unwrap_or_else(|| MailFolderSyncState {
+                account_id: account_id.clone(), folder_id: FolderId::new(uuid::Uuid::new_v4().to_string()),
+                protocol, remote_binding: folder.remote_binding.clone(), binding_revision: 1, is_retired: false,
+                parent_folder_id: None, display_name: folder.display_name.clone(), sync_enabled: false,
+                generation: None, sync_cursor: None, page_cursor: None, synced_at: None,
+                sync_status: SyncStatus::Idle, last_error: None, updated_at: now,
+            });
+        states.insert(folder.remote_binding.clone(), state);
+    }
+    let identities: HashMap<_, _> = states.iter().map(|(binding, state)| (binding.clone(), state.folder_id.clone())).collect();
+    for folder in folders {
+        let state = states.get_mut(&folder.remote_binding).unwrap();
+        state.parent_folder_id = folder.parent_binding.as_ref().and_then(|binding| identities.get(binding)).cloned();
+        state.display_name = folder.display_name.clone(); state.updated_at = now;
+        upsert(conn, state).await?;
+    }
+    let mut retired = Vec::new();
+    for old in active {
+        if old.protocol != protocol || !bindings.contains(old.remote_binding.as_str()) {
+            retire(conn, account_id, &old.folder_id, now).await?;
+            retired.push(old.folder_id);
+        }
+    }
+    Ok(retired)
+}
+
+pub async fn retire(conn: &mut SqliteConnection, account_id: &AccountId, folder_id: &FolderId, now: i64) -> Result<(), InfraError> {
+    sqlx::query("UPDATE mail_folder_sync_state SET is_retired = 1, sync_enabled = 0, binding_revision = binding_revision + 1, sync_cursor = NULL, page_cursor = NULL, generation = NULL, updated_at = ? WHERE account_id = ? AND folder_id = ? AND is_retired = 0")
+        .bind(now).bind(account_id.as_str()).bind(folder_id.as_str()).execute(conn).await?;
+    Ok(())
 }
 
 pub async fn set_sync_enabled(
@@ -140,7 +167,7 @@ pub async fn set_sync_enabled(
     let result = sqlx::query(
         "UPDATE mail_folder_sync_state
          SET sync_enabled = ?, updated_at = ?
-         WHERE account_id = ? AND folder_id = ?",
+         WHERE account_id = ? AND folder_id = ? AND is_retired = 0",
     )
     .bind(if enabled { 1 } else { 0 })
     .bind(now)
@@ -167,7 +194,7 @@ pub async fn reset_cursors(
         .unwrap_or(0);
     sqlx::query(
         "UPDATE mail_folder_sync_state
-         SET delta_link = NULL, next_link = NULL, updated_at = ?
+         SET sync_cursor = NULL, page_cursor = NULL, updated_at = ?
          WHERE account_id = ? AND folder_id = ?",
     )
     .bind(now)
@@ -176,22 +203,4 @@ pub async fn reset_cursors(
     .execute(&mut *conn)
     .await?;
     Ok(())
-}
-
-pub async fn delete(
-    conn: &mut SqliteConnection,
-    account_id: &AccountId,
-    folder_id: &FolderId,
-) -> Result<(), InfraError> {
-    sqlx::query("DELETE FROM mail_folder_sync_state WHERE account_id = ? AND folder_id = ?")
-        .bind(account_id.as_str())
-        .bind(folder_id.as_str())
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
-}
-
-/// 新发现文件夹默认不勾选；由用户在设置里选择要同步的夹。
-pub fn default_sync_enabled(_folder_id: &str, _well_known: Option<&str>) -> bool {
-    false
 }

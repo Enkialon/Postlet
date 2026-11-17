@@ -1,20 +1,13 @@
 //! 在单次 spawn_blocking 中完成登录 + 多文件夹同步。
 
 use super::client::{list_capabilities, session_login_blocking, ImapAuth, ImapEndpoint};
-use super::sync::{sync_folder, FolderSyncResult};
+use super::sync::{sync_folder, FolderSyncRequest, FolderSyncResult};
 use crate::infrastructure::error::InfraError;
 
 #[derive(Debug, Clone)]
 pub struct ImapSyncBatch {
     pub idle_supported: bool,
     pub folders: Vec<FolderSyncResult>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FolderSyncRequest {
-    pub folder: String,
-    pub stored_generation: Option<String>,
-    pub known_messages: Vec<(crate::domain::value_objects::RemoteKey, bool)>,
 }
 
 pub fn sync_account_blocking(
@@ -37,13 +30,7 @@ pub fn sync_account_blocking(
 
     let mut folders = Vec::new();
     for req in requests {
-        let result = sync_folder(
-            &mut session,
-            &req.folder,
-            req.stored_generation.as_deref(),
-            &req.known_messages,
-            page_limit,
-        )?;
+        let result = sync_folder(&mut session, req, page_limit)?;
         folders.push(result);
     }
     let _ = session.logout();

@@ -407,7 +407,7 @@ pub async fn clear_local_chat_data(
         .await?;
     sqlx::query(
         "UPDATE mail_folder_sync_state
-         SET delta_link = NULL, next_link = NULL, synced_at = NULL,
+         SET sync_cursor = NULL, page_cursor = NULL, synced_at = NULL,
              sync_status = 'idle', last_error = NULL, updated_at = ?
          WHERE account_id = ?",
     )

@@ -222,6 +222,8 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
     .await
     .unwrap();
 
+    sqlx::query("INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,display_name,updated_at) VALUES (?, 'inbox', 'graph', 'remote-inbox', 'Inbox', 1)")
+        .bind(account_id.as_str()).execute(&mut *conn).await.unwrap();
     messages::upsert_with_recipients(
         &mut conn,
         &MessageWithRecipients {
@@ -229,7 +231,9 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
                 id: msg_id.clone(),
                 account_id: account_id.clone(),
                 session_id: session_id.clone(),
-                remote_key: None,
+                remote_key: Some(postlet_lib::domain::value_objects::RemoteKey::new("fixture-key")),
+                location_status: Some(postlet_lib::domain::mail::LocationStatus::Present),
+                location_revision: 1,
                 internet_message_id: None,
                 in_reply_to: None,
                 subject: "你好".into(),

@@ -22,7 +22,7 @@ pub fn decode_remote_key(key: &RemoteKey) -> Result<(u32, u32), crate::infrastru
 }
 
 pub fn parse_rfc822(
-    folder: &str,
+    folder: &FolderId,
     uidvalidity: u32,
     uid: u32,
     bytes: &[u8],
@@ -87,8 +87,8 @@ pub fn parse_rfc822(
         flags: RemoteFlags::default(),
         has_attachments: false,
         importance: Importance::Normal,
-        folder_id: Some(FolderId::new(folder.to_string())),
-        parent_folder_name: Some(folder.to_string()),
+        folder_id: Some(folder.clone()),
+        parent_folder_name: None,
         remote_updated_at: None,
     })
 }

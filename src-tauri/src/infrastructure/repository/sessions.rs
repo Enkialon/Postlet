@@ -252,7 +252,7 @@ async fn enrich_item(
     };
     let last_message = if let Some(ref mid) = session.last_message_id {
         let row = sqlx::query(
-            "SELECT * FROM messages WHERE account_id = ? AND id = ? AND sync_status != 'deleted_remote'",
+            "SELECT * FROM messages WHERE account_id = ? AND id = ? AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))",
         )
         .bind(session.account_id.as_str())
         .bind(mid.as_str())
@@ -411,6 +411,7 @@ pub async fn list_messages(
             sqlx::query(
                 "SELECT * FROM messages
                  WHERE account_id = ? AND session_id = ?
+                   AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
                    AND (
                      ? IS NULL
                      OR COALESCE(received_at, sent_at, 0) < ?
@@ -433,6 +434,7 @@ pub async fn list_messages(
             sqlx::query(
                 "SELECT * FROM messages
                  WHERE account_id = ? AND session_id = ?
+                   AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
                    AND (
                      ? IS NULL
                      OR COALESCE(received_at, sent_at, 0) > ?
@@ -514,7 +516,7 @@ pub async fn recompute_projection(
         "SELECT id, COALESCE(received_at, sent_at) AS at
          FROM messages
          WHERE account_id = ? AND session_id = ?
-           AND sync_status != 'deleted_remote'
+           AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
          ORDER BY COALESCE(received_at, sent_at, 0) DESC, id DESC
          LIMIT 1",
     )
@@ -537,7 +539,7 @@ pub async fn recompute_projection(
     let unread: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages
          WHERE account_id = ? AND session_id = ?
-           AND sync_status != 'deleted_remote' AND is_read = 0",
+           AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local')) AND is_read = 0",
     )
     .bind(account_id.as_str())
     .bind(session_id.as_str())

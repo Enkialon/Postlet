@@ -19,7 +19,7 @@ use crate::infrastructure::imap::{
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, mail_transports, messages, mutations, sessions,
+    accounts, folder_states, mail_transports, messages, mutations, sessions,
 };
 use sqlx::SqlitePool;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -70,7 +70,7 @@ pub async fn ensure_message_body(
     account_id: &AccountId,
     message_id: &MessageId,
 ) -> Result<MessageWithRecipients, AppError> {
-    let mut bundle = get_message(db, account_id, message_id).await?;
+    let bundle = get_message(db, account_id, message_id).await?;
     if bundle.message.body_content.is_some() {
         return Ok(bundle);
     }
@@ -91,21 +91,28 @@ pub async fn ensure_message_body(
             let Some(remote_key) = bundle.message.remote_key.clone() else {
                 return Ok(bundle);
             };
+            if bundle.message.location_status != Some(crate::domain::mail::LocationStatus::Present) {
+                return Err(AppError::validation("邮件没有有效远端位置，无法补取正文"));
+            }
+            let folder = {
+                let mut conn = db.acquire().await?;
+                folder_states::get(&mut conn, account_id, bundle.message.folder_id.as_ref().unwrap()).await?
+                    .filter(|folder| !folder.is_retired && folder.protocol == ReceiveProtocol::Graph)
+                    .ok_or_else(|| AppError::validation("邮件文件夹已失效"))?
+            };
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
             let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
                 .await
                 .map_err(AppError::from)?;
-            let (content_type, content) = graph::mail::get_message_body(&token, &remote_key)
+            let (content_type, content) = graph::mail::get_message_body(&token, &folder.remote_binding, &remote_key)
                 .await
                 .map_err(AppError::from)?;
-            bundle.message.body_content_type = content_type;
-            bundle.message.body_content = Some(content);
-            bundle.message.local_updated_at = now_ms();
             let mut conn = db.acquire().await?;
-            messages::upsert_with_recipients(&mut conn, &bundle)
-                .await
-                .map_err(AppError::from)?;
-            Ok(bundle)
+            sqlx::query("UPDATE messages SET body_content_type = ?, body_content = ?, local_updated_at = ? WHERE account_id = ? AND id = ? AND location_status = 'present' AND location_revision = ?")
+                .bind(content_type.as_str()).bind(content).bind(now_ms()).bind(account_id.as_str()).bind(message_id.as_str()).bind(bundle.message.location_revision)
+                .execute(&mut *conn).await?;
+            drop(conn);
+            get_message(db, account_id, message_id).await
         }
     }
 }
@@ -230,20 +237,27 @@ pub async fn flush_due_mutations(
 
     let mut flushed = 0u32;
     for mutation in due {
+        let binding = {
+            let mut conn = db.acquire().await?;
+            match mutations::validate_target(&mut conn, &mutation, transport.receive_protocol).await? {
+                Some(binding) => binding,
+                None => { mutations::stop_if_version(&mut conn, &mutation, "位置、文件夹绑定或账号状态已改变，旧操作已停止").await?; continue; }
+            }
+        };
         let push = match (mutation.kind, transport.receive_protocol) {
             (PendingMutationKind::Read, ReceiveProtocol::Graph) => {
                 let is_read = mutation.desired_is_read.unwrap_or(true);
-                push_graph_read(paths, account_id, &mutation, is_read).await
+                push_graph_read(paths, account_id, &binding, &mutation, is_read).await
             }
             (PendingMutationKind::Read, ReceiveProtocol::Imap) => {
                 let is_read = mutation.desired_is_read.unwrap_or(true);
-                push_imap_read(db, paths, account_id, &mutation, is_read).await
+                push_imap_read(db, paths, account_id, &transport, &binding, &mutation, is_read).await
             }
             (PendingMutationKind::Delete, ReceiveProtocol::Graph) => {
-                push_graph_delete(paths, account_id, &mutation).await
+                push_graph_delete(paths, account_id, &binding, &mutation).await
             }
             (PendingMutationKind::Delete, ReceiveProtocol::Imap) => {
-                push_imap_delete(db, paths, account_id, &mutation).await
+                push_imap_delete(db, paths, account_id, &transport, &binding, &mutation).await
             }
         };
 
@@ -268,6 +282,7 @@ pub async fn flush_due_mutations(
 async fn push_graph_read(
     paths: &AppPaths,
     account_id: &AccountId,
+    remote_binding: &str,
     mutation: &PendingMessageMutation,
     is_read: bool,
 ) -> Result<(), AppError> {
@@ -276,7 +291,7 @@ async fn push_graph_read(
     let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
         .await
         .map_err(AppError::from)?;
-    graph::mail::patch_message_read(&token, &remote_key, is_read)
+    graph::mail::patch_message_read(&token, remote_binding, &remote_key, is_read)
         .await
         .map_err(AppError::from)
 }
@@ -285,15 +300,13 @@ async fn push_imap_read(
     db: &SqlitePool,
     paths: &AppPaths,
     account_id: &AccountId,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
     mutation: &PendingMessageMutation,
     is_read: bool,
 ) -> Result<(), AppError> {
-    let folder = mutation.target_folder_id.as_str();
+    let folder = remote_binding;
     let remote_key = &mutation.target_remote_key;
-    let transport = {
-        let mut conn = db.acquire().await?;
-        mail_transports::ensure_default(&mut conn, account_id, now_ms()).await?
-    };
 
     let account = {
         let mut conn = db.acquire().await?;
@@ -347,6 +360,7 @@ async fn push_imap_read(
 async fn push_graph_delete(
     paths: &AppPaths,
     account_id: &AccountId,
+    remote_binding: &str,
     mutation: &PendingMessageMutation,
 ) -> Result<(), AppError> {
     let remote_key = &mutation.target_remote_key;
@@ -354,7 +368,7 @@ async fn push_graph_delete(
     let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
         .await
         .map_err(AppError::from)?;
-    graph::mail::delete_message(&token, &remote_key)
+    graph::mail::delete_message(&token, remote_binding, &remote_key)
         .await
         .map_err(AppError::from)
 }
@@ -363,14 +377,12 @@ async fn push_imap_delete(
     db: &SqlitePool,
     paths: &AppPaths,
     account_id: &AccountId,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
     mutation: &PendingMessageMutation,
 ) -> Result<(), AppError> {
-    let folder = mutation.target_folder_id.as_str();
+    let folder = remote_binding;
     let remote_key = &mutation.target_remote_key;
-    let transport = {
-        let mut conn = db.acquire().await?;
-        mail_transports::ensure_default(&mut conn, account_id, now_ms()).await?
-    };
 
     let account = {
         let mut conn = db.acquire().await?;

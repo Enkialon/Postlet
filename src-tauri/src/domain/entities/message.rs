@@ -13,6 +13,8 @@ pub struct Message {
     pub session_id: SessionId,
     /// 当前位置的不透明远端键；本地草稿可空
     pub remote_key: Option<RemoteKey>,
+    pub location_status: Option<crate::domain::mail::LocationStatus>,
+    pub location_revision: i64,
     /// RFC Message-ID
     pub internet_message_id: Option<String>,
     /// RFC In-Reply-To（用于找父信进同一 Session）

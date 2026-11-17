@@ -125,8 +125,8 @@ export class MemoryAccountAdapter implements AccountPort {
       accountId,
       folders.map((f) => ({
         ...f,
-        delta_link: null,
-        next_link: null,
+        sync_cursor: null,
+        page_cursor: null,
         synced_at: null,
         sync_status: 'idle' as const,
         last_error: null,

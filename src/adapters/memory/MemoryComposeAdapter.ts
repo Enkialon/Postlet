@@ -135,6 +135,8 @@ export class MemoryComposeAdapter implements ComposePort {
       account_id: cmd.account_id,
       session_id: cmd.session_id,
       remote_key: null,
+      location_status: null,
+      location_revision: 0,
       internet_message_id: null,
       in_reply_to: inReplyTo,
       subject,

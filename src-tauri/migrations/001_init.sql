@@ -48,9 +48,13 @@ CREATE TABLE account_mail_transport (
 CREATE TABLE mail_folder_sync_state (
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     folder_id       TEXT NOT NULL,
+    protocol        TEXT NOT NULL CHECK(protocol IN ('graph', 'imap')),
+    remote_binding  TEXT NOT NULL,
+    binding_revision INTEGER NOT NULL DEFAULT 1 CHECK(binding_revision >= 1),
+    is_retired      INTEGER NOT NULL DEFAULT 0 CHECK(is_retired IN (0, 1)),
     generation      TEXT,
-    delta_link      TEXT,
-    next_link       TEXT,
+    sync_cursor      TEXT,
+    page_cursor       TEXT,
     synced_at       INTEGER,
     sync_status     TEXT NOT NULL DEFAULT 'idle'
         CHECK(sync_status IN ('idle', 'running', 'error')),
@@ -61,6 +65,15 @@ CREATE TABLE mail_folder_sync_state (
     sync_enabled    INTEGER NOT NULL DEFAULT 0 CHECK(sync_enabled IN (0, 1)),
     PRIMARY KEY (account_id, folder_id)
 );
+
+CREATE UNIQUE INDEX idx_active_folder_binding
+    ON mail_folder_sync_state(account_id, protocol, remote_binding) WHERE is_retired = 0;
+
+CREATE TRIGGER protect_folder_identity BEFORE UPDATE ON mail_folder_sync_state
+WHEN OLD.account_id IS NOT NEW.account_id OR OLD.folder_id IS NOT NEW.folder_id OR OLD.protocol IS NOT NEW.protocol
+  OR (OLD.is_retired = 1 AND NEW.is_retired = 0) OR NEW.binding_revision < OLD.binding_revision
+  OR (OLD.remote_binding IS NOT NEW.remote_binding AND NEW.binding_revision <= OLD.binding_revision)
+BEGIN SELECT RAISE(ABORT, 'Folder identity or binding revision cannot be reused'); END;
 
 -- 人表：graph/manual = 真联系人（通讯录）；observed = 邮件/群观测短名（非通讯录）
 CREATE TABLE contacts (
@@ -154,6 +167,8 @@ CREATE TABLE messages (
     account_id              TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     session_id              TEXT NOT NULL,
     remote_key              TEXT,
+    location_status         TEXT CHECK(location_status IS NULL OR location_status IN ('present', 'missing', 'invalidated')),
+    location_revision       INTEGER NOT NULL DEFAULT 0 CHECK(location_revision >= 0),
     internet_message_id     TEXT,
     in_reply_to             TEXT,
     subject                 TEXT NOT NULL DEFAULT '',
@@ -182,8 +197,21 @@ CREATE TABLE messages (
     remote_updated_at       INTEGER,
     PRIMARY KEY (account_id, id),
     UNIQUE (account_id, folder_id, remote_key),
-    FOREIGN KEY (account_id, session_id) REFERENCES sessions(account_id, id)
+    FOREIGN KEY (account_id, session_id) REFERENCES sessions(account_id, id),
+    FOREIGN KEY (account_id, folder_id) REFERENCES mail_folder_sync_state(account_id, folder_id),
+    CHECK ((remote_key IS NULL AND folder_id IS NULL AND location_status IS NULL AND location_revision = 0)
+        OR (remote_key IS NOT NULL AND folder_id IS NOT NULL AND location_status IS NOT NULL AND location_revision >= 1))
 );
+
+CREATE TRIGGER prevent_message_relocation BEFORE UPDATE OF account_id, remote_key, folder_id ON messages
+WHEN OLD.account_id IS NOT NEW.account_id OR (OLD.remote_key IS NOT NULL AND (OLD.remote_key IS NOT NEW.remote_key OR OLD.folder_id IS NOT NEW.folder_id))
+BEGIN SELECT RAISE(ABORT, 'Message location is immutable; create a new Message at the destination'); END;
+
+CREATE TRIGGER protect_location_revision BEFORE UPDATE ON messages
+WHEN NEW.location_revision < OLD.location_revision
+  OR (OLD.location_status IS NOT NEW.location_status AND NEW.location_revision <= OLD.location_revision)
+  OR (OLD.location_status = 'invalidated' AND NEW.location_status != 'invalidated')
+BEGIN SELECT RAISE(ABORT, 'Invalidated location or location revision cannot be reused'); END;
 
 CREATE INDEX idx_messages_session
     ON messages(account_id, session_id, received_at DESC);
@@ -249,6 +277,8 @@ CREATE TABLE pending_message_mutations (
     kind            TEXT NOT NULL CHECK(kind IN ('read', 'delete')),
     target_folder_id TEXT NOT NULL,
     target_remote_key TEXT NOT NULL,
+    target_location_revision INTEGER NOT NULL CHECK(target_location_revision >= 1),
+    target_binding_revision INTEGER NOT NULL CHECK(target_binding_revision >= 1),
     is_active       INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     desired_is_read INTEGER CHECK(desired_is_read IS NULL OR desired_is_read IN (0, 1)),
     version         INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),

@@ -34,6 +34,8 @@ pub struct PendingMessageMutation {
     pub is_active: bool,
     pub target_folder_id: FolderId,
     pub target_remote_key: RemoteKey,
+    pub target_location_revision: i64,
+    pub target_binding_revision: i64,
     /// kind=read 时有值
     pub desired_is_read: Option<bool>,
     pub version: i64,

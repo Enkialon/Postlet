@@ -10,6 +10,27 @@ pub struct RemoteFlags {
     pub is_deleted: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationStatus { Present, Missing, Invalidated }
+
+impl LocationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Present => "present", Self::Missing => "missing", Self::Invalidated => "invalidated" }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value { "present" => Some(Self::Present), "missing" => Some(Self::Missing), "invalidated" => Some(Self::Invalidated), _ => None }
+    }
+}
+
+/// 一次完整目录发现返回的绑定事实；本地 FolderId 由仓储分配。
+#[derive(Debug, Clone)]
+pub struct DiscoveredFolder {
+    pub remote_binding: String,
+    pub parent_binding: Option<String>,
+    pub display_name: String,
+}
+
 /// 远端收件人（无本地外键）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRecipient {
