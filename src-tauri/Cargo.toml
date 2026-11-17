@@ -35,6 +35,9 @@ imap = "2"
 native-tls = "0.2"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-native-tls", "smtp-transport", "builder"] }
 mailparse = "0.15"
+aes-gcm = "0.10"
+tempfile = "3"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [dev-dependencies]

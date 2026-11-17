@@ -1,11 +1,12 @@
-//! 通用邮箱凭证（密码 / 授权码 / OAuth access token 缓存）
+//! 通用邮箱凭证；系统钥匙串保护密钥，磁盘仅保存密文。
 
 use crate::application::error::PortError;
 use crate::domain::value_objects::AccountId;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use crate::infrastructure::secret_store;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MailSecret {
     pub username: String,
     /// 密码或应用专用授权码
@@ -20,53 +21,21 @@ pub struct MailSecret {
     pub expires_at_ms: Option<i64>,
 }
 
-fn secret_path(credentials_dir: &Path, account_id: &AccountId) -> PathBuf {
-    credentials_dir.join(format!("{}.mail-secret.json", account_id.as_str()))
-}
-
 pub async fn save(
     credentials_dir: &Path,
     account_id: &AccountId,
     secret: &MailSecret,
 ) -> Result<(), PortError> {
-    let path = secret_path(credentials_dir, account_id);
-    let json = serde_json::to_string_pretty(secret).map_err(|e| PortError::Storage {
-        message: format!("序列化邮件凭证失败: {e}"),
-    })?;
-    tokio::fs::write(&path, json)
-        .await
-        .map_err(|e| PortError::Storage {
-            message: format!("写入邮件凭证失败: {e}"),
-        })?;
-    Ok(())
+    secret_store::save(credentials_dir, "mail", account_id.as_str(), secret)
 }
 
 pub async fn load(
     credentials_dir: &Path,
     account_id: &AccountId,
 ) -> Result<Option<MailSecret>, PortError> {
-    let path = secret_path(credentials_dir, account_id);
-    match tokio::fs::read_to_string(&path).await {
-        Ok(raw) => {
-            let secret = serde_json::from_str(&raw).map_err(|e| PortError::Storage {
-                message: format!("解析邮件凭证失败: {e}"),
-            })?;
-            Ok(Some(secret))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(PortError::Storage {
-            message: format!("读取邮件凭证失败: {e}"),
-        }),
-    }
+    secret_store::load(credentials_dir, "mail", account_id.as_str())
 }
 
 pub async fn delete(credentials_dir: &Path, account_id: &AccountId) -> Result<(), PortError> {
-    let path = secret_path(credentials_dir, account_id);
-    match tokio::fs::remove_file(&path).await {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(PortError::Storage {
-            message: format!("删除邮件凭证失败: {e}"),
-        }),
-    }
+    secret_store::delete(credentials_dir, "mail", account_id.as_str())
 }

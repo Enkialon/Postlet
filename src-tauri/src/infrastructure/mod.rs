@@ -7,3 +7,4 @@ pub mod mail;
 pub mod paths;
 pub mod repository;
 pub mod smtp;
+pub mod secret_store;

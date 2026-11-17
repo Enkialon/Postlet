@@ -32,7 +32,7 @@ pub struct UpdateAccountAliasesCommand {
 }
 
 /// 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌）
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpsertImapSmtpAccountCommand {
     pub email: String,
     pub display_name: String,

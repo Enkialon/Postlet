@@ -15,7 +15,7 @@ pub struct SmtpEndpoint {
     pub tls: MailTlsMode,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SmtpAuth {
     Password { username: String, password: String },
     OAuth2 { username: String, access_token: String },

@@ -38,7 +38,7 @@ struct GraphMe {
     user_principal_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct TokenEndpointResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -138,12 +138,6 @@ pub async fn save_token_cache(
     cache: &TokenCache,
 ) -> Result<(), PortError> {
     token_store::save(credentials_dir, account_id, cache)
-}
-
-pub async fn list_signed_in_accounts(
-    credentials_dir: &Path,
-) -> Result<Vec<AccountId>, PortError> {
-    token_store::list_account_ids(credentials_dir)
 }
 
 /// 读取本地凭证；必要时用 refresh_token 刷新并回写。

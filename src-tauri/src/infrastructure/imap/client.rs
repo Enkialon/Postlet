@@ -18,7 +18,7 @@ pub struct ImapEndpoint {
     pub tls: MailTlsMode,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ImapAuth {
     Password { username: String, password: String },
     OAuth2 { username: String, access_token: String },
