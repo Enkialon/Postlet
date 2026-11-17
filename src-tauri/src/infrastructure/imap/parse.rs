@@ -6,12 +6,24 @@ use crate::domain::value_objects::{
 };
 use mailparse::{parse_mail, MailHeaderMap};
 
-pub fn remote_id(folder: &str, uid: u32) -> RemoteKey {
-    RemoteKey::new(format!("imap:{folder}:{uid}"))
+pub fn remote_id(uidvalidity: u32, uid: u32) -> RemoteKey {
+    RemoteKey::new(format!("imap:{uidvalidity}:{uid}"))
+}
+
+/// Only the IMAP adapter interprets the opaque remote key.
+pub fn decode_remote_key(key: &RemoteKey) -> Result<(u32, u32), crate::application::error::PortError> {
+    let invalid = || crate::application::error::PortError::Conflict { message: "IMAP 定位无效，请重新同步".into() };
+    let mut parts = key.as_str().split(':');
+    if parts.next() != Some("imap") { return Err(invalid()); }
+    let generation = parts.next().and_then(|s| s.parse::<u32>().ok()).filter(|v| *v > 0).ok_or_else(invalid)?;
+    let uid = parts.next().and_then(|s| s.parse::<u32>().ok()).filter(|v| *v > 0).ok_or_else(invalid)?;
+    if parts.next().is_some() { return Err(invalid()); }
+    Ok((generation, uid))
 }
 
 pub fn parse_rfc822(
     folder: &str,
+    uidvalidity: u32,
     uid: u32,
     bytes: &[u8],
     is_read: bool,
@@ -61,7 +73,7 @@ pub fn parse_rfc822(
     let dated = header_date.or(internal_date_ms);
 
     Ok(RemoteMessage {
-        remote_key: remote_id(folder, uid),
+        remote_key: remote_id(uidvalidity, uid),
         internet_message_id: message_id,
         in_reply_to,
         subject,
@@ -209,5 +221,19 @@ fn walk_parts(
         *plain = Some(body);
     } else if mime.contains("html") && html.is_none() {
         *html = Some(body);
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn uid_is_scoped_to_generation_and_malformed_targets_are_rejected() {
+        assert_ne!(remote_id(1, 10), remote_id(2, 10));
+        assert_eq!(decode_remote_key(&remote_id(u32::MAX, u32::MAX)).unwrap(), (u32::MAX, u32::MAX));
+        for invalid in ["imap:INBOX:10", "imap:0:10", "imap:1:0", "imap:1:2:3", "10", "imap:4294967296:1"] {
+            assert!(decode_remote_key(&RemoteKey::new(invalid)).is_err());
+        }
     }
 }

@@ -15,6 +15,4 @@ pub use session_dto::*;
 pub use sync_dto::*;
 
 mod aggregate_claim;
-mod pending_message_mutation;
 pub use aggregate_claim::AggregateClaim;
-pub use pending_message_mutation::{PendingMessageMutation, PendingMutationKind};

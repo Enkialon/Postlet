@@ -103,6 +103,7 @@ fn merge_folder_progress(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| folder.as_str().to_string()),
         sync_enabled: prev.map(|p| p.sync_enabled).unwrap_or(false),
+        generation: prev.and_then(|p| p.generation.clone()),
         delta_link,
         next_link,
         synced_at: Some(now),
@@ -375,12 +376,11 @@ async fn sync_imap_mail(
             if prev.as_ref().and_then(|p| p.delta_link.as_ref()).is_none() {
                 is_initial = true;
             }
-            let known = load_known_uids(&mut conn, &cmd.account_id, &folder).await?;
+            let known = load_known_remote_messages(&mut conn, &cmd.account_id, &folder).await?;
             requests.push(FolderSyncRequest {
                 folder,
-                stored_delta: prev.as_ref().and_then(|p| p.delta_link.clone()),
-                stored_next: prev.as_ref().and_then(|p| p.next_link.clone()),
-                known_uids: known,
+                stored_generation: prev.as_ref().and_then(|p| p.generation.clone()),
+                known_messages: known,
             });
         }
     }
@@ -408,6 +408,9 @@ async fn sync_imap_mail(
 
     for result in batch.folders {
         let mut tx = db.begin().await?;
+        if result.generation_changed {
+            invalidate_folder_generation(&mut tx, &cmd.account_id, &FolderId::new(&result.folder), &mut changeset).await?;
+        }
         for change in result.changes {
             match change {
                 RemoteMessageChange::Upsert(remote) => {
@@ -435,13 +438,14 @@ async fn sync_imap_mail(
         let prev = folder_states::get(&mut tx, &cmd.account_id, &folder_id)
             .await
             .map_err(AppError::from)?;
-        let state = merge_folder_progress(
+        let mut state = merge_folder_progress(
             &cmd.account_id,
             folder_id,
             prev.as_ref(),
             Some(encode_uidvalidity(result.uidvalidity)),
             Some(encode_uid_cursor(result.last_uid, result.low_uid)),
         );
+        state.generation = Some(result.uidvalidity.to_string());
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
@@ -456,32 +460,15 @@ async fn sync_imap_mail(
     Ok(changeset)
 }
 
-async fn load_known_uids(
+async fn load_known_remote_messages(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
     folder: &str,
-) -> Result<Vec<(u32, bool)>, AppError> {
-    let prefix = format!("imap:{folder}:");
-    // 本地软删也是已经下载过的 UID，不能因其仍存在远端而无限补抓。
-    let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT remote_key, is_read FROM messages
-         WHERE account_id = ? AND folder_id = ? AND remote_key LIKE ? AND body_content IS NOT NULL",
-    )
-    .bind(account_id.as_str())
-    .bind(folder)
-    .bind(format!("{prefix}%"))
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(AppError::from)?;
-    let mut out = Vec::new();
-    for (gid, is_read) in rows {
-        if let Some(uid_str) = gid.strip_prefix(&prefix) {
-            if let Ok(uid) = uid_str.parse::<u32>() {
-                out.push((uid, is_read != 0));
-            }
-        }
-    }
-    Ok(out)
+) -> Result<Vec<(crate::domain::value_objects::RemoteKey, bool)>, AppError> {
+    let rows = sqlx::query_as::<_, (String, bool)>(
+        "SELECT remote_key, is_read FROM messages WHERE account_id = ? AND folder_id = ? AND remote_key IS NOT NULL AND body_content IS NOT NULL"
+    ).bind(account_id.as_str()).bind(folder).fetch_all(conn).await?;
+    Ok(rows.into_iter().map(|(key, seen)| (crate::domain::value_objects::RemoteKey::new(key), seen)).collect())
 }
 
 async fn upsert_remote_message(
@@ -500,10 +487,10 @@ async fn upsert_remote_message(
 
     let pending = mutations::get(conn, account_id, &local_id)
         .await
-        .map_err(AppError::from)?;
+        .map_err(AppError::from)?.filter(|pending| pending.is_active);
     let pending_delete = pending
         .as_ref()
-        .is_some_and(|p| p.kind == crate::application::dto::PendingMutationKind::Delete);
+        .is_some_and(|p| p.kind == crate::domain::entities::PendingMutationKind::Delete);
     // 用户已删或待推删除：不复活
     if pending_delete {
         if let Some(bundle) = existing {
@@ -622,6 +609,20 @@ async fn upsert_remote_message(
 }
 
 /// 移出事实只作用于来源位置；不追踪远端 ID、不替换为其他文件夹位置。
+async fn invalidate_folder_generation(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    changeset: &mut ChangeSet,
+) -> Result<(), AppError> {
+    let keys = sqlx::query_scalar::<_, String>("SELECT remote_key FROM messages WHERE account_id = ? AND folder_id = ? AND remote_key IS NOT NULL")
+        .bind(account_id.as_str()).bind(folder_id.as_str()).fetch_all(&mut *conn).await?;
+    for key in keys {
+        apply_location_removed(conn, account_id, folder_id, &crate::domain::value_objects::RemoteKey::new(key), changeset).await?;
+    }
+    Ok(())
+}
+
 async fn apply_location_removed(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
@@ -631,6 +632,7 @@ async fn apply_location_removed(
 ) -> Result<(), AppError> {
     if let Some(existing) = messages::get_by_location(conn, account_id, folder_id, remote_key).await? {
         messages::mark_deleted_remote(conn, account_id, &[existing.message.id.clone()]).await?;
+        mutations::stop_for_message(conn, account_id, &existing.message.id, "远端位置已消失，旧操作已停止").await?;
         sessions::recompute_projection(conn, account_id, &existing.message.session_id).await?;
         changeset.message_ids.push(existing.message.id);
         changeset.session_ids.push(existing.message.session_id);
@@ -1023,6 +1025,39 @@ mod location_tests {
             is_draft: false, has_attachments: false, importance: Importance::Normal,
             folder_id: Some(FolderId::new(folder)), parent_folder_name: None, remote_updated_at: None,
         }
+    }
+
+    #[tokio::test]
+    async fn generation_change_stops_old_targets_and_does_not_inherit_old_delete_or_read_intent() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)").execute(&db).await.unwrap();
+        let a = AccountId::new("a"); let folder = FolderId::new("inbox");
+        let mut tx = db.begin().await.unwrap();
+        let mut first = remote("inbox"); first.remote_key = RemoteKey::new("imap:1:10");
+        let (old_id, _, _) = upsert_remote_message(&mut tx, &a, &first).await.unwrap();
+        mutations::put_read(&mut tx, &a, &old_id, true).await.unwrap();
+        mutations::put_delete(&mut tx, &a, &old_id).await.unwrap();
+        let queued = mutations::get(&mut tx, &a, &old_id).await.unwrap().unwrap();
+        assert_eq!(queued.target_folder_id, folder);
+        assert_eq!(queued.target_remote_key, first.remote_key);
+        let mut changes = ChangeSet::empty(a.clone(), ChangeOrigin::IncrementalSync);
+        invalidate_folder_generation(&mut tx, &a, &folder, &mut changes).await.unwrap();
+        assert!(mutations::list_due(&mut tx, &a, now_ms(), 32).await.unwrap().is_empty());
+        let stopped = mutations::get(&mut tx, &a, &old_id).await.unwrap().unwrap();
+        assert!(!stopped.is_active);
+        assert!(stopped.last_error.is_some());
+        assert_eq!(stopped.target_remote_key, RemoteKey::new("imap:1:10"));
+        let mut new_generation = first.clone(); new_generation.remote_key = RemoteKey::new("imap:2:10");
+        let (new_id, _, is_new) = upsert_remote_message(&mut tx, &a, &new_generation).await.unwrap();
+        assert!(is_new); assert_ne!(old_id, new_id);
+        let fresh = messages::get(&mut tx, &a, &new_id).await.unwrap().unwrap();
+        assert!(!fresh.message.is_read);
+        assert_eq!(fresh.message.sync_status, MessageSyncStatus::Synced);
+        let old = messages::get(&mut tx, &a, &old_id).await.unwrap().unwrap();
+        assert_eq!(old.message.body_content, first.body_content);
+        assert_eq!(old.message.sync_status, MessageSyncStatus::DeletedRemote);
+        assert!(mutations::get(&mut tx, &a, &new_id).await.unwrap().is_none());
+        tx.commit().await.unwrap();
     }
 
     #[tokio::test]

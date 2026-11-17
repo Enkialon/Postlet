@@ -65,12 +65,13 @@ pub async fn upsert(
     sqlx::query(
         "INSERT INTO mail_folder_sync_state (
             account_id, folder_id, parent_folder_id, display_name, sync_enabled,
-            delta_link, next_link, synced_at, sync_status, last_error, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            delta_link, next_link, synced_at, sync_status, last_error, updated_at, generation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, folder_id) DO UPDATE SET
             parent_folder_id=excluded.parent_folder_id,
             display_name=excluded.display_name,
             sync_enabled=excluded.sync_enabled,
+            generation=excluded.generation,
             delta_link=excluded.delta_link,
             next_link=excluded.next_link,
             synced_at=excluded.synced_at,
@@ -89,6 +90,7 @@ pub async fn upsert(
     .bind(state.sync_status.as_str())
     .bind(&state.last_error)
     .bind(state.updated_at)
+    .bind(&state.generation)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -114,6 +116,7 @@ pub async fn upsert_discovered(
             .as_ref()
             .map(|e| e.sync_enabled)
             .unwrap_or(default_enabled),
+        generation: existing.as_ref().and_then(|e| e.generation.clone()),
         delta_link: existing.as_ref().and_then(|e| e.delta_link.clone()),
         next_link: existing.as_ref().and_then(|e| e.next_link.clone()),
         synced_at: existing.as_ref().and_then(|e| e.synced_at),

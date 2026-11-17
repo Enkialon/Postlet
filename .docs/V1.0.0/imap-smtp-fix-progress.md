@@ -47,3 +47,12 @@
 - 同代来源位置被权威重新发现时允许恢复原实体，不再因为旧 DeletedRemote 状态永久拒绝恢复。
 - 验证：Rust 26 项通过（2 项系统钥匙串用例默认跳过），新增同位置幂等、不同文件夹/账号独立、源移出不跟随到目标、原内容保留、同位置数据库唯一约束测试；前端构建通过。Graph 映射回归同时检查专有元数据变化不改变统一结果。
 - 仍需本地 FolderId/远端绑定分离、显式定位有效性与修订、generation 及固定 mutation 目标；当前不是 A-01/A-06/I-06 全部完成，后续继续同方向修改，不保留旧命名兼容层。
+
+## I-06：UIDVALIDITY 隔离与固定目标已接通，定位修订保护仍在完善
+
+- IMAP RemoteKey 编码 UIDVALIDITY + UID，只有 IMAP infrastructure 解码；application 不再解析 IMAP 标识。新代相同 UID 产生不同 RemoteKey/MessageId。
+- 已读和安全永久删除在实际执行的同一连接 SELECT 后严格核对预期 UIDVALIDITY，缺失/不匹配均停止，绝不 STORE/EXPUNGE；没有有效 UIDVALIDITY 的同步也拒绝继续。
+- Folder 单独保存不透明 generation，下载集合只信任当前代。代次变化时同事务停用旧代消息展示及旧任务、保留正文和错误，再入库新代邮件及进度。
+- mutation 纯数据移入 domain，入队保存 target_folder_id/target_remote_key，执行不重新读取消息来改目标。终止任务显式 is_active=false，停止自动派发及本地意图覆盖，错误保留；非重试错误也终止。无远端定位不生成远端任务。
+- 验证：本轮全套 Rust 含原生钥匙串 31 项通过；补充显式终止标记后再次通过 20 项单元测试（原生钥匙串 1 项默认跳过）及前端构建。覆盖 UIDVALIDITY 缺失/变化时无写命令、非法 key、新旧 UID 10 实体隔离、旧删除/已读意图不继承、旧目标停止且正文保留。
+- 仍需与本地 Folder 身份、定位状态/修订和任务 lease 一起完成重命名/退役/并发晚到保护；不能将以上测试等同于 I-06/I-10 全部验收完成。

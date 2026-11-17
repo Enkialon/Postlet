@@ -54,6 +54,7 @@ export interface MailFolderSyncState {
   display_name: string;
   /** 是否纳入账户全局同步 */
   sync_enabled: boolean;
+  generation: string | null;
   /** 最近完成轮次的增量游标 */
   delta_link: string | null;
   /** 当前未完成轮次的分页续传位置 */

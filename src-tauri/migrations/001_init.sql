@@ -48,6 +48,7 @@ CREATE TABLE account_mail_transport (
 CREATE TABLE mail_folder_sync_state (
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     folder_id       TEXT NOT NULL,
+    generation      TEXT,
     delta_link      TEXT,
     next_link       TEXT,
     synced_at       INTEGER,
@@ -243,6 +244,9 @@ CREATE TABLE pending_message_mutations (
     account_id      TEXT NOT NULL,
     message_id      TEXT NOT NULL,
     kind            TEXT NOT NULL CHECK(kind IN ('read', 'delete')),
+    target_folder_id TEXT NOT NULL,
+    target_remote_key TEXT NOT NULL,
+    is_active       INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
     desired_is_read INTEGER CHECK(desired_is_read IS NULL OR desired_is_read IN (0, 1)),
     version         INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
     attempts        INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),

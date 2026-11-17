@@ -12,6 +12,8 @@ pub struct MailFolderSyncState {
     pub display_name: String,
     /// 是否纳入账户全局同步
     pub sync_enabled: bool,
+    /// Adapter 提供的不透明远端代次；与同步进度分开。
+    pub generation: Option<String>,
     /// 最近完成轮次的增量游标
     pub delta_link: Option<String>,
     /// 当前未完成轮次的分页续传位置

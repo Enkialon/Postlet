@@ -22,6 +22,7 @@ async fn only_enabled_unfinished_folders_keep_history_running_after_commit() {
         parent_folder_id: None,
         display_name: "INBOX".into(),
         sync_enabled: true,
+        generation: None,
         delta_link: None,
         next_link: None,
         synced_at: None,

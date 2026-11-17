@@ -17,3 +17,6 @@ pub use mail_transport::AccountMailTransport;
 pub use message::{Message, MessageRecipient, MessageWithRecipients};
 pub use session::Session;
 pub use sync_state::MailFolderSyncState;
+
+mod message_mutation;
+pub use message_mutation::{PendingMessageMutation, PendingMutationKind};

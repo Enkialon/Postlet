@@ -13,9 +13,8 @@ pub struct ImapSyncBatch {
 #[derive(Debug, Clone)]
 pub struct FolderSyncRequest {
     pub folder: String,
-    pub stored_delta: Option<String>,
-    pub stored_next: Option<String>,
-    pub known_uids: Vec<(u32, bool)>,
+    pub stored_generation: Option<String>,
+    pub known_messages: Vec<(crate::domain::value_objects::RemoteKey, bool)>,
 }
 
 pub fn sync_account_blocking(
@@ -41,9 +40,8 @@ pub fn sync_account_blocking(
         let result = sync_folder(
             &mut session,
             &req.folder,
-            req.stored_delta.as_deref(),
-            req.stored_next.as_deref(),
-            &req.known_uids,
+            req.stored_generation.as_deref(),
+            &req.known_messages,
             page_limit,
         )?;
         folders.push(result);

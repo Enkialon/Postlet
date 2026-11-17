@@ -200,6 +200,7 @@ export class MemorySyncAdapter implements SyncPort {
         parent_folder_id: s.parent,
         display_name: s.name,
         sync_enabled: prev?.sync_enabled ?? s.enabled,
+        generation: prev?.generation ?? null,
         delta_link: prev?.delta_link ?? null,
         next_link: prev?.next_link ?? null,
         synced_at: prev?.synced_at ?? null,

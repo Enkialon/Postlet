@@ -223,6 +223,7 @@ pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState
         parent_folder_id: parent.filter(|s| !s.is_empty()).map(FolderId::new),
         display_name: row.try_get::<String, _>("display_name").unwrap_or_default(),
         sync_enabled: sync_enabled != 0,
+        generation: row.try_get("generation")?,
         delta_link: row.try_get("delta_link")?,
         next_link: row.try_get("next_link")?,
         synced_at: row.try_get("synced_at")?,

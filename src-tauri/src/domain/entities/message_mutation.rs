@@ -1,4 +1,4 @@
-use crate::domain::value_objects::{AccountId, MessageId, TimestampMs};
+use crate::domain::value_objects::{AccountId, FolderId, RemoteKey, MessageId, TimestampMs};
 
 /// 待推送的本地字段变更种类
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,10 @@ pub struct PendingMessageMutation {
     pub account_id: AccountId,
     pub message_id: MessageId,
     pub kind: PendingMutationKind,
+    /// 终止失败保留错误记录，但不再覆盖远端观测或自动派发。
+    pub is_active: bool,
+    pub target_folder_id: FolderId,
+    pub target_remote_key: RemoteKey,
     /// kind=read 时有值
     pub desired_is_read: Option<bool>,
     pub version: i64,
