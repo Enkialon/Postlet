@@ -3,15 +3,17 @@ use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::auth as graph_auth;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::accounts;
-use crate::runtime::ChangeDispatcher;
+use crate::runtime::{ChangeDispatcher, MailSyncGate};
+use crate::AppState;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::dto::{
-    UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
+    ChangeOrigin, ChangeSet, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::aggregate_worker_use_case;
+use crate::application::use_cases::compose_use_case;
 use crate::domain::entities::Account;
 use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
 
@@ -134,6 +136,50 @@ pub async fn sign_out(
     accounts::set_signed_in(&mut conn, account_id, false)
         .await
         .map_err(AppError::from)?;
+    Ok(())
+}
+
+/// 清理指定账号的本地聊天/同步数据；保留账号行、登录态与传输配置。
+///
+/// 与 `sign_out` 相反侧重：不删凭据、不改 `is_signed_in`；删会话/邮件/联系人/群与同步游标。
+/// 邮件同步进行中时拒绝，避免与写入竞态。
+pub async fn clear_local_data(
+    state: &AppState,
+    account_id: &AccountId,
+) -> Result<(), AppError> {
+    let gate: &MailSyncGate = &state.mail_sync_gate;
+    if !gate.try_begin(account_id.as_str()) {
+        return Err(AppError::conflict(
+            "邮件同步进行中，请稍后再清理本地数据".to_string(),
+        ));
+    }
+    let clear_result = clear_local_data_inner(state, account_id).await;
+    gate.end(account_id.as_str());
+    clear_result
+}
+
+async fn clear_local_data_inner(
+    state: &AppState,
+    account_id: &AccountId,
+) -> Result<(), AppError> {
+    {
+        let mut conn = state.db.acquire().await?;
+        let _ = accounts::get(&mut conn, account_id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    }
+
+    let mut tx = state.db.begin().await?;
+    accounts::clear_local_chat_data(&mut tx, account_id)
+        .await
+        .map_err(AppError::from)?;
+    tx.commit().await?;
+
+    compose_use_case::clear_drafts_for_account(state, account_id)?;
+
+    let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
+    changeset.account_cleared = true;
+    state.changes.dispatch(changeset);
     Ok(())
 }
 

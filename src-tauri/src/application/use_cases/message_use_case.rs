@@ -138,6 +138,7 @@ pub async fn mark_read(
         session_ids,
         message_ids: changed,
         new_incoming_ids: Vec::new(),
+        account_cleared: false,
         origin: ChangeOrigin::UserAction,
     })
 }
@@ -154,6 +155,7 @@ pub async fn delete_messages(
             session_ids: Vec::new(),
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
+            account_cleared: false,
             origin: ChangeOrigin::UserAction,
         });
     }
@@ -196,6 +198,7 @@ pub async fn delete_messages(
         session_ids,
         message_ids: changed,
         new_incoming_ids: Vec::new(),
+        account_cleared: false,
         origin: ChangeOrigin::UserAction,
     })
 }

@@ -99,6 +99,49 @@ export class MemoryAccountAdapter implements AccountPort {
     this.store.markSignedOut(accountId);
   }
 
+  async clearLocalData(accountId: AccountId): Promise<void> {
+    const account = this.store.requireAccount(accountId);
+    for (const key of [...this.store.messages.keys()]) {
+      if (key.startsWith(`${accountId}:`)) {
+        this.store.messages.delete(key);
+        this.store.recipients.delete(key);
+        this.store.pendingBodies.delete(key);
+      }
+    }
+    for (const key of [...this.store.sessions.keys()]) {
+      if (key.startsWith(`${accountId}:`)) this.store.sessions.delete(key);
+    }
+    for (const key of [...this.store.contacts.keys()]) {
+      if (key.startsWith(`${accountId}:`)) this.store.contacts.delete(key);
+    }
+    for (const key of [...this.store.groups.keys()]) {
+      if (key.startsWith(`${accountId}:`)) {
+        this.store.groups.delete(key);
+        this.store.participants.delete(key);
+      }
+    }
+    const folders = this.store.folderStates.get(accountId) ?? [];
+    this.store.folderStates.set(
+      accountId,
+      folders.map((f) => ({
+        ...f,
+        delta_link: null,
+        next_link: null,
+        synced_at: null,
+        sync_status: 'idle' as const,
+        last_error: null,
+        updated_at: Date.now(),
+      })),
+    );
+    account.contact_delta_link = null;
+    account.mail_sync_triggered_at = null;
+    account.contact_synced_at = null;
+    account.mail_sync_status = 'idle';
+    account.mail_sync_error = null;
+    account.updated_at = Date.now();
+    this.store.accounts.set(accountId, account);
+  }
+
   async updateDisplaySettings(
     cmd: UpdateAccountDisplaySettingsCommand,
   ): Promise<Account> {

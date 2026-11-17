@@ -153,6 +153,20 @@ pub fn clear_draft(
     Ok(())
 }
 
+/// 清除某账号下全部进程内草稿（清理本地数据时用）。
+pub fn clear_drafts_for_account(
+    state: &AppState,
+    account_id: &AccountId,
+) -> Result<(), AppError> {
+    let prefix = format!("{}:", account_id.as_str());
+    let mut guard = state
+        .compose_drafts
+        .lock()
+        .map_err(|_| AppError::internal("草稿锁损坏"))?;
+    guard.retain(|key, _| !key.starts_with(&prefix));
+    Ok(())
+}
+
 /// 本地发送：落库 outbound 邮件到指定 Session；清除草稿
 pub async fn send(
     state: &AppState,

@@ -340,6 +340,7 @@ async fn apply_plan(
             session_ids: vec![old_session_id],
             message_ids: vec![message_id.clone()],
             new_incoming_ids: Vec::new(),
+            account_cleared: false,
             origin: ChangeOrigin::Rebuild,
         });
     };
@@ -450,6 +451,7 @@ async fn apply_plan(
         session_ids,
         message_ids: vec![message_id.clone()],
         new_incoming_ids: Vec::new(),
+        account_cleared: false,
         origin: ChangeOrigin::Rebuild,
     })
 }
@@ -832,6 +834,7 @@ pub async fn relocate_self_keyed_private_sessions(
                         session_ids: vec![sid.clone()],
                         message_ids: Vec::new(),
                         new_incoming_ids: Vec::new(),
+                        account_cleared: false,
                         origin: ChangeOrigin::Rebuild,
                     });
                 }

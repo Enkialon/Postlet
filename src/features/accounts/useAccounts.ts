@@ -190,6 +190,28 @@ export function useAccounts() {
     }
   }
 
+  /** 清理本地聊天数据；账号与登录态保留 */
+  async function clearLocalData(accountId: string): Promise<void> {
+    error.value = null;
+    try {
+      await ports.account.clearLocalData(accountId);
+      const refreshed = await ports.account.getAccount(accountId);
+      accounts.value = accounts.value.map((a) =>
+        a.id === accountId ? refreshed : a,
+      );
+      if (current.value?.id === accountId) {
+        current.value = refreshed;
+      }
+      if (nav.accountId.value === accountId) {
+        nav.clearReading();
+      }
+      nav.bumpSession();
+    } catch (e) {
+      error.value = asAppError(e);
+      throw e;
+    }
+  }
+
   /** 退出当前上下文账号（筛选单账号优先，否则读写上下文） */
   async function signOut(): Promise<void> {
     const id =
@@ -236,6 +258,7 @@ export function useAccounts() {
     addImapSmtpAccount,
     signOut,
     signOutAccount,
+    clearLocalData,
     refreshCurrent,
     replaceCurrent,
   };

@@ -16,6 +16,8 @@ export interface AccountPort {
   /** IMAP + SMTP 账号配置与凭证落盘 */
   upsertImapSmtpAccount(cmd: UpsertImapSmtpAccountCommand): Promise<Account>;
   signOut(accountId: AccountId): Promise<void>;
+  /** 清理本地聊天/同步数据；保留账号与登录态 */
+  clearLocalData(accountId: AccountId): Promise<void>;
   updateDisplaySettings(
     cmd: UpdateAccountDisplaySettingsCommand,
   ): Promise<Account>;

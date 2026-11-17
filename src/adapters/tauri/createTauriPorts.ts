@@ -66,6 +66,8 @@ export function createTauriPorts(): AppPorts {
         invoke<Account>('upsert_imap_smtp_account', { cmd }),
       signOut: (accountId: AccountId) =>
         invoke<void>('account_sign_out', { accountId }),
+      clearLocalData: (accountId: AccountId) =>
+        invoke<void>('account_clear_local_data', { accountId }),
       updateDisplaySettings: (cmd: UpdateAccountDisplaySettingsCommand) =>
         invoke<Account>('update_display_settings', { cmd }),
       updateAliases: (cmd: UpdateAccountAliasesCommand) =>

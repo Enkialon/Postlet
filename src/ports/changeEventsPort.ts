@@ -14,6 +14,8 @@ export interface MailChangedEvent {
   session_ids: string[];
   message_ids: string[];
   new_incoming_count: number;
+  /** 账号本地聊天数据已整表清空 */
+  account_cleared?: boolean;
 }
 
 export interface ChangeEventsPort {

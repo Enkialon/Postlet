@@ -49,6 +49,14 @@ pub async fn account_sign_out(
 }
 
 #[tauri::command]
+pub async fn account_clear_local_data(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<(), AppError> {
+    account_use_case::clear_local_data(&state, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
 pub async fn update_display_settings(
     state: State<'_, AppState>,
     cmd: UpdateAccountDisplaySettingsCommand,

@@ -367,3 +367,72 @@ pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), P
     Ok(())
 }
 
+/// 清除账号下聊天/同步本地数据；保留 `accounts` 行、登录态与 `account_mail_transport`。
+///
+/// 删除顺序尊重 FK：消息 → 会话 → 群/联系人；文件夹行保留勾选，仅重置游标。
+pub async fn clear_local_chat_data(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+) -> Result<(), PortError> {
+    let id = account_id.as_str();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    sqlx::query("DELETE FROM message_locate_pending WHERE account_id = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    // recipients / jobs / mutations 随 messages ON DELETE CASCADE
+    sqlx::query("DELETE FROM messages WHERE account_id = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "UPDATE sessions SET merged_into_id = NULL, contact_id = NULL, last_message_id = NULL,
+         last_message_at = NULL, unread_count = 0 WHERE account_id = ?",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("DELETE FROM sessions WHERE account_id = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    // group_participants 随 groups CASCADE
+    sqlx::query("DELETE FROM groups WHERE account_id = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM contacts WHERE account_id = ?")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "UPDATE mail_folder_sync_state
+         SET delta_link = NULL, next_link = NULL, synced_at = NULL,
+             sync_status = 'idle', last_error = NULL, updated_at = ?
+         WHERE account_id = ?",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE accounts
+         SET contact_delta_link = NULL,
+             mail_sync_triggered_at = NULL,
+             contact_synced_at = NULL,
+             mail_sync_status = 'idle',
+             mail_sync_error = NULL,
+             updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+

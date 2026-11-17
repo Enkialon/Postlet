@@ -356,6 +356,18 @@ export function useSettings() {
     }
   }
 
+  async function clearLocalData(accountId: AccountId): Promise<void> {
+    error.value = null;
+    try {
+      await accountsApi.clearLocalData(accountId);
+      conversations.invalidate();
+      await messages.loadInitial();
+      await refreshAllProgress();
+    } catch (e) {
+      error.value = asAppError(e).message;
+    }
+  }
+
   function setLocale(locale: AppLocale): void {
     prefs.setLocale(locale);
   }
@@ -403,6 +415,7 @@ export function useSettings() {
     updateAccountSettings,
     updateAccountAliases,
     signOutAccount,
+    clearLocalData,
     setLocale,
     refreshAllProgress,
   };

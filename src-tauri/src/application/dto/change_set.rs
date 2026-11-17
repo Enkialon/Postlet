@@ -10,6 +10,9 @@ pub struct ChangeSet {
     pub message_ids: Vec<MessageId>,
     /// 本轮真正新增的入站邮件；重复 upsert / outbound / 已读变更不得填入
     pub new_incoming_ids: Vec<MessageId>,
+    /// 账号本地数据被整表清空（如清理数据）；前端应整列表失效
+    #[serde(default)]
+    pub account_cleared: bool,
     pub origin: ChangeOrigin,
 }
 
@@ -34,12 +37,14 @@ impl ChangeSet {
             session_ids: Vec::new(),
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
+            account_cleared: false,
             origin,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.session_ids.is_empty()
+        !self.account_cleared
+            && self.session_ids.is_empty()
             && self.message_ids.is_empty()
             && self.new_incoming_ids.is_empty()
     }
@@ -55,6 +60,8 @@ pub struct MailChangedEvent {
     pub session_ids: Vec<String>,
     pub message_ids: Vec<String>,
     pub new_incoming_count: usize,
+    #[serde(default)]
+    pub account_cleared: bool,
 }
 
 impl MailChangedEvent {
@@ -74,6 +81,7 @@ impl MailChangedEvent {
                 .map(|id| id.as_str().to_owned())
                 .collect(),
             new_incoming_count: changes.new_incoming_ids.len(),
+            account_cleared: changes.account_cleared,
         }
     }
 }

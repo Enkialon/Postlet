@@ -33,8 +33,17 @@ const {
   updateAccountSettings,
   updateAccountAliases,
   signOutAccount,
+  clearLocalData,
   setLocale,
 } = useSettings();
+
+function confirmClearLocalData(accountId: AccountId): void {
+  const ok = window.confirm(
+    '将清除此账号下的本地会话、邮件与联系人数据，账号与登录状态会保留。确定继续？',
+  );
+  if (!ok) return;
+  void clearLocalData(accountId);
+}
 
 const addAccountOpen = ref(false);
 /** 各账号别名输入框草稿 */
@@ -444,6 +453,12 @@ function onFolderSyncToggle(
                   </div>
 
                   <div class="flex flex-wrap gap-2 pt-1">
+                    <Button
+                      variant="secondary"
+                      @click="confirmClearLocalData(account.id)"
+                    >
+                      清理数据
+                    </Button>
                     <Button
                       variant="danger"
                       @click="signOutAccount(account.id)"

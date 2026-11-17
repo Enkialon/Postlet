@@ -74,6 +74,7 @@ pub fn run() {
             commands::get_account,
             commands::account_sign_in,
             commands::account_sign_out,
+            commands::account_clear_local_data,
             commands::upsert_imap_smtp_account,
             commands::update_display_settings,
             commands::update_account_aliases,
