@@ -24,3 +24,12 @@
 - 启动时在同一跨进程配置锁下核对并回收无引用的通用凭据，覆盖暂存后崩溃和旧凭据回收前崩溃。退出与配置切换使用同一把锁。
 - 按 V1 直接修订初始数据库，不提供旧配置/明文凭据兼容；已有开发库需要重建。
 - 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests` 共 23 项通过（2 项系统钥匙串测试默认跳过）；随后原生配置测试 2 项通过，覆盖存储失败、SQL 失败、延迟外键导致 COMMIT 失败、旧引用保留、孤儿恢复、更新切换、退出删除失败与重试。最终 `--lib -- --include-ignored` 16 项通过，含 IMAP/SMTP 连接前 OAuth2 拒绝及 Graph 命名空间凭据回归。未连接真实邮箱或执行交互式 Graph OAuth 登录。
+
+## I-19：防护已实现，Edge 验证通过；Tauri 实机安全验收仍待完成
+
+- 替换 vue-letter 为精确锁定的 DOMPurify 3.4.18。原始 HTML 只在 template 惰性文档中解析并原地清洗，不进入主应用 DOM。显式标签/属性白名单，移除脚本、嵌套页面、表单、SVG/MathML、样式表及能加载资源的 CSS；保留基础排版样式。
+- 清洗结果进入 sandbox iframe；仅 allow-same-origin 供父页面测量/链接处理，不授予 allow-scripts。正文 CSP 禁止脚本、表单和其他默认资源；默认删除图片 src 并禁止 img-src，允许单封授权远程图片，拒绝 cid/file/asset/data 和 srcset。切换邮件（含相同正文）重建组件，清除授权；可再次屏蔽。
+- 链接不保留真实浏览器导航地址，由父页面对用户点击再次验证后调用 PlatformPort；仅 http/https/mailto。没有新增 HTML 附件同源预览或开放任意 CID。
+- 主窗口配置开发/生产 CSP，未增加任何远程 capability。旧邮件渲染依赖与全局样式已移除。
+- 验证：Edge + Playwright 8 项通过，分别使用实际配置中的开发/生产 CSP，捕获解析/渲染/授权时图片与 CSS/字体/iframe 等请求；覆盖危险 URL、畸形 HTML、CID/本地资源拒绝、授权撤销和跨邮件重置、链接 Port、新窗口及绕过清洗直接注入脚本后的独立 sandbox/CSP 防护。`pnpm build` 和 `cargo check --manifest-path src-tauri/Cargo.toml --offline` 通过。
+- 尚未在 Tauri 安装包内验证 WebView2/其他平台的真实 IPC 拒绝与 capabilities 执行，浏览器父页面模拟的高权限入口不能代替该验收，因此不将整项标为完全解决。HTML 附件预览当前不存在，未来实现必须复用同等隔离。

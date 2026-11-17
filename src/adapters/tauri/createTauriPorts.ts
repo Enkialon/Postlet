@@ -48,6 +48,7 @@ import type {
 import { invoke } from './invoke';
 import { normalizeAppError } from './normalizeError';
 import { TauriChangeEventsAdapter } from './TauriChangeEventsAdapter';
+import { externalMailUrl } from '../../shared/mail-content/mailDocument';
 
 /**
  * Tauri Adapter：已注册 IPC → invoke。
@@ -171,14 +172,15 @@ export function createTauriPorts(): AppPorts {
     platform: {
       openExternalUrl: async (url: string) => {
         const { openUrl } = await import('@tauri-apps/plugin-opener');
-        if (!/^https?:\/\//i.test(url.trim())) {
+        const safeUrl = externalMailUrl(url);
+        if (!safeUrl) {
           throw normalizeAppError({
             code: 'validation',
-            message: '仅允许 http / https 外链',
+            message: '仅允许 http / https / mailto 外链',
             retryable: false,
           });
         }
-        await openUrl(url.trim());
+        await openUrl(safeUrl);
       },
     },
     changeEvents: new TauriChangeEventsAdapter(),

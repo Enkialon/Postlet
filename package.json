@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:mail-content": "playwright test",
     "tauri": "tauri",
     "i18n:extract": "node plugins/vite-plugin-auto-i18n/extract.mjs",
     "test:conversation-order": "npx --yes tsx src/features/conversations/conversationListOrder.selftest.ts"
@@ -24,12 +25,13 @@
     "@tiptap/pm": "^3.33.1",
     "@tiptap/starter-kit": "^3.33.1",
     "@tiptap/vue-3": "^3.33.1",
+    "dompurify": "3.4.18",
     "reka-ui": "^2.11.0",
     "vue": "^3.5.13",
-    "vue-i18n": "^11.4.19",
-    "vue-letter": "^0.2.3"
+    "vue-i18n": "^11.4.19"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.1",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.7",

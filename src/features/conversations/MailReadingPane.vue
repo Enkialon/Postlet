@@ -286,6 +286,7 @@ const folderLabel = computed(
             class="py-1 text-text-primary"
           >
             <MailBodyView
+              :key="`${item.message.account_id}:${item.message.id}`"
               :content="item.message.body_content"
               :content-type="item.message.body_content_type"
               :title="item.message.subject || '邮件正文'"

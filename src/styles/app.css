@@ -87,63 +87,6 @@
   }
 }
 
-/* vue-letter 邮件正文 */
-.mail-letter__inner {
-  font-size: 14px;
-  line-height: 1.65;
-  color: var(--color-text-primary);
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.mail-letter__inner p {
-  margin: 0 0 0.85em;
-}
-
-.mail-letter__inner h1,
-.mail-letter__inner h2,
-.mail-letter__inner h3 {
-  margin: 0.85em 0 0.4em;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--color-text-primary);
-}
-.mail-letter__inner h1 {
-  font-size: 1.45em;
-}
-.mail-letter__inner h2 {
-  font-size: 1.25em;
-}
-.mail-letter__inner h3 {
-  font-size: 1.1em;
-}
-
-.mail-letter__inner ul,
-.mail-letter__inner ol {
-  margin: 0.5em 0 0.85em;
-  padding-left: 1.5em;
-}
-.mail-letter__inner ul {
-  list-style-type: disc;
-}
-.mail-letter__inner ol {
-  list-style-type: decimal;
-}
-.mail-letter__inner li {
-  margin: 0.2em 0;
-  display: list-item;
-}
-
-.mail-letter__inner a {
-  color: #3b6d9a;
-}
-
-.mail-letter__inner img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 6px;
-}
-
 .mail-editor-host .ProseMirror img.mail-editor-image,
 .mail-editor-host .ProseMirror img {
   max-width: 100%;
@@ -151,13 +94,6 @@
   border-radius: 6px;
   display: block;
   margin: 0.5em 0;
-}
-
-.mail-letter__inner blockquote {
-  margin: 0.5em 0;
-  padding-left: 0.85em;
-  border-left: 3px solid var(--color-border-subtle);
-  color: var(--color-text-secondary);
 }
 
 /* Tiptap 写信编辑器（覆盖 Tailwind preflight 对列表的重置） */
