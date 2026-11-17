@@ -7,7 +7,7 @@ import type {
   ContactSource,
   EmailAddress,
   FolderId,
-  GraphImmutableId,
+  RemoteKey,
   GroupId,
   GroupSource,
   Importance,
@@ -83,9 +83,8 @@ export interface Message {
   id: MessageId;
   account_id: AccountId;
   session_id: SessionId;
-  /** Graph ImmutableId；本地草稿可空 */
-  graph_id: GraphImmutableId | null;
-  graph_change_key: string | null;
+  /** 当前位置的不透明远端键；本地草稿可空 */
+  remote_key: RemoteKey | null;
   /** RFC Message-ID */
   internet_message_id: string | null;
   /** RFC In-Reply-To（用于找父信进同一 Session） */
@@ -99,7 +98,6 @@ export interface Message {
   from_name: string;
   received_at: TimestampMs | null;
   sent_at: TimestampMs | null;
-  created_at_graph: TimestampMs | null;
   is_read: boolean;
   is_draft: boolean;
   /** 是否本账户发出（结合 self 集合判定后落库） */

@@ -7,7 +7,7 @@ export type ContactId = string;
 export type MessageId = string;
 export type GroupId = string;
 export type SessionId = string;
-export type GraphImmutableId = string;
+export type RemoteKey = string;
 export type FolderId = string;
 
 /** 账户 / 文件夹同步状态 */

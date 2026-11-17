@@ -87,14 +87,14 @@ pub async fn ensure_message_body(
             Ok(bundle)
         }
         ReceiveProtocol::Graph => {
-            let Some(graph_id) = bundle.message.graph_id.clone() else {
+            let Some(remote_key) = bundle.message.remote_key.clone() else {
                 return Ok(bundle);
             };
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
             let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
                 .await
                 .map_err(AppError::from)?;
-            let (content_type, content) = graph::mail::get_message_body(&token, &graph_id)
+            let (content_type, content) = graph::mail::get_message_body(&token, &remote_key)
                 .await
                 .map_err(AppError::from)?;
             bundle.message.body_content_type = content_type;
@@ -271,7 +271,7 @@ async fn push_graph_read(
     message_id: &MessageId,
     is_read: bool,
 ) -> Result<(), AppError> {
-    let graph_id = {
+    let remote_key = {
         let mut conn = db.acquire().await?;
         let bundle = messages::get(&mut conn, account_id, message_id)
             .await
@@ -279,14 +279,14 @@ async fn push_graph_read(
             .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
         bundle
             .message
-            .graph_id
-            .ok_or_else(|| AppError::validation("邮件缺少 graph_id，无法推已读"))?
+            .remote_key
+            .ok_or_else(|| AppError::validation("邮件缺少 remote_key，无法推已读"))?
     };
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
     let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
         .await
         .map_err(AppError::from)?;
-    graph::mail::patch_message_read(&token, &graph_id, is_read)
+    graph::mail::patch_message_read(&token, &remote_key, is_read)
         .await
         .map_err(AppError::from)
 }
@@ -304,9 +304,9 @@ async fn push_imap_read(
             .await
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
-        let graph_id = bundle
+        let remote_key = bundle
             .message
-            .graph_id
+            .remote_key
             .as_ref()
             .map(|g| g.as_str().to_string())
             .ok_or_else(|| AppError::validation("IMAP 邮件缺少 uid 标识"))?;
@@ -317,9 +317,9 @@ async fn push_imap_read(
             .map(|f| f.as_str().to_string())
             .ok_or_else(|| AppError::validation("IMAP 邮件缺少 folder_id"))?;
         let prefix = format!("imap:{folder}:");
-        let uid_str = graph_id
+        let uid_str = remote_key
             .strip_prefix(&prefix)
-            .ok_or_else(|| AppError::validation("IMAP graph_id 格式无效"))?;
+            .ok_or_else(|| AppError::validation("IMAP remote_key 格式无效"))?;
         let uid: u32 = uid_str
             .parse()
             .map_err(|_| AppError::validation("IMAP uid 无效"))?;
@@ -384,7 +384,7 @@ async fn push_graph_delete(
     account_id: &AccountId,
     message_id: &MessageId,
 ) -> Result<(), AppError> {
-    let graph_id = {
+    let remote_key = {
         let mut conn = db.acquire().await?;
         let bundle = messages::get(&mut conn, account_id, message_id)
             .await
@@ -392,14 +392,14 @@ async fn push_graph_delete(
             .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
         bundle
             .message
-            .graph_id
-            .ok_or_else(|| AppError::validation("邮件缺少 graph_id，无法删除"))?
+            .remote_key
+            .ok_or_else(|| AppError::validation("邮件缺少 remote_key，无法删除"))?
     };
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
     let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
         .await
         .map_err(AppError::from)?;
-    graph::mail::delete_message(&token, &graph_id)
+    graph::mail::delete_message(&token, &remote_key)
         .await
         .map_err(AppError::from)
 }
@@ -416,9 +416,9 @@ async fn push_imap_delete(
             .await
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::not_found(format!("邮件不存在: {message_id}")))?;
-        let graph_id = bundle
+        let remote_key = bundle
             .message
-            .graph_id
+            .remote_key
             .as_ref()
             .map(|g| g.as_str().to_string())
             .ok_or_else(|| AppError::validation("IMAP 邮件缺少 uid 标识"))?;
@@ -429,9 +429,9 @@ async fn push_imap_delete(
             .map(|f| f.as_str().to_string())
             .ok_or_else(|| AppError::validation("IMAP 邮件缺少 folder_id"))?;
         let prefix = format!("imap:{folder}:");
-        let uid_str = graph_id
+        let uid_str = remote_key
             .strip_prefix(&prefix)
-            .ok_or_else(|| AppError::validation("IMAP graph_id 格式无效"))?;
+            .ok_or_else(|| AppError::validation("IMAP remote_key 格式无效"))?;
         let uid: u32 = uid_str
             .parse()
             .map_err(|_| AppError::validation("IMAP uid 无效"))?;

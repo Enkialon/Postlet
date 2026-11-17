@@ -1,13 +1,19 @@
-//! Microsoft Graph 邮件协议：Delta / 正文 / 定位 / 已读 PATCH / 发送。
+//! Microsoft Graph 邮件协议：Delta / 正文 / 已读 PATCH / 发送。
 //!
 //! 只做远端 IO + 映射到 `RemoteMessage`；本地落库与聚合由 application 编排。
 
-use crate::application::dto::remote_models::{
-    GraphMessageChange, MailDeltaPage, RemoteMessage, RemoteMessageLocation, RemoteRecipient,
-};
+use crate::domain::mail::{RemoteMessageChange, RemoteMessage, RemoteRecipient};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailDeltaPage {
+    pub messages: Vec<RemoteMessageChange>,
+    pub next_link: Option<String>,
+    pub delta_link: Option<String>,
+}
+
 use crate::application::error::PortError;
 use crate::domain::value_objects::{
-    BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole,
+    BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, RecipientRole,
 };
 use chrono::{DateTime, Utc};
 use graph_rs_sdk::{GraphClient, ODataQuery};
@@ -16,7 +22,6 @@ use serde_json::{json, Value};
 
 const MESSAGE_SELECT: &[&str] = &[
     "id",
-    "changeKey",
     "internetMessageId",
     "internetMessageHeaders",
     "subject",
@@ -29,7 +34,6 @@ const MESSAGE_SELECT: &[&str] = &[
     "replyTo",
     "receivedDateTime",
     "sentDateTime",
-    "createdDateTime",
     "lastModifiedDateTime",
     "isRead",
     "isDraft",
@@ -116,14 +120,14 @@ pub async fn delta_messages(
     for item in page.value {
         if item.get("@removed").is_some() {
             if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                messages.push(GraphMessageChange::Remove {
-                    graph_id: GraphImmutableId::new(id.to_string()),
+                messages.push(RemoteMessageChange::Remove {
+                    remote_key: RemoteKey::new(id.to_string()),
                 });
             }
             continue;
         }
-        match map_remote_message(&item, Some(folder_id.clone())) {
-            Ok(remote) => messages.push(GraphMessageChange::Upsert(remote)),
+        match map_remote_message(&item, folder_id.clone()) {
+            Ok(remote) => messages.push(RemoteMessageChange::Upsert(remote)),
             Err(err) => {
                 return Err(PortError::Remote {
                     message: format!("映射 Graph 邮件失败: {err}"),
@@ -140,57 +144,13 @@ pub async fn delta_messages(
     })
 }
 
-pub async fn get_message_snapshot(
-    access_token: &str,
-    graph_id: &GraphImmutableId,
-) -> Result<Option<RemoteMessage>, PortError> {
-    let response = client(access_token)
-        .me()
-        .message(graph_id.as_str())
-        .get_messages()
-        .select(MESSAGE_SELECT)
-        .send()
-        .await
-        .map_err(|e| map_http_err("Graph get message", e))?;
-
-    if response.status().as_u16() == 404 {
-        return Ok(None);
-    }
-    let response = ensure_success(response, "Graph get message").await?;
-    let value: Value = response.json().await.map_err(|_| PortError::Remote {
-        message: "无法解析 Graph 邮件".into(),
-        retryable: true,
-    })?;
-    let remote = map_remote_message(&value, None).map_err(|e| PortError::Remote {
-        message: format!("映射 Graph 邮件失败: {e}"),
-        retryable: false,
-    })?;
-    Ok(Some(remote))
-}
-
-pub async fn locate_message(
-    access_token: &str,
-    graph_id: &GraphImmutableId,
-) -> Result<RemoteMessageLocation, PortError> {
-    match get_message_snapshot(access_token, graph_id).await? {
-        None => Ok(RemoteMessageLocation::NotFound),
-        Some(remote) => {
-            if let Some(folder_id) = remote.folder_id {
-                Ok(RemoteMessageLocation::Present { folder_id })
-            } else {
-                Ok(RemoteMessageLocation::NotFound)
-            }
-        }
-    }
-}
-
 pub async fn get_message_body(
     access_token: &str,
-    graph_id: &GraphImmutableId,
+    remote_key: &RemoteKey,
 ) -> Result<(BodyContentType, String), PortError> {
     let response = client(access_token)
         .me()
-        .message(graph_id.as_str())
+        .message(remote_key.as_str())
         .get_messages()
         .select(&["id", "body"])
         .send()
@@ -223,12 +183,12 @@ pub async fn get_message_body(
 
 pub async fn patch_message_read(
     access_token: &str,
-    graph_id: &GraphImmutableId,
+    remote_key: &RemoteKey,
     is_read: bool,
 ) -> Result<(), PortError> {
     let response = client(access_token)
         .me()
-        .message(graph_id.as_str())
+        .message(remote_key.as_str())
         .update_messages(&json!({ "isRead": is_read }))
         .send()
         .await
@@ -240,11 +200,11 @@ pub async fn patch_message_read(
 /// 删除邮件（通常进入「已删除邮件」）。
 pub async fn delete_message(
     access_token: &str,
-    graph_id: &GraphImmutableId,
+    remote_key: &RemoteKey,
 ) -> Result<(), PortError> {
     let response = client(access_token)
         .me()
-        .message(graph_id.as_str())
+        .message(remote_key.as_str())
         .delete_messages()
         .send()
         .await
@@ -548,7 +508,7 @@ async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Respons
     super::http::get_absolute(access_token, link, "Graph absolute GET").await
 }
 
-fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<RemoteMessage, String> {
+fn map_remote_message(value: &Value, folder_hint: FolderId) -> Result<RemoteMessage, String> {
     let id = value
         .get("id")
         .and_then(|v| v.as_str())
@@ -590,11 +550,9 @@ fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<Re
     push_recipients(&mut recipients, RecipientRole::Bcc, value.get("bccRecipients"));
     push_recipients(&mut recipients, RecipientRole::ReplyTo, value.get("replyTo"));
 
-    let folder_id = value
-        .get("parentFolderId")
-        .and_then(|v| v.as_str())
-        .map(|s| FolderId::new(s.to_string()))
-        .or(folder_hint);
+    // The caller supplies local identity for this folder-scoped request.
+    // Graph's parentFolderId is a remote binding, never a local FolderId.
+    let folder_id = Some(folder_hint);
 
     let importance = match value
         .get("importance")
@@ -624,11 +582,7 @@ fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<Re
         });
 
     Ok(RemoteMessage {
-        graph_id: GraphImmutableId::new(id.to_string()),
-        graph_change_key: value
-            .get("changeKey")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
+        remote_key: RemoteKey::new(id.to_string()),
         internet_message_id: value
             .get("internetMessageId")
             .and_then(|v| v.as_str())
@@ -643,7 +597,6 @@ fn map_remote_message(value: &Value, folder_hint: Option<FolderId>) -> Result<Re
         recipients,
         received_at: parse_graph_time(value.get("receivedDateTime")),
         sent_at: parse_graph_time(value.get("sentDateTime")),
-        created_at_graph: parse_graph_time(value.get("createdDateTime")),
         is_read: value
             .get("isRead")
             .and_then(|v| v.as_bool())
@@ -734,8 +687,8 @@ mod tests {
             "importance": "high",
             "parentFolderId": "inbox-id"
         });
-        let remote = map_remote_message(&value, None).unwrap();
-        assert_eq!(remote.graph_id.as_str(), "AAMkAG");
+        let remote = map_remote_message(&value, FolderId::new("local-folder")).unwrap();
+        assert_eq!(remote.remote_key.as_str(), "AAMkAG");
         assert_eq!(remote.subject, "Hello");
         assert_eq!(remote.body_content_type, BodyContentType::Html);
         assert_eq!(remote.from_name, "Alice");
@@ -743,5 +696,11 @@ mod tests {
         assert_eq!(remote.importance, Importance::High);
         assert!(remote.is_read);
         assert_eq!(remote.in_reply_to.as_deref(), Some("<parent@b.com>"));
+        assert_eq!(remote.folder_id, Some(FolderId::new("local-folder")));
+        let mut changed_metadata = value.clone();
+        changed_metadata["changeKey"] = json!("different");
+        changed_metadata["conversationId"] = json!("unrelated-thread");
+        changed_metadata["createdDateTime"] = json!("2000-01-01T00:00:00Z");
+        assert_eq!(remote, map_remote_message(&changed_metadata, FolderId::new("local-folder")).unwrap());
     }
 }

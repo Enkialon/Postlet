@@ -4,7 +4,7 @@
 
 use super::client::ImapSession;
 use super::parse::{parse_rfc822, remote_id};
-use crate::application::dto::remote_models::{GraphMessageChange, RemoteMessage};
+use crate::domain::mail::{RemoteMessageChange, RemoteMessage};
 use crate::application::error::PortError;
 use crate::domain::services::{imap_pending_boundary, missing_imap_page};
 use crate::infrastructure::mail::cursor::parse_cursor;
@@ -21,7 +21,7 @@ pub struct FolderSyncResult {
     pub last_uid: u32,
     /// 最新未下载 UID 的上界；1 表示当前快照已全部下载。
     pub low_uid: u32,
-    pub changes: Vec<GraphMessageChange>,
+    pub changes: Vec<RemoteMessageChange>,
     pub missing_remote_ids: Vec<String>,
 }
 
@@ -109,7 +109,7 @@ pub fn sync_folder(
                     .iter()
                     .any(|f| matches!(f, imap::types::Flag::Seen));
                 if is_read != *was_read {
-                    changes.push(GraphMessageChange::Upsert(flag_only_remote(
+                    changes.push(RemoteMessageChange::Upsert(flag_only_remote(
                         folder, uid, is_read,
                     )));
                 }
@@ -135,7 +135,7 @@ fn search_uids(session: &mut ImapSession, query: &str) -> Result<HashSet<u32>, P
 }
 
 struct FetchPageResult {
-    changes: Vec<GraphMessageChange>,
+    changes: Vec<RemoteMessageChange>,
     ok_uids: HashSet<u32>,
 }
 
@@ -179,7 +179,7 @@ fn fetch_uid_page(
             match parse_rfc822(folder, uid, body, is_read, internal_ms) {
                 Ok(remote) => {
                     ok_uids.insert(uid);
-                    changes.push(GraphMessageChange::Upsert(remote));
+                    changes.push(RemoteMessageChange::Upsert(remote));
                 }
                 Err(_) => {
                     // 单封解析失败不中断整夹，下轮可重试
@@ -195,7 +195,7 @@ fn fetch_uid_page(
             match fetch_one_rfc822(session, folder, *uid)? {
                 Some(remote) => {
                     ok_uids.insert(*uid);
-                    changes.push(GraphMessageChange::Upsert(remote));
+                    changes.push(RemoteMessageChange::Upsert(remote));
                 }
                 None => {}
             }
@@ -236,8 +236,7 @@ fn fetch_one_rfc822(
 
 fn flag_only_remote(folder: &str, uid: u32, is_read: bool) -> RemoteMessage {
     RemoteMessage {
-        graph_id: remote_id(folder, uid),
-        graph_change_key: Some(format!("uid:{uid}")),
+        remote_key: remote_id(folder, uid),
         internet_message_id: None,
         in_reply_to: None,
         subject: String::new(),
@@ -249,7 +248,6 @@ fn flag_only_remote(folder: &str, uid: u32, is_read: bool) -> RemoteMessage {
         recipients: Vec::new(),
         received_at: None,
         sent_at: None,
-        created_at_graph: None,
         is_read,
         is_draft: false,
         has_attachments: false,

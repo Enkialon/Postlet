@@ -380,10 +380,6 @@ pub async fn clear_local_chat_data(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    sqlx::query("DELETE FROM message_locate_pending WHERE account_id = ?")
-        .bind(id)
-        .execute(&mut *conn)
-        .await?;
     // recipients / jobs / mutations 随 messages ON DELETE CASCADE
     sqlx::query("DELETE FROM messages WHERE account_id = ?")
         .bind(id)

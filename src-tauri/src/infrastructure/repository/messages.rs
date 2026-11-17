@@ -3,7 +3,7 @@
 use crate::application::error::PortError;
 use crate::domain::entities::MessageWithRecipients;
 use crate::domain::value_objects::{
-    AccountId, EmailAddress, GraphImmutableId, MessageId, SessionId,
+    AccountId, EmailAddress, RemoteKey, MessageId, SessionId,
 };
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
@@ -28,14 +28,16 @@ pub async fn get(
     }))
 }
 
-pub async fn get_by_graph_id(
+pub async fn get_by_location(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-    graph_id: &GraphImmutableId,
+    folder_id: &crate::domain::value_objects::FolderId,
+    remote_key: &RemoteKey,
 ) -> Result<Option<MessageWithRecipients>, PortError> {
-    let row = sqlx::query("SELECT * FROM messages WHERE account_id = ? AND graph_id = ?")
+    let row = sqlx::query("SELECT * FROM messages WHERE account_id = ? AND folder_id = ? AND remote_key = ?")
         .bind(account_id.as_str())
-        .bind(graph_id.as_str())
+        .bind(folder_id.as_str())
+        .bind(remote_key.as_str())
         .fetch_optional(&mut *conn)
         .await?;
     let Some(row) = row else {
@@ -102,17 +104,11 @@ pub async fn upsert_with_recipients(
 ) -> Result<(), PortError> {
     let m = &bundle.message;
     sqlx::query(
-        "INSERT INTO messages (
-            id, account_id, session_id, graph_id, graph_change_key, internet_message_id,
-            in_reply_to, subject, body_preview, body_content_type, body_content,
-            from_address, from_name, received_at, sent_at, created_at_graph,
-            is_read, is_draft, is_outbound, has_attachments, importance,
-            folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO messages (id, account_id, session_id, remote_key, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             session_id=excluded.session_id,
-            graph_id=excluded.graph_id,
-            graph_change_key=excluded.graph_change_key,
+            remote_key=excluded.remote_key,
             internet_message_id=excluded.internet_message_id,
             in_reply_to=excluded.in_reply_to,
             subject=excluded.subject,
@@ -123,7 +119,6 @@ pub async fn upsert_with_recipients(
             from_name=excluded.from_name,
             received_at=excluded.received_at,
             sent_at=excluded.sent_at,
-            created_at_graph=excluded.created_at_graph,
             is_read=excluded.is_read,
             is_draft=excluded.is_draft,
             is_outbound=excluded.is_outbound,
@@ -138,8 +133,7 @@ pub async fn upsert_with_recipients(
     .bind(m.id.as_str())
     .bind(m.account_id.as_str())
     .bind(m.session_id.as_str())
-    .bind(m.graph_id.as_ref().map(|g| g.as_str()))
-    .bind(&m.graph_change_key)
+    .bind(m.remote_key.as_ref().map(|g| g.as_str()))
     .bind(&m.internet_message_id)
     .bind(&m.in_reply_to)
     .bind(&m.subject)
@@ -150,7 +144,6 @@ pub async fn upsert_with_recipients(
     .bind(&m.from_name)
     .bind(m.received_at)
     .bind(m.sent_at)
-    .bind(m.created_at_graph)
     .bind(m.is_read)
     .bind(m.is_draft)
     .bind(m.is_outbound)

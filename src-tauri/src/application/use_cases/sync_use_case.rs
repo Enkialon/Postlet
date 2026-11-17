@@ -1,6 +1,6 @@
 //! 同步用例：按账号协议路由 Graph / IMAP，复用本地仓储与 ChangeSet。
 
-use crate::application::dto::remote_models::{GraphMessageChange, RemoteMessage};
+use crate::domain::mail::{RemoteMessageChange, RemoteMessage};
 use crate::application::dto::{
     ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, SetFolderSyncEnabledCommand,
     TriggerContactSyncCommand, TriggerMailSyncCommand,
@@ -24,11 +24,10 @@ use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_uid_cursor, encode_uidvalidity, parse_cursor};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
-    accounts, contacts, folder_states, jobs, locate_pending, mail_transports, messages, mutations,
+    accounts, contacts, folder_states, jobs, mail_transports, messages, mutations,
     sessions,
 };
 use crate::application::use_cases::aggregate_worker_use_case;
-use crate::application::dto::remote_models::RemoteMessageLocation;
 use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -264,7 +263,7 @@ async fn sync_graph_mail(
         let mut tx = db.begin().await?;
         for change in page.messages {
             match change {
-                GraphMessageChange::Upsert(remote) => {
+                RemoteMessageChange::Upsert(remote) => {
                     let is_draft = remote.is_draft;
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
@@ -276,17 +275,8 @@ async fn sync_graph_mail(
                         changeset.new_incoming_ids.push(mid);
                     }
                 }
-                GraphMessageChange::Remove { graph_id } => {
-                    // Remove 仅移出信号：入队核对，事务外 locate 后再软删/改位置
-                    locate_pending::enqueue(
-                        &mut tx,
-                        &cmd.account_id,
-                        &graph_id,
-                        &folder,
-                        now_ms(),
-                    )
-                    .await
-                    .map_err(AppError::from)?;
+                RemoteMessageChange::Remove { remote_key } => {
+                    apply_location_removed(&mut tx, &cmd.account_id, &folder, &remote_key, &mut changeset).await?;
                 }
             }
         }
@@ -304,11 +294,6 @@ async fn sync_graph_mail(
             .map_err(AppError::from)?;
         tx.commit().await?;
     }
-
-    // 事务外处理到期核对
-    let locate_changes = process_due_locates(db, paths, &cmd.account_id, 32).await?;
-    changeset.message_ids.extend(locate_changes.message_ids);
-    changeset.session_ids.extend(locate_changes.session_ids);
 
     if is_initial {
         changeset.origin = ChangeOrigin::InitialSync;
@@ -425,7 +410,7 @@ async fn sync_imap_mail(
         let mut tx = db.begin().await?;
         for change in result.changes {
             match change {
-                GraphMessageChange::Upsert(remote) => {
+                RemoteMessageChange::Upsert(remote) => {
                     let is_draft = remote.is_draft;
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
@@ -437,53 +422,13 @@ async fn sync_imap_mail(
                         changeset.new_incoming_ids.push(mid);
                     }
                 }
-                GraphMessageChange::Remove { graph_id } => {
-                    if let Some(existing) =
-                        messages::get_by_graph_id(&mut tx, &cmd.account_id, &graph_id)
-                            .await
-                            .map_err(AppError::from)?
-                    {
-                        let mut msg = existing.message;
-                        msg.sync_status = MessageSyncStatus::DeletedRemote;
-                        msg.local_updated_at = now_ms();
-                        messages::upsert_with_recipients(
-                            &mut tx,
-                            &MessageWithRecipients {
-                                message: msg.clone(),
-                                recipients: existing.recipients,
-                            },
-                        )
-                        .await
-                        .map_err(AppError::from)?;
-                        changeset.message_ids.push(msg.id);
-                    }
+                RemoteMessageChange::Remove { remote_key } => {
+                    apply_location_removed(&mut tx, &cmd.account_id, &FolderId::new(&result.folder), &remote_key, &mut changeset).await?;
                 }
             }
         }
-        for gid in result.missing_remote_ids {
-            let graph_id = crate::domain::value_objects::GraphImmutableId::new(gid);
-            if let Some(existing) =
-                messages::get_by_graph_id(&mut tx, &cmd.account_id, &graph_id)
-                    .await
-                    .map_err(AppError::from)?
-            {
-                let mut msg = existing.message;
-                if msg.sync_status == MessageSyncStatus::DeletedRemote {
-                    continue;
-                }
-                msg.sync_status = MessageSyncStatus::DeletedRemote;
-                msg.local_updated_at = now_ms();
-                messages::upsert_with_recipients(
-                    &mut tx,
-                    &MessageWithRecipients {
-                        message: msg.clone(),
-                        recipients: existing.recipients,
-                    },
-                )
-                .await
-                .map_err(AppError::from)?;
-                changeset.message_ids.push(msg.id);
-            }
+        for key in result.missing_remote_ids {
+            apply_location_removed(&mut tx, &cmd.account_id, &FolderId::new(&result.folder), &crate::domain::value_objects::RemoteKey::new(key), &mut changeset).await?;
         }
 
         let folder_id = FolderId::new(result.folder);
@@ -519,8 +464,8 @@ async fn load_known_uids(
     let prefix = format!("imap:{folder}:");
     // 本地软删也是已经下载过的 UID，不能因其仍存在远端而无限补抓。
     let rows = sqlx::query_as::<_, (String, i64)>(
-        "SELECT graph_id, is_read FROM messages
-         WHERE account_id = ? AND folder_id = ? AND graph_id LIKE ? AND body_content IS NOT NULL",
+        "SELECT remote_key, is_read FROM messages
+         WHERE account_id = ? AND folder_id = ? AND remote_key LIKE ? AND body_content IS NOT NULL",
     )
     .bind(account_id.as_str())
     .bind(folder)
@@ -544,7 +489,7 @@ async fn upsert_remote_message(
     account_id: &AccountId,
     remote: &RemoteMessage,
 ) -> Result<(MessageId, Option<SessionId>, bool), AppError> {
-    let existing = messages::get_by_graph_id(conn, account_id, &remote.graph_id)
+    let existing = messages::get_by_location(conn, account_id, remote.folder_id.as_ref().ok_or_else(|| AppError::validation("远端邮件缺少位置"))?, &remote.remote_key)
         .await
         .map_err(AppError::from)?;
     let is_new = existing.is_none();
@@ -559,11 +504,8 @@ async fn upsert_remote_message(
     let pending_delete = pending
         .as_ref()
         .is_some_and(|p| p.kind == crate::application::dto::PendingMutationKind::Delete);
-    let already_deleted = existing.as_ref().is_some_and(|e| {
-        e.message.sync_status == MessageSyncStatus::DeletedRemote
-    });
     // 用户已删或待推删除：不复活
-    if pending_delete || already_deleted {
+    if pending_delete {
         if let Some(bundle) = existing {
             return Ok((bundle.message.id, None, false));
         }
@@ -625,8 +567,7 @@ async fn upsert_remote_message(
         id: local_id.clone(),
         account_id: account_id.clone(),
         session_id: session_id.clone(),
-        graph_id: Some(remote.graph_id.clone()),
-        graph_change_key: remote.graph_change_key.clone(),
+        remote_key: Some(remote.remote_key.clone()),
         internet_message_id: remote.internet_message_id.clone(),
         in_reply_to: remote.in_reply_to.clone(),
         subject: remote.subject.clone(),
@@ -637,7 +578,6 @@ async fn upsert_remote_message(
         from_name: remote.from_name.clone(),
         received_at: remote.received_at.or(Some(now)),
         sent_at: remote.sent_at,
-        created_at_graph: remote.created_at_graph,
         is_read,
         is_draft: remote.is_draft,
         is_outbound,
@@ -679,6 +619,23 @@ async fn upsert_remote_message(
     }
 
     Ok((local_id, Some(session_id), is_new))
+}
+
+/// 移出事实只作用于来源位置；不追踪远端 ID、不替换为其他文件夹位置。
+async fn apply_location_removed(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    remote_key: &crate::domain::value_objects::RemoteKey,
+    changeset: &mut ChangeSet,
+) -> Result<(), AppError> {
+    if let Some(existing) = messages::get_by_location(conn, account_id, folder_id, remote_key).await? {
+        messages::mark_deleted_remote(conn, account_id, &[existing.message.id.clone()]).await?;
+        sessions::recompute_projection(conn, account_id, &existing.message.session_id).await?;
+        changeset.message_ids.push(existing.message.id);
+        changeset.session_ids.push(existing.message.session_id);
+    }
+    Ok(())
 }
 
 /// 同步落库前的临时 Session：父信优先，否则对端私聊，否则本账户地址。
@@ -834,140 +791,6 @@ pub async fn trigger_contact_sync(
         break;
     }
     Ok(())
-}
-
-/// 处理到期的 Remove 核对记录。
-pub async fn process_due_locates(
-    db: &SqlitePool,
-    paths: &AppPaths,
-    account_id: &AccountId,
-    limit: u32,
-) -> Result<ChangeSet, AppError> {
-    let due = {
-        let mut conn = db.acquire().await?;
-        locate_pending::list_due(&mut conn, account_id, now_ms(), limit)
-            .await
-            .map_err(AppError::from)?
-    };
-    let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::IncrementalSync);
-    if due.is_empty() {
-        return Ok(changeset);
-    }
-
-    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
-        .await
-        .map_err(AppError::from)?;
-
-    for item in due {
-        match graph::mail::locate_message(&token, &item.graph_id).await {
-            Ok(RemoteMessageLocation::NotFound) => {
-                let mut tx = db.begin().await?;
-                if !locate_pending::complete_if_revision(
-                    &mut tx,
-                    account_id,
-                    &item.graph_id,
-                    item.revision,
-                )
-                .await
-                .map_err(AppError::from)?
-                {
-                    tx.rollback().await.ok();
-                    continue;
-                }
-                if let Some(existing) =
-                    messages::get_by_graph_id(&mut tx, account_id, &item.graph_id)
-                        .await
-                        .map_err(AppError::from)?
-                {
-                    let mid = existing.message.id.clone();
-                    let sid = existing.message.session_id.clone();
-                    let mut msg = existing.message;
-                    msg.sync_status = MessageSyncStatus::DeletedRemote;
-                    msg.local_updated_at = now_ms();
-                    messages::upsert_with_recipients(
-                        &mut tx,
-                        &MessageWithRecipients {
-                            message: msg,
-                            recipients: existing.recipients,
-                        },
-                    )
-                    .await
-                    .map_err(AppError::from)?;
-                    sessions::recompute_projection(&mut tx, account_id, &sid)
-                        .await
-                        .map_err(AppError::from)?;
-                    changeset.session_ids.push(sid);
-                    changeset.message_ids.push(mid);
-                }
-                tx.commit().await?;
-            }
-            Ok(RemoteMessageLocation::Present { folder_id }) => {
-                let mut tx = db.begin().await?;
-                if !locate_pending::complete_if_revision(
-                    &mut tx,
-                    account_id,
-                    &item.graph_id,
-                    item.revision,
-                )
-                .await
-                .map_err(AppError::from)?
-                {
-                    tx.rollback().await.ok();
-                    continue;
-                }
-                if let Some(existing) =
-                    messages::get_by_graph_id(&mut tx, account_id, &item.graph_id)
-                        .await
-                        .map_err(AppError::from)?
-                {
-                    let mut msg = existing.message;
-                    msg.folder_id = Some(folder_id);
-                    msg.sync_status = MessageSyncStatus::Synced;
-                    msg.local_updated_at = now_ms();
-                    messages::upsert_with_recipients(
-                        &mut tx,
-                        &MessageWithRecipients {
-                            message: msg.clone(),
-                            recipients: existing.recipients,
-                        },
-                    )
-                    .await
-                    .map_err(AppError::from)?;
-                    changeset.message_ids.push(msg.id);
-                }
-                tx.commit().await?;
-            }
-            Err(e) => {
-                if !e_retryable(&e) {
-                    // 非可恢复：仍记失败退避，不当删除
-                }
-                let mut conn = db.acquire().await?;
-                let available_at = now_ms() + 30_000;
-                locate_pending::record_failure(
-                    &mut conn,
-                    account_id,
-                    &item.graph_id,
-                    item.revision,
-                    &e.to_string(),
-                    available_at,
-                    now_ms(),
-                )
-                .await
-                .map_err(AppError::from)?;
-            }
-        }
-    }
-    Ok(changeset)
-}
-
-fn e_retryable(e: &crate::application::error::PortError) -> bool {
-    match e {
-        crate::application::error::PortError::Remote { retryable, .. } => *retryable,
-        crate::application::error::PortError::Network { .. } => true,
-        crate::application::error::PortError::Auth { .. } => false,
-        _ => false,
-    }
 }
 
 pub async fn get_mail_sync_progress(
@@ -1181,5 +1004,72 @@ pub async fn set_folder_sync_enabled(
                 cmd.account_id, cmd.folder_id
             ))
         })
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+    use crate::domain::value_objects::{BodyContentType, Importance, RemoteKey};
+    use crate::infrastructure::db;
+
+    fn remote(folder: &str) -> RemoteMessage {
+        RemoteMessage {
+            remote_key: RemoteKey::new("same-ordinary-api-id"),
+            internet_message_id: Some("<same-rfc-id@example.com>".into()),
+            in_reply_to: None, subject: "same subject".into(), body_preview: "same body".into(),
+            body_content_type: BodyContentType::Text, body_content: Some("same body".into()),
+            from_address: EmailAddress::parse("peer@example.com"), from_name: "Peer".into(),
+            recipients: vec![], received_at: Some(1), sent_at: Some(1), is_read: false,
+            is_draft: false, has_attachments: false, importance: Importance::Normal,
+            folder_id: Some(FolderId::new(folder)), parent_folder_name: None, remote_updated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn same_position_is_idempotent_but_other_folders_and_accounts_are_independent() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1),('b','b@example.com',1,1)")
+            .execute(&db).await.unwrap();
+        let a = AccountId::new("a"); let b = AccountId::new("b");
+        let mut tx = db.begin().await.unwrap();
+        let inbox = remote("inbox");
+        let (original, _, is_new) = upsert_remote_message(&mut tx, &a, &inbox).await.unwrap();
+        assert!(is_new);
+        let (repeat, _, is_new) = upsert_remote_message(&mut tx, &a, &inbox).await.unwrap();
+        assert_eq!(original, repeat); assert!(!is_new);
+        let (other_folder, _, _) = upsert_remote_message(&mut tx, &a, &remote("archive")).await.unwrap();
+        let (other_account, _, _) = upsert_remote_message(&mut tx, &b, &inbox).await.unwrap();
+        assert_ne!(original, other_folder); assert_ne!(original, other_account);
+        let mut changes = ChangeSet::empty(a.clone(), ChangeOrigin::IncrementalSync);
+        apply_location_removed(&mut tx, &a, &FolderId::new("inbox"), &inbox.remote_key, &mut changes).await.unwrap();
+        let old = messages::get(&mut tx, &a, &original).await.unwrap().unwrap();
+        let destination = messages::get(&mut tx, &a, &other_folder).await.unwrap().unwrap();
+        assert_eq!(old.message.body_content.as_deref(), Some("same body"));
+        assert_eq!(old.message.sync_status, MessageSyncStatus::DeletedRemote);
+        assert_eq!(destination.message.sync_status, MessageSyncStatus::Synced);
+        assert_eq!(destination.message.folder_id, Some(FolderId::new("archive")));
+        // A source-location removal cannot follow the same key into a new folder.
+        assert_eq!(changes.message_ids, vec![original.clone()]);
+        let unaffected = messages::get(&mut tx, &b, &other_account).await.unwrap().unwrap();
+        assert_eq!(unaffected.message.sync_status, MessageSyncStatus::Synced);
+        // Authoritatively rediscovered same-generation location uses its original entity.
+        let (reappeared, _, is_new) = upsert_remote_message(&mut tx, &a, &inbox).await.unwrap();
+        assert_eq!(reappeared, original); assert!(!is_new);
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn database_rejects_a_second_entity_for_the_same_position() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)").execute(&db).await.unwrap();
+        let a = AccountId::new("a");
+        let mut tx = db.begin().await.unwrap();
+        let (id, _, _) = upsert_remote_message(&mut tx, &a, &remote("inbox")).await.unwrap();
+        let mut duplicate = messages::get(&mut tx, &a, &id).await.unwrap().unwrap();
+        duplicate.message.id = MessageId::new("concurrent-import");
+        assert!(messages::upsert_with_recipients(&mut tx, &duplicate).await.is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages").fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(count, 1);
+    }
 }
 

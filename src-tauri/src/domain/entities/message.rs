@@ -1,7 +1,7 @@
 //! 邮件与收件人实体
 
 use crate::domain::value_objects::{
-    AccountId, BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, MessageId,
+    AccountId, BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, MessageId,
     MessageSyncStatus, RecipientRole, SessionId, TimestampMs,
 };
 
@@ -11,9 +11,8 @@ pub struct Message {
     pub id: MessageId,
     pub account_id: AccountId,
     pub session_id: SessionId,
-    /// Graph ImmutableId；本地草稿可空
-    pub graph_id: Option<GraphImmutableId>,
-    pub graph_change_key: Option<String>,
+    /// 当前位置的不透明远端键；本地草稿可空
+    pub remote_key: Option<RemoteKey>,
     /// RFC Message-ID
     pub internet_message_id: Option<String>,
     /// RFC In-Reply-To（用于找父信进同一 Session）
@@ -27,7 +26,6 @@ pub struct Message {
     pub from_name: String,
     pub received_at: Option<TimestampMs>,
     pub sent_at: Option<TimestampMs>,
-    pub created_at_graph: Option<TimestampMs>,
     pub is_read: bool,
     pub is_draft: bool,
     /// 是否本账户发出（sync 落库缓存；读路径按当前 self 集合现算覆盖）

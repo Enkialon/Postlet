@@ -14,7 +14,6 @@ pub use page::CursorPage;
 pub use session_dto::*;
 pub use sync_dto::*;
 
-pub mod remote_models;
 mod aggregate_claim;
 mod pending_message_mutation;
 pub use aggregate_claim::AggregateClaim;

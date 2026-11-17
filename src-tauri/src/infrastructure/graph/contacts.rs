@@ -1,6 +1,6 @@
 //! Microsoft Graph 联系人 Delta。
 
-use crate::application::dto::remote_models::{ContactDeltaPage, RemoteContact};
+use super::models::{ContactDeltaPage, RemoteContact};
 use crate::application::error::PortError;
 use crate::domain::value_objects::EmailAddress;
 use graph_rs_sdk::{GraphClient, ODataQuery};

@@ -6,3 +6,5 @@ pub mod mail;
 mod token_store;
 
 pub use token_store::TokenCache;
+
+pub mod models;

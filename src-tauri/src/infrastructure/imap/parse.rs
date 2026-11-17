@@ -1,13 +1,13 @@
 //! 将 RFC822 字节解析为 RemoteMessage
 
-use crate::application::dto::remote_models::{RemoteMessage, RemoteRecipient};
+use crate::domain::mail::{RemoteMessage, RemoteRecipient};
 use crate::domain::value_objects::{
-    BodyContentType, EmailAddress, FolderId, GraphImmutableId, Importance, RecipientRole,
+    BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, RecipientRole,
 };
 use mailparse::{parse_mail, MailHeaderMap};
 
-pub fn remote_id(folder: &str, uid: u32) -> GraphImmutableId {
-    GraphImmutableId::new(format!("imap:{folder}:{uid}"))
+pub fn remote_id(folder: &str, uid: u32) -> RemoteKey {
+    RemoteKey::new(format!("imap:{folder}:{uid}"))
 }
 
 pub fn parse_rfc822(
@@ -61,8 +61,7 @@ pub fn parse_rfc822(
     let dated = header_date.or(internal_date_ms);
 
     Ok(RemoteMessage {
-        graph_id: remote_id(folder, uid),
-        graph_change_key: Some(format!("uid:{uid}")),
+        remote_key: remote_id(folder, uid),
         internet_message_id: message_id,
         in_reply_to,
         subject,
@@ -74,7 +73,6 @@ pub fn parse_rfc822(
         recipients,
         received_at: dated,
         sent_at: dated,
-        created_at_graph: dated,
         is_read,
         is_draft: false,
         has_attachments: false,

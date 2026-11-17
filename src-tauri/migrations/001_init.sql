@@ -152,8 +152,7 @@ CREATE TABLE messages (
     id                      TEXT NOT NULL,
     account_id              TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     session_id              TEXT NOT NULL,
-    graph_id                TEXT,
-    graph_change_key        TEXT,
+    remote_key              TEXT,
     internet_message_id     TEXT,
     in_reply_to             TEXT,
     subject                 TEXT NOT NULL DEFAULT '',
@@ -165,7 +164,6 @@ CREATE TABLE messages (
     from_name               TEXT NOT NULL DEFAULT '',
     received_at             INTEGER,
     sent_at                 INTEGER,
-    created_at_graph        INTEGER,
     is_read                 INTEGER NOT NULL DEFAULT 0 CHECK(is_read IN (0, 1)),
     is_draft                INTEGER NOT NULL DEFAULT 0 CHECK(is_draft IN (0, 1)),
     is_outbound             INTEGER NOT NULL DEFAULT 0 CHECK(is_outbound IN (0, 1)),
@@ -179,7 +177,7 @@ CREATE TABLE messages (
     local_updated_at        INTEGER NOT NULL,
     remote_updated_at       INTEGER,
     PRIMARY KEY (account_id, id),
-    UNIQUE (account_id, graph_id),
+    UNIQUE (account_id, folder_id, remote_key),
     FOREIGN KEY (account_id, session_id) REFERENCES sessions(account_id, id)
 );
 
@@ -260,17 +258,3 @@ CREATE TABLE pending_message_mutations (
 
 CREATE INDEX idx_pending_message_mutations_due
     ON pending_message_mutations(account_id, available_at);
-
-CREATE TABLE message_locate_pending (
-    account_id        TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    graph_id          TEXT NOT NULL,
-    source_folder_id  TEXT NOT NULL,
-    revision          INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
-    available_at      INTEGER NOT NULL,
-    last_error        TEXT,
-    updated_at        INTEGER NOT NULL,
-    PRIMARY KEY (account_id, graph_id)
-);
-
-CREATE INDEX idx_message_locate_pending_due
-    ON message_locate_pending(account_id, available_at);

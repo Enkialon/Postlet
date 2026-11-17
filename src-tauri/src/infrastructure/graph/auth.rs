@@ -2,7 +2,7 @@
 
 use super::loopback::{bind_redirect_listener, wait_for_authorization_code};
 use super::token_store::{self, TokenCache};
-use crate::application::dto::remote_models::RemoteAccount;
+use super::models::RemoteAccount;
 use crate::application::error::PortError;
 use crate::domain::value_objects::{AccountId, EmailAddress};
 use crate::infrastructure::config::AzureAuthConfig;

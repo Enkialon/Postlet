@@ -1,4 +1,4 @@
-//! Graph 账户定时同步 + 已读推送 / locate 核对（不含聚合 drain）。
+//! Graph 账户定时同步与 mutation 推送（不含聚合 drain）。
 
 use crate::application::dto::TriggerMailSyncCommand;
 use crate::application::use_cases::{message_use_case, sync_use_case};
@@ -61,7 +61,6 @@ async fn tick_once(
             )
             .await;
             let _ = message_use_case::flush_due_mutations(&db2, &paths2, &account_id, 32).await;
-            let _ = sync_use_case::process_due_locates(&db2, &paths2, &account_id, 32).await;
         });
     }
 }

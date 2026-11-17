@@ -6,3 +6,5 @@ pub mod services;
 pub mod value_objects;
 
 pub use error::DomainError;
+
+pub mod mail;

@@ -171,10 +171,9 @@ pub(super) fn message(row: &SqliteRow) -> Result<Message, sqlx::Error> {
         id: MessageId::new(row.try_get::<String, _>("id")?),
         account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
         session_id: SessionId::new(row.try_get::<String, _>("session_id")?),
-        graph_id: row
-            .try_get::<Option<String>, _>("graph_id")?
-            .map(GraphImmutableId::new),
-        graph_change_key: row.try_get("graph_change_key")?,
+        remote_key: row
+            .try_get::<Option<String>, _>("remote_key")?
+            .map(RemoteKey::new),
         internet_message_id: row.try_get("internet_message_id")?,
         in_reply_to: row.try_get("in_reply_to")?,
         subject: row.try_get("subject")?,
@@ -187,7 +186,6 @@ pub(super) fn message(row: &SqliteRow) -> Result<Message, sqlx::Error> {
         from_name: row.try_get("from_name")?,
         received_at: row.try_get("received_at")?,
         sent_at: row.try_get("sent_at")?,
-        created_at_graph: row.try_get("created_at_graph")?,
         is_read: row.try_get("is_read")?,
         is_draft: row.try_get("is_draft")?,
         is_outbound: row.try_get("is_outbound")?,

@@ -11,5 +11,5 @@ pub use enums::{
     SendProtocol, SessionKind, SyncStatus, TimestampMs,
 };
 pub use ids::{
-    AccountId, ContactId, FolderId, GraphImmutableId, GroupId, MessageId, SessionId,
+    AccountId, ContactId, FolderId, RemoteKey, GroupId, MessageId, SessionId,
 };
