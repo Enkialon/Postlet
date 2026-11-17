@@ -167,6 +167,9 @@ CREATE TABLE messages (
     sent_at                 INTEGER,
     is_read                 INTEGER NOT NULL DEFAULT 0 CHECK(is_read IN (0, 1)),
     is_draft                INTEGER NOT NULL DEFAULT 0 CHECK(is_draft IN (0, 1)),
+    remote_is_read          INTEGER CHECK(remote_is_read IS NULL OR remote_is_read IN (0, 1)),
+    remote_is_draft         INTEGER CHECK(remote_is_draft IS NULL OR remote_is_draft IN (0, 1)),
+    remote_is_deleted       INTEGER CHECK(remote_is_deleted IS NULL OR remote_is_deleted IN (0, 1)),
     is_outbound             INTEGER NOT NULL DEFAULT 0 CHECK(is_outbound IN (0, 1)),
     has_attachments         INTEGER NOT NULL DEFAULT 0 CHECK(has_attachments IN (0, 1)),
     importance              TEXT NOT NULL DEFAULT 'normal'

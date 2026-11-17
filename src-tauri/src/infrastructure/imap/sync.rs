@@ -4,7 +4,7 @@
 
 use super::client::ImapSession;
 use super::parse::{decode_remote_key, parse_rfc822, remote_id};
-use crate::domain::mail::{RemoteMessageChange, RemoteMessage};
+use crate::domain::mail::{RemoteFlags, RemoteMessageChange, RemoteMessage};
 use crate::infrastructure::error::InfraError;
 use crate::domain::services::{imap_pending_boundary, missing_imap_page};
 use std::collections::{HashMap, HashSet};
@@ -81,46 +81,30 @@ pub fn sync_folder(
     let mut changes = fetched.changes;
     // 删除 / FLAGS
     let mut missing_remote_ids = Vec::new();
-    if same_generation && !known_uids.is_empty() {
-        let previous_flags: HashMap<_, _> = known_uids.iter().copied().collect();
-        let mut present = Vec::new();
+    if same_generation {
         for (uid, _) in &known_uids {
             if !remote_uids.contains(uid) {
                 missing_remote_ids.push(remote_id(uidvalidity, *uid).as_str().to_string());
-                continue;
-            }
-            present.push(*uid);
-        }
-        // 历史越多也不能逐封往返，否则回填最终会被 FLAGS 核对耗尽总时限。
-        for chunk in present.chunks(200) {
-            let set = chunk
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let fetches = session
-                .uid_fetch(set, "(UID FLAGS)")
-                .map_err(|e| InfraError::Remote {
-                    message: format!("IMAP FLAGS FETCH 失败: {e}"),
-                    retryable: true,
-                })?;
-            for item in fetches.iter() {
-                let Some(uid) = item.uid else { continue };
-                let Some(was_read) = previous_flags.get(&uid) else {
-                    continue;
-                };
-                let is_read = item
-                    .flags()
-                    .iter()
-                    .any(|f| matches!(f, imap::types::Flag::Seen));
-                if is_read != *was_read {
-                    changes.push(RemoteMessageChange::Upsert(flag_only_remote(
-                        folder, uidvalidity, uid, is_read,
-                    )));
-                }
             }
         }
     }
+    let mut present: Vec<_> = downloaded.intersection(&remote_uids).copied().collect();
+    present.sort_unstable();
+    let mut observed = HashMap::new();
+    for chunk in present.chunks(200) {
+        let set = chunk.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let raw = session.run_command_and_read_response(format!("UID FETCH {set} (UID FLAGS)"))
+            .map_err(|_| InfraError::Remote { message: "IMAP FLAGS FETCH 失败".into(), retryable: true })?;
+        for (uid, flags) in parse_flag_observations(&raw)? {
+            if chunk.contains(&uid) { observed.insert(remote_id(uidvalidity, uid), flags); }
+        }
+    }
+    for change in &mut changes {
+        if let RemoteMessageChange::Upsert(remote) = change {
+            if let Some(flags) = observed.get(&remote.remote_key) { remote.flags = *flags; }
+        }
+    }
+    changes.extend(observed.into_iter().map(|(remote_key, flags)| RemoteMessageChange::FlagsChanged { remote_key, flags }));
 
     Ok(FolderSyncResult {
         folder: folder.to_string(),
@@ -175,15 +159,11 @@ fn fetch_uid_page(
             let Some(uid) = item.uid else {
                 continue;
             };
-            let is_read = item
-                .flags()
-                .iter()
-                .any(|f| matches!(f, imap::types::Flag::Seen));
             let Some(body) = item.body() else {
                 continue;
             };
             let internal_ms = item.internal_date().map(|dt| dt.timestamp_millis());
-            match parse_rfc822(folder, uidvalidity, uid, body, is_read, internal_ms) {
+            match parse_rfc822(folder, uidvalidity, uid, body, internal_ms) {
                 Ok(remote) => {
                     ok_uids.insert(uid);
                     changes.push(RemoteMessageChange::Upsert(remote));
@@ -226,15 +206,11 @@ fn fetch_one_rfc822(
             retryable: true,
         })?;
     for item in fetches.iter() {
-        let is_read = item
-            .flags()
-            .iter()
-            .any(|f| matches!(f, imap::types::Flag::Seen));
         let Some(body) = item.body() else {
             continue;
         };
         let internal_ms = item.internal_date().map(|dt| dt.timestamp_millis());
-        match parse_rfc822(folder, uidvalidity, uid, body, is_read, internal_ms) {
+        match parse_rfc822(folder, uidvalidity, uid, body, internal_ms) {
             Ok(remote) => return Ok(Some(remote)),
             Err(_) => return Ok(None),
         }
@@ -242,28 +218,43 @@ fn fetch_one_rfc822(
     Ok(None)
 }
 
-fn flag_only_remote(folder: &str, uidvalidity: u32, uid: u32, is_read: bool) -> RemoteMessage {
-    RemoteMessage {
-        remote_key: remote_id(uidvalidity, uid),
-        internet_message_id: None,
-        in_reply_to: None,
-        subject: String::new(),
-        body_preview: String::new(),
-        body_content_type: crate::domain::value_objects::BodyContentType::Text,
-        body_content: None,
-        from_address: None,
-        from_name: String::new(),
-        recipients: Vec::new(),
-        received_at: None,
-        sent_at: None,
-        is_read,
-        is_draft: false,
-        has_attachments: false,
-        importance: crate::domain::value_objects::Importance::Normal,
-        folder_id: Some(crate::domain::value_objects::FolderId::new(
-            folder.to_string(),
-        )),
-        parent_folder_name: Some(folder.to_string()),
-        remote_updated_at: None,
+/// Use the locked crate's protocol parser: Fetch::flags() alone cannot distinguish
+/// an absent FLAGS attribute from an explicitly empty FLAGS list.
+fn parse_flag_observations(mut raw: &[u8]) -> Result<Vec<(u32, RemoteFlags)>, InfraError> {
+    use imap_proto::{AttributeValue, Response};
+    let mut observed = Vec::new();
+    while !raw.is_empty() {
+        let (rest, response) = imap_proto::parse_response(raw).map_err(|_| InfraError::Remote {
+            message: "IMAP FLAGS 响应无法解析".into(), retryable: true,
+        })?;
+        raw = rest;
+        let Response::Fetch(_, attributes) = response else { continue };
+        let uid = attributes.iter().find_map(|attribute| match attribute { AttributeValue::Uid(uid) => Some(*uid), _ => None });
+        let flags = attributes.iter().find_map(|attribute| match attribute { AttributeValue::Flags(flags) => Some(flags), _ => None });
+        if let (Some(uid), Some(flags)) = (uid, flags) {
+            if uid == 0 { continue; }
+            observed.push((uid, RemoteFlags {
+                is_read: Some(flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen"))),
+                is_draft: Some(flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Draft"))),
+                is_deleted: Some(flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Deleted"))),
+            }));
+        }
+    }
+    Ok(observed)
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    #[test]
+    fn missing_flags_are_unchanged_and_explicit_empty_flags_clear_values() {
+        let raw = b"* 1 FETCH (UID 10)\r\n* 2 FETCH (UID 20 FLAGS ())\r\n* 3 FETCH (UID 30 FLAGS (\\Seen \\Draft \\Deleted))\r\n* 4 FETCH (FLAGS (\\Seen))\r\n";
+        let values = parse_flag_observations(raw).unwrap();
+        assert_eq!(values, vec![
+            (20, RemoteFlags { is_read: Some(false), is_draft: Some(false), is_deleted: Some(false) }),
+            (30, RemoteFlags { is_read: Some(true), is_draft: Some(true), is_deleted: Some(true) }),
+        ]);
+        assert!(parse_flag_observations(b"not an IMAP response\r\n").is_err());
     }
 }

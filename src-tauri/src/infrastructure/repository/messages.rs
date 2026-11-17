@@ -104,8 +104,8 @@ pub async fn upsert_with_recipients(
 ) -> Result<(), InfraError> {
     let m = &bundle.message;
     sqlx::query(
-        "INSERT INTO messages (id, account_id, session_id, remote_key, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO messages (id, account_id, session_id, remote_key, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, remote_is_read, remote_is_draft, remote_is_deleted, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             session_id=excluded.session_id,
             remote_key=excluded.remote_key,
@@ -121,6 +121,9 @@ pub async fn upsert_with_recipients(
             sent_at=excluded.sent_at,
             is_read=excluded.is_read,
             is_draft=excluded.is_draft,
+            remote_is_read=excluded.remote_is_read,
+            remote_is_draft=excluded.remote_is_draft,
+            remote_is_deleted=excluded.remote_is_deleted,
             is_outbound=excluded.is_outbound,
             has_attachments=excluded.has_attachments,
             importance=excluded.importance,
@@ -146,6 +149,9 @@ pub async fn upsert_with_recipients(
     .bind(m.sent_at)
     .bind(m.is_read)
     .bind(m.is_draft)
+    .bind(m.remote_is_read)
+    .bind(m.remote_is_draft)
+    .bind(m.remote_is_deleted)
     .bind(m.is_outbound)
     .bind(m.has_attachments)
     .bind(m.importance.as_str())

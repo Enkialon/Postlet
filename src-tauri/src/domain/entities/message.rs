@@ -28,6 +28,9 @@ pub struct Message {
     pub sent_at: Option<TimestampMs>,
     pub is_read: bool,
     pub is_draft: bool,
+    pub remote_is_read: Option<bool>,
+    pub remote_is_draft: Option<bool>,
+    pub remote_is_deleted: Option<bool>,
     /// 是否本账户发出（sync 落库缓存；读路径按当前 self 集合现算覆盖）
     pub is_outbound: bool,
     pub has_attachments: bool,

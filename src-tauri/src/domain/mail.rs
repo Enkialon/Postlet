@@ -2,6 +2,14 @@
 
 use crate::domain::value_objects::{BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, RecipientRole, TimestampMs};
 
+/// None 表示没有观测到该标志；显式 false 才表示清除。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemoteFlags {
+    pub is_read: Option<bool>,
+    pub is_draft: Option<bool>,
+    pub is_deleted: Option<bool>,
+}
+
 /// 远端收件人（无本地外键）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRecipient {
@@ -28,8 +36,7 @@ pub struct RemoteMessage {
     pub recipients: Vec<RemoteRecipient>,
     pub received_at: Option<TimestampMs>,
     pub sent_at: Option<TimestampMs>,
-    pub is_read: bool,
-    pub is_draft: bool,
+    pub flags: RemoteFlags,
     pub has_attachments: bool,
     pub importance: Importance,
     pub folder_id: Option<FolderId>,
@@ -42,6 +49,7 @@ pub struct RemoteMessage {
 pub enum RemoteMessageChange {
     /// 远端字段快照；本地 ID、同步状态与投影由用例决定
     Upsert(RemoteMessage),
+    FlagsChanged { remote_key: RemoteKey, flags: RemoteFlags },
     /// 文件夹移出 / 删除信号；须结合当前位置判定
     Remove { remote_key: RemoteKey },
 }

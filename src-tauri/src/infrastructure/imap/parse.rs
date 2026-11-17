@@ -1,6 +1,6 @@
 //! 将 RFC822 字节解析为 RemoteMessage
 
-use crate::domain::mail::{RemoteMessage, RemoteRecipient};
+use crate::domain::mail::{RemoteFlags, RemoteMessage, RemoteRecipient};
 use crate::domain::value_objects::{
     BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, RecipientRole,
 };
@@ -26,7 +26,6 @@ pub fn parse_rfc822(
     uidvalidity: u32,
     uid: u32,
     bytes: &[u8],
-    is_read: bool,
     internal_date_ms: Option<i64>,
 ) -> Result<RemoteMessage, String> {
     let parsed = parse_mail(bytes).map_err(|e| format!("mailparse: {e}"))?;
@@ -85,8 +84,7 @@ pub fn parse_rfc822(
         recipients,
         received_at: dated,
         sent_at: dated,
-        is_read,
-        is_draft: false,
+        flags: RemoteFlags::default(),
         has_attachments: false,
         importance: Importance::Normal,
         folder_id: Some(FolderId::new(folder.to_string())),

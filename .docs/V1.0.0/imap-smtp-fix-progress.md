@@ -64,3 +64,12 @@
 - 仓储接收实际筛选/分页参数，返回实体或必要查询投影；会话展示名与 MessagePreview/SessionListItem 由 application 组装，IPC 查询 DTO 保留在 application。
 - 只有确实跨层复用的 CursorPage 放在无 IO 的小型 query_page 模块；没有新增接口层、Repository trait 或事务管理对象。
 - 验证：infrastructure 全目录无 application 导入，domain 无反向依赖。`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests` 29 项通过、2 项原生钥匙串测试默认跳过；覆盖列表展示、账号隔离和跨仓储事务提交/回滚。
+
+## A-06：显式 FLAGS 与真实观测已接通，发送/归档状态拆分仍待实现
+
+- 使用统一 RemoteMessageChange::FlagsChanged，移除空标题/空正文占位和启发式分支。合法空标题快照正常更新标题；FLAGS 更新保留正文、收件人、时间及 Session。
+- RemoteFlags 的每个观测均可未知；Message 单独保存远端 Seen/Draft/Deleted 观测，最新有效本地已读意图只覆盖展示。Deleted FLAG 不等同于位置消失或用户删除；终止意图不继续遮盖真实观测。
+- IMAP 复用已锁定的 imap-proto 解析器核对完整 FLAGS 属性：未返回 FLAGS 不更新，显式 FLAGS () 才清除；新下载和既有消息一起按 200 UID 批量核对。正文 FETCH 不再用缺省空 flags 伪造已观测 false。
+- Graph 稀疏 Delta 先在原文件夹范围内补完整快照，404 仅移出原位置，不跨夹追踪或用空值覆盖。Graph 缺失标志保持未知。只有明确非 Draft 的新增消息才具备通知资格。
+- 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests` 31 项通过、2 项原生钥匙串测试默认跳过；`pnpm build` 通过。覆盖缺失/空/完整 FLAGS、危险误用序号、非法响应、观测与本地意图并存、字段保留、空标题及 Graph 稀疏快照分类。Graph HTTP 补取路径尚未连接真实邮箱验证。
+- 发送任务、归档任务及定位状态/修订仍需后续拆分，未将整项 A-06 标为解决。

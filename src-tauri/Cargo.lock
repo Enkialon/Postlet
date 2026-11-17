@@ -3919,6 +3919,7 @@ dependencies = [
  "chrono",
  "graph-rs-sdk",
  "imap",
+ "imap-proto",
  "keyring",
  "lettre",
  "mailparse",

@@ -101,6 +101,9 @@ export interface Message {
   sent_at: TimestampMs | null;
   is_read: boolean;
   is_draft: boolean;
+  remote_is_read: boolean | null;
+  remote_is_draft: boolean | null;
+  remote_is_deleted: boolean | null;
   /** 是否本账户发出（结合 self 集合判定后落库） */
   is_outbound: boolean;
   has_attachments: boolean;

@@ -2,7 +2,7 @@
 //!
 //! 只做远端 IO + 映射到 `RemoteMessage`；本地落库与聚合由 application 编排。
 
-use crate::domain::mail::{RemoteMessageChange, RemoteMessage, RemoteRecipient};
+use crate::domain::mail::{RemoteFlags, RemoteMessageChange, RemoteMessage, RemoteRecipient};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailDeltaPage {
@@ -117,7 +117,7 @@ pub async fn delta_messages(
     })?;
 
     let mut messages = Vec::with_capacity(page.value.len());
-    for item in page.value {
+    for mut item in page.value {
         if item.get("@removed").is_some() {
             if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
                 messages.push(RemoteMessageChange::Remove {
@@ -125,6 +125,24 @@ pub async fn delta_messages(
                 });
             }
             continue;
+        }
+        if needs_full_snapshot(&item) {
+            let id = item.get("id").and_then(Value::as_str).ok_or_else(|| InfraError::Remote {
+                message: "Graph 变更缺少定位键".into(), retryable: false,
+            })?.to_owned();
+            // Hydrate only within this source folder; never follow an ID into another location.
+            let response = client(access_token).me().mail_folder(folder_id.as_str()).messages_id(&id)
+                .get_messages().select(MESSAGE_SELECT).send().await
+                .map_err(|error| map_http_err("Graph hydrate snapshot", error))?;
+            if response.status().as_u16() == 404 {
+                messages.push(RemoteMessageChange::Remove { remote_key: RemoteKey::new(id) });
+                continue;
+            }
+            item = ensure_success(response, "Graph hydrate snapshot").await?.json().await
+                .map_err(|_| InfraError::Remote { message: "Graph 完整快照无法解析".into(), retryable: true })?;
+            if needs_full_snapshot(&item) {
+                return Err(InfraError::Remote { message: "Graph 未返回完整邮件快照，已停止覆盖本地内容".into(), retryable: true });
+            }
         }
         match map_remote_message(&item, folder_id.clone()) {
             Ok(remote) => messages.push(RemoteMessageChange::Upsert(remote)),
@@ -508,6 +526,11 @@ async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Respons
     super::http::get_absolute(access_token, link, "Graph absolute GET").await
 }
 
+fn needs_full_snapshot(value: &Value) -> bool {
+    ["subject", "body", "from", "toRecipients", "isRead", "isDraft", "hasAttachments", "importance"]
+        .iter().any(|field| value.get(*field).is_none())
+}
+
 fn map_remote_message(value: &Value, folder_hint: FolderId) -> Result<RemoteMessage, String> {
     let id = value
         .get("id")
@@ -597,14 +620,11 @@ fn map_remote_message(value: &Value, folder_hint: FolderId) -> Result<RemoteMess
         recipients,
         received_at: parse_graph_time(value.get("receivedDateTime")),
         sent_at: parse_graph_time(value.get("sentDateTime")),
-        is_read: value
-            .get("isRead")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        is_draft: value
-            .get("isDraft")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        flags: RemoteFlags {
+            is_read: value.get("isRead").and_then(Value::as_bool),
+            is_draft: value.get("isDraft").and_then(Value::as_bool),
+            is_deleted: None,
+        },
         has_attachments: value
             .get("hasAttachments")
             .and_then(|v| v.as_bool())
@@ -694,9 +714,14 @@ mod tests {
         assert_eq!(remote.from_name, "Alice");
         assert_eq!(remote.recipients.len(), 1);
         assert_eq!(remote.importance, Importance::High);
-        assert!(remote.is_read);
+        assert_eq!(remote.flags.is_read, Some(true));
         assert_eq!(remote.in_reply_to.as_deref(), Some("<parent@b.com>"));
         assert_eq!(remote.folder_id, Some(FolderId::new("local-folder")));
+        assert!(!needs_full_snapshot(&value));
+        assert!(needs_full_snapshot(&json!({ "id": "AAMkAG", "isRead": false })));
+        let mut empty_subject = value.clone(); empty_subject["subject"] = json!("");
+        assert!(!needs_full_snapshot(&empty_subject));
+        assert_eq!(map_remote_message(&empty_subject, FolderId::new("local-folder")).unwrap().subject, "");
         let mut changed_metadata = value.clone();
         changed_metadata["changeKey"] = json!("different");
         changed_metadata["conversationId"] = json!("unrelated-thread");

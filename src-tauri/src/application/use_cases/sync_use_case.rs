@@ -1,6 +1,6 @@
 //! 同步用例：按账号协议路由 Graph / IMAP，复用本地仓储与 ChangeSet。
 
-use crate::domain::mail::{RemoteMessageChange, RemoteMessage};
+use crate::domain::mail::{RemoteFlags, RemoteMessageChange, RemoteMessage};
 use crate::application::dto::{
     ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, SetFolderSyncEnabledCommand,
     TriggerContactSyncCommand, TriggerMailSyncCommand,
@@ -265,15 +265,20 @@ async fn sync_graph_mail(
         for change in page.messages {
             match change {
                 RemoteMessageChange::Upsert(remote) => {
-                    let is_draft = remote.is_draft;
+                    let can_notify = remote.flags.is_draft == Some(false);
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
                     changeset.message_ids.push(mid.clone());
                     if let Some(sid) = cid {
                         changeset.session_ids.push(sid);
                     }
-                    if is_new && !is_draft {
+                    if is_new && can_notify {
                         changeset.new_incoming_ids.push(mid);
+                    }
+                }
+                RemoteMessageChange::FlagsChanged { remote_key, flags } => {
+                    if let Some((mid, sid)) = apply_remote_flags(&mut tx, &cmd.account_id, &folder, &remote_key, flags).await? {
+                        changeset.message_ids.push(mid); changeset.session_ids.push(sid);
                     }
                 }
                 RemoteMessageChange::Remove { remote_key } => {
@@ -414,15 +419,20 @@ async fn sync_imap_mail(
         for change in result.changes {
             match change {
                 RemoteMessageChange::Upsert(remote) => {
-                    let is_draft = remote.is_draft;
+                    let can_notify = remote.flags.is_draft == Some(false);
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
                     changeset.message_ids.push(mid.clone());
                     if let Some(sid) = cid {
                         changeset.session_ids.push(sid);
                     }
-                    if is_new && !is_draft {
+                    if is_new && can_notify {
                         changeset.new_incoming_ids.push(mid);
+                    }
+                }
+                RemoteMessageChange::FlagsChanged { remote_key, flags } => {
+                    if let Some((mid, sid)) = apply_remote_flags(&mut tx, &cmd.account_id, &FolderId::new(&result.folder), &remote_key, flags).await? {
+                        changeset.message_ids.push(mid); changeset.session_ids.push(sid);
                     }
                 }
                 RemoteMessageChange::Remove { remote_key } => {
@@ -491,33 +501,6 @@ async fn upsert_remote_message(
     let pending_delete = pending
         .as_ref()
         .is_some_and(|p| p.kind == crate::domain::entities::PendingMutationKind::Delete);
-    // 用户已删或待推删除：不复活
-    if pending_delete {
-        if let Some(bundle) = existing {
-            return Ok((bundle.message.id, None, false));
-        }
-    }
-
-    // FLAGS-only 占位：空 subject 且无 body → 仅更新已读（有 pending 时保留本地）
-    if !is_new && remote.subject.is_empty() && remote.body_content.is_none() {
-        let mut bundle = existing.unwrap();
-        if let Some(p) = &pending {
-            if let Some(desired) = p.desired_is_read {
-                bundle.message.is_read = desired;
-            }
-        } else {
-            bundle.message.is_read = remote.is_read;
-        }
-        bundle.message.local_updated_at = now_ms();
-        messages::upsert_with_recipients(conn, &bundle)
-            .await
-            .map_err(AppError::from)?;
-        jobs::enqueue_or_reset(conn, account_id, &bundle.message.id, now_ms())
-            .await
-            .map_err(AppError::from)?;
-        return Ok((bundle.message.id, Some(bundle.message.session_id), false));
-    }
-
     let account = accounts::get(conn, account_id)
         .await
         .map_err(AppError::from)?
@@ -531,7 +514,9 @@ async fn upsert_remote_message(
     let is_read = pending
         .as_ref()
         .and_then(|p| p.desired_is_read)
-        .unwrap_or(remote.is_read);
+        .or(remote.flags.is_read)
+        .or_else(|| existing.as_ref().and_then(|bundle| bundle.message.remote_is_read))
+        .unwrap_or_else(|| existing.as_ref().is_some_and(|bundle| bundle.message.is_read));
 
     let body_content = if let Some(ref ex) = existing {
         remote
@@ -566,13 +551,17 @@ async fn upsert_remote_message(
         received_at: remote.received_at.or(Some(now)),
         sent_at: remote.sent_at,
         is_read,
-        is_draft: remote.is_draft,
+        is_draft: remote.flags.is_draft.or_else(|| existing.as_ref().and_then(|bundle| bundle.message.remote_is_draft))
+            .unwrap_or_else(|| existing.as_ref().is_some_and(|bundle| bundle.message.is_draft)),
+        remote_is_read: remote.flags.is_read.or_else(|| existing.as_ref().and_then(|bundle| bundle.message.remote_is_read)),
+        remote_is_draft: remote.flags.is_draft.or_else(|| existing.as_ref().and_then(|bundle| bundle.message.remote_is_draft)),
+        remote_is_deleted: remote.flags.is_deleted.or_else(|| existing.as_ref().and_then(|bundle| bundle.message.remote_is_deleted)),
         is_outbound,
         has_attachments: remote.has_attachments,
         importance: remote.importance,
         folder_id: remote.folder_id.clone(),
         parent_folder_name: remote.parent_folder_name.clone(),
-        sync_status: MessageSyncStatus::Synced,
+        sync_status: if pending_delete { MessageSyncStatus::DeletedRemote } else { MessageSyncStatus::Synced },
         local_updated_at: now,
         remote_updated_at: remote.remote_updated_at,
     };
@@ -608,7 +597,29 @@ async fn upsert_remote_message(
     Ok((local_id, Some(session_id), is_new))
 }
 
-/// 移出事实只作用于来源位置；不追踪远端 ID、不替换为其他文件夹位置。
+/// 显式稀疏 FLAGS 只改变观测和展示缓存，不触碰正文或会话归属。
+async fn apply_remote_flags(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    remote_key: &crate::domain::value_objects::RemoteKey,
+    flags: RemoteFlags,
+) -> Result<Option<(MessageId, SessionId)>, AppError> {
+    let Some(mut bundle) = messages::get_by_location(conn, account_id, folder_id, remote_key).await? else { return Ok(None) };
+    let pending = mutations::get(conn, account_id, &bundle.message.id).await?.filter(|pending| pending.is_active);
+    let message = &mut bundle.message;
+    message.remote_is_read = flags.is_read.or(message.remote_is_read);
+    message.remote_is_draft = flags.is_draft.or(message.remote_is_draft);
+    message.remote_is_deleted = flags.is_deleted.or(message.remote_is_deleted);
+    message.is_read = pending.and_then(|pending| pending.desired_is_read).or(message.remote_is_read).unwrap_or(message.is_read);
+    message.is_draft = message.remote_is_draft.unwrap_or(message.is_draft);
+    message.local_updated_at = now_ms();
+    let result = (message.id.clone(), message.session_id.clone());
+    messages::upsert_with_recipients(conn, &bundle).await?;
+    sessions::recompute_projection(conn, account_id, &result.1).await?;
+    Ok(Some(result))
+}
+
 async fn invalidate_folder_generation(
     conn: &mut sqlx::SqliteConnection,
     account_id: &AccountId,
@@ -1021,8 +1032,8 @@ mod location_tests {
             in_reply_to: None, subject: "same subject".into(), body_preview: "same body".into(),
             body_content_type: BodyContentType::Text, body_content: Some("same body".into()),
             from_address: EmailAddress::parse("peer@example.com"), from_name: "Peer".into(),
-            recipients: vec![], received_at: Some(1), sent_at: Some(1), is_read: false,
-            is_draft: false, has_attachments: false, importance: Importance::Normal,
+            recipients: vec![], received_at: Some(1), sent_at: Some(1),
+            flags: RemoteFlags { is_read: Some(false), is_draft: Some(false), is_deleted: None }, has_attachments: false, importance: Importance::Normal,
             folder_id: Some(FolderId::new(folder)), parent_folder_name: None, remote_updated_at: None,
         }
     }
@@ -1057,6 +1068,45 @@ mod location_tests {
         assert_eq!(old.message.body_content, first.body_content);
         assert_eq!(old.message.sync_status, MessageSyncStatus::DeletedRemote);
         assert!(mutations::get(&mut tx, &a, &new_id).await.unwrap().is_none());
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flags_preserve_content_and_unknown_values_while_local_intent_overrides_observations() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)").execute(&db).await.unwrap();
+        let a = AccountId::new("a"); let folder = FolderId::new("inbox");
+        let mut tx = db.begin().await.unwrap();
+        let snapshot = remote("inbox");
+        let (id, _, _) = upsert_remote_message(&mut tx, &a, &snapshot).await.unwrap();
+        let before = messages::get(&mut tx, &a, &id).await.unwrap().unwrap();
+        mutations::put_read(&mut tx, &a, &id, true).await.unwrap();
+        apply_remote_flags(&mut tx, &a, &folder, &snapshot.remote_key,
+            RemoteFlags { is_read: Some(false), is_draft: Some(true), is_deleted: Some(true) }).await.unwrap();
+        let updated = messages::get(&mut tx, &a, &id).await.unwrap().unwrap();
+        assert!(updated.message.is_read);
+        assert_eq!(updated.message.remote_is_read, Some(false));
+        assert_eq!(updated.message.remote_is_deleted, Some(true));
+        assert_eq!(updated.message.sync_status, MessageSyncStatus::Synced);
+        assert_eq!(updated.message.subject, before.message.subject);
+        assert_eq!(updated.message.body_content, before.message.body_content);
+        assert_eq!(updated.message.session_id, before.message.session_id);
+        assert_eq!(updated.recipients, before.recipients);
+        mutations::stop_for_message(&mut tx, &a, &id, "stopped").await.unwrap();
+        apply_remote_flags(&mut tx, &a, &folder, &snapshot.remote_key, RemoteFlags::default()).await.unwrap();
+        let after = messages::get(&mut tx, &a, &id).await.unwrap().unwrap();
+        assert!(!after.message.is_read);
+        assert!(after.message.is_draft);
+        assert_eq!(after.message.remote_is_deleted, Some(true));
+        // A complete snapshot with an empty subject is not a FLAGS placeholder.
+        let mut empty_subject = snapshot.clone();
+        empty_subject.subject.clear(); empty_subject.body_content = None;
+        empty_subject.flags = RemoteFlags::default();
+        upsert_remote_message(&mut tx, &a, &empty_subject).await.unwrap();
+        let after = messages::get(&mut tx, &a, &id).await.unwrap().unwrap();
+        assert_eq!(after.message.subject, "");
+        assert_eq!(after.message.body_content, before.message.body_content);
+        assert_eq!(after.message.remote_is_deleted, Some(true));
         tx.commit().await.unwrap();
     }
 
