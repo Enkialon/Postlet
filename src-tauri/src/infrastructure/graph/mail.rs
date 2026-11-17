@@ -11,7 +11,7 @@ pub struct MailDeltaPage {
     pub delta_link: Option<String>,
 }
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{
     BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, RecipientRole,
 };
@@ -67,8 +67,8 @@ fn client(access_token: &str) -> GraphClient {
     GraphClient::new(access_token)
 }
 
-fn map_http_err(context: &str, err: impl std::fmt::Display) -> PortError {
-    PortError::Network {
+fn map_http_err(context: &str, err: impl std::fmt::Display) -> InfraError {
+    InfraError::Network {
         message: format!("{context}: {err}"),
     }
 }
@@ -76,14 +76,14 @@ fn map_http_err(context: &str, err: impl std::fmt::Display) -> PortError {
 async fn ensure_success(
     response: reqwest::Response,
     context: &str,
-) -> Result<reqwest::Response, PortError> {
+) -> Result<reqwest::Response, InfraError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
     let retryable = status.as_u16() == 429 || status.is_server_error();
     let body = response.text().await.unwrap_or_default();
-    Err(PortError::Remote {
+    Err(InfraError::Remote {
         message: format!("{context} 失败 ({status}): {body}"),
         retryable,
     })
@@ -94,7 +94,7 @@ pub async fn delta_messages(
     access_token: &str,
     folder_id: &FolderId,
     delta_or_next_link: Option<&str>,
-) -> Result<MailDeltaPage, PortError> {
+) -> Result<MailDeltaPage, InfraError> {
     let response = if let Some(link) = delta_or_next_link.filter(|s| !s.is_empty()) {
         get_absolute(access_token, link).await?
     } else {
@@ -111,7 +111,7 @@ pub async fn delta_messages(
         ensure_success(response, "Graph messages delta").await?
     };
 
-    let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+    let page: ODataList = response.json().await.map_err(|_| InfraError::Remote {
         message: "无法解析 Graph Delta 响应".into(),
         retryable: true,
     })?;
@@ -129,7 +129,7 @@ pub async fn delta_messages(
         match map_remote_message(&item, folder_id.clone()) {
             Ok(remote) => messages.push(RemoteMessageChange::Upsert(remote)),
             Err(err) => {
-                return Err(PortError::Remote {
+                return Err(InfraError::Remote {
                     message: format!("映射 Graph 邮件失败: {err}"),
                     retryable: false,
                 });
@@ -147,7 +147,7 @@ pub async fn delta_messages(
 pub async fn get_message_body(
     access_token: &str,
     remote_key: &RemoteKey,
-) -> Result<(BodyContentType, String), PortError> {
+) -> Result<(BodyContentType, String), InfraError> {
     let response = client(access_token)
         .me()
         .message(remote_key.as_str())
@@ -157,11 +157,11 @@ pub async fn get_message_body(
         .await
         .map_err(|e| map_http_err("Graph get body", e))?;
     let response = ensure_success(response, "Graph get body").await?;
-    let value: Value = response.json().await.map_err(|_| PortError::Remote {
+    let value: Value = response.json().await.map_err(|_| InfraError::Remote {
         message: "无法解析 Graph 正文".into(),
         retryable: true,
     })?;
-    let body = value.get("body").ok_or_else(|| PortError::Remote {
+    let body = value.get("body").ok_or_else(|| InfraError::Remote {
         message: "Graph 邮件缺少 body".into(),
         retryable: true,
     })?;
@@ -185,7 +185,7 @@ pub async fn patch_message_read(
     access_token: &str,
     remote_key: &RemoteKey,
     is_read: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let response = client(access_token)
         .me()
         .message(remote_key.as_str())
@@ -201,7 +201,7 @@ pub async fn patch_message_read(
 pub async fn delete_message(
     access_token: &str,
     remote_key: &RemoteKey,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let response = client(access_token)
         .me()
         .message(remote_key.as_str())
@@ -213,7 +213,7 @@ pub async fn delete_message(
     Ok(())
 }
 
-pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), PortError> {
+pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), InfraError> {
     let content_type = match mail.body_content_type {
         BodyContentType::Html => "HTML",
         BodyContentType::Text => "Text",
@@ -276,7 +276,7 @@ struct ListedFolder {
 ///
 /// 优先 `mailFolders/delta`（一次分页拿全树）；失败再回退 BFS。
 /// Graph v1.0 无 `wellKnownName`，收件箱通过 well-known 路径解析 id 后标注。
-pub async fn list_mail_folders(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+pub async fn list_mail_folders(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
     let mut out = match list_mail_folders_delta(access_token).await {
         Ok(folders) if !folders.is_empty() => folders,
         _ => list_mail_folders_bfs(access_token).await?,
@@ -296,7 +296,7 @@ async fn annotate_inbox_well_known(access_token: &str, folders: &mut [RemoteMail
 }
 
 /// `GET /me/mailFolders/delta`：扁平返回整棵树（含多级），避免逐层 HTTP。
-async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
     use std::collections::HashSet;
 
     let mut out = Vec::new();
@@ -308,7 +308,7 @@ async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFol
 
     while let Some(link) = next.take() {
         let response = get_absolute(access_token, &link).await?;
-        let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+        let page: ODataList = response.json().await.map_err(|_| InfraError::Remote {
             message: "无法解析 Graph 文件夹 delta".into(),
             retryable: true,
         })?;
@@ -369,7 +369,7 @@ async fn list_mail_folders_delta(access_token: &str) -> Result<Vec<RemoteMailFol
 }
 
 /// 根 + childFolders BFS；跳过 searchfolders 子树，避免搜索夹爆炸拖死刷新。
-async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolder>, PortError> {
+async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
     use std::collections::{HashSet, VecDeque};
 
     let searchfolders_id = resolve_well_known_folder_id(access_token, "searchfolders")
@@ -409,7 +409,7 @@ async fn list_mail_folders_bfs(access_token: &str) -> Result<Vec<RemoteMailFolde
 async fn resolve_well_known_folder_id(
     access_token: &str,
     well_known: &str,
-) -> Result<String, PortError> {
+) -> Result<String, InfraError> {
     let response = client(access_token)
         .me()
         .mail_folder(well_known)
@@ -419,7 +419,7 @@ async fn resolve_well_known_folder_id(
         .await
         .map_err(|e| map_http_err("Graph well-known mailFolder", e))?;
     let response = ensure_success(response, "Graph well-known mailFolder").await?;
-    let value: Value = response.json().await.map_err(|_| PortError::Remote {
+    let value: Value = response.json().await.map_err(|_| InfraError::Remote {
         message: "无法解析 Graph well-known 文件夹".into(),
         retryable: true,
     })?;
@@ -428,7 +428,7 @@ async fn resolve_well_known_folder_id(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .ok_or_else(|| PortError::Remote {
+        .ok_or_else(|| InfraError::Remote {
             message: format!("well-known 文件夹缺少 id: {well_known}"),
             retryable: false,
         })
@@ -437,7 +437,7 @@ async fn resolve_well_known_folder_id(
 async fn list_folders_under(
     access_token: &str,
     parent_id: Option<&str>,
-) -> Result<Vec<ListedFolder>, PortError> {
+) -> Result<Vec<ListedFolder>, InfraError> {
     let mut out = Vec::new();
     let mut next: Option<String> = None;
     loop {
@@ -466,7 +466,7 @@ async fn list_folders_under(
             ensure_success(response, "Graph mailFolders").await?
         };
 
-        let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+        let page: ODataList = response.json().await.map_err(|_| InfraError::Remote {
             message: "无法解析 Graph 文件夹列表".into(),
             retryable: true,
         })?;
@@ -504,7 +504,7 @@ async fn list_folders_under(
     Ok(out)
 }
 
-async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, PortError> {
+async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, InfraError> {
     super::http::get_absolute(access_token, link, "Graph absolute GET").await
 }
 

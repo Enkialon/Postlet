@@ -1,13 +1,13 @@
 //! SQLite pending_message_mutations；连接与事务由调用方持有。
 
 use crate::domain::entities::{PendingMessageMutation, PendingMutationKind};
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{AccountId, MessageId, TimestampMs};
 use sqlx::{Row, SqliteConnection};
 
-fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<PendingMessageMutation, PortError> {
+fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<PendingMessageMutation, InfraError> {
     let kind_raw: String = row.try_get("kind")?;
-    let kind = PendingMutationKind::parse(&kind_raw).ok_or_else(|| PortError::Storage {
+    let kind = PendingMutationKind::parse(&kind_raw).ok_or_else(|| InfraError::Storage {
         message: format!("未知 pending mutation kind: {kind_raw}"),
     })?;
     let desired_is_read = row
@@ -41,7 +41,7 @@ pub async fn put_read(
     account_id: &AccountId,
     message_id: &MessageId,
     desired: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = now_ms();
     sqlx::query(
         "INSERT INTO pending_message_mutations (
@@ -73,7 +73,7 @@ pub async fn put_delete(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_id: &MessageId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = now_ms();
     sqlx::query(
         "INSERT INTO pending_message_mutations (
@@ -103,7 +103,7 @@ pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_id: &MessageId,
-) -> Result<Option<PendingMessageMutation>, PortError> {
+) -> Result<Option<PendingMessageMutation>, InfraError> {
     let row = sqlx::query(
         "SELECT * FROM pending_message_mutations WHERE account_id = ? AND message_id = ?",
     )
@@ -119,7 +119,7 @@ pub async fn list_due(
     account_id: &AccountId,
     now: TimestampMs,
     limit: u32,
-) -> Result<Vec<PendingMessageMutation>, PortError> {
+) -> Result<Vec<PendingMessageMutation>, InfraError> {
     let rows = sqlx::query(
         "SELECT * FROM pending_message_mutations
          WHERE account_id = ? AND is_active = 1 AND available_at <= ?
@@ -137,7 +137,7 @@ pub async fn list_due(
 pub async fn acknowledge(
     conn: &mut SqliteConnection,
     mutation: &PendingMessageMutation,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let result = sqlx::query(
         "DELETE FROM pending_message_mutations
          WHERE account_id = ? AND message_id = ? AND version = ?",
@@ -148,7 +148,7 @@ pub async fn acknowledge(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: "pending mutation 版本已变更，跳过确认".into(),
         });
     }
@@ -160,7 +160,7 @@ pub async fn record_failure(
     mutation: &PendingMessageMutation,
     error: &str,
     next_attempt_at: Option<TimestampMs>,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "UPDATE pending_message_mutations
          SET attempts = attempts + 1, last_error = ?, available_at = COALESCE(?, available_at), is_active = ?
@@ -183,7 +183,7 @@ pub async fn stop_for_message(
     account_id: &AccountId,
     message_id: &MessageId,
     error: &str,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query("UPDATE pending_message_mutations SET is_active = 0, last_error = ? WHERE account_id = ? AND message_id = ?")
         .bind(error).bind(account_id.as_str()).bind(message_id.as_str()).execute(conn).await?;
     Ok(())

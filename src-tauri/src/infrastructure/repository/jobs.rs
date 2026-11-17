@@ -1,22 +1,21 @@
 //! SQLite session_aggregate_jobs；连接与事务由调用方持有。
 
-use crate::application::dto::AggregateClaim;
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::entities::SessionAggregateJob;
 use crate::domain::value_objects::{
     AccountId, AggregateJobStatus, AggregationOutcome, MessageId, TimestampMs,
 };
 use sqlx::{Row, SqliteConnection};
 
-fn map_job(row: &sqlx::sqlite::SqliteRow) -> Result<SessionAggregateJob, PortError> {
+fn map_job(row: &sqlx::sqlite::SqliteRow) -> Result<SessionAggregateJob, InfraError> {
     let status_raw: String = row.try_get("status")?;
-    let status = AggregateJobStatus::parse(&status_raw).ok_or_else(|| PortError::Storage {
+    let status = AggregateJobStatus::parse(&status_raw).ok_or_else(|| InfraError::Storage {
         message: format!("无效 job status: {status_raw}"),
     })?;
     let outcome = row
         .try_get::<Option<String>, _>("outcome")?
         .map(|s| {
-            AggregationOutcome::parse(&s).ok_or_else(|| PortError::Storage {
+            AggregationOutcome::parse(&s).ok_or_else(|| InfraError::Storage {
                 message: format!("无效 job outcome: {s}"),
             })
         })
@@ -42,7 +41,7 @@ pub async fn enqueue_or_reset(
     account_id: &AccountId,
     message_id: &MessageId,
     available_at: TimestampMs,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = available_at;
     sqlx::query(
         "INSERT INTO session_aggregate_jobs (
@@ -76,7 +75,7 @@ pub async fn claim_batch(
     lease_token: &str,
     lease_expires_at: TimestampMs,
     limit: u32,
-) -> Result<Vec<SessionAggregateJob>, PortError> {
+) -> Result<Vec<SessionAggregateJob>, InfraError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -129,7 +128,7 @@ pub async fn complete(
     lease_token: &str,
     generation: i64,
     outcome: AggregationOutcome,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -157,7 +156,7 @@ pub async fn complete(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: "聚合任务租约或代次不匹配，拒绝 complete".into(),
         });
     }
@@ -172,7 +171,7 @@ pub async fn fail_for_retry(
     generation: i64,
     error: &str,
     available_at: TimestampMs,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -201,7 +200,7 @@ pub async fn fail_for_retry(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: "聚合任务租约或代次不匹配，拒绝 retry".into(),
         });
     }
@@ -212,7 +211,7 @@ pub async fn fail_permanently(
     conn: &mut SqliteConnection,
     claim: &AggregateClaim,
     error: &str,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -239,7 +238,7 @@ pub async fn fail_permanently(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: "聚合任务租约或代次不匹配，拒绝 fail".into(),
         });
     }
@@ -250,7 +249,7 @@ pub async fn release_expired_leases(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     now: TimestampMs,
-) -> Result<u32, PortError> {
+) -> Result<u32, InfraError> {
     let result = sqlx::query(
         "UPDATE session_aggregate_jobs
          SET status = 'retry',
@@ -278,7 +277,7 @@ pub async fn list_message_ids_for_reaggregate(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     limit: u32,
-) -> Result<Vec<MessageId>, PortError> {
+) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
          WHERE account_id = ? AND sync_status != 'deleted_remote'
@@ -290,4 +289,13 @@ pub async fn list_message_ids_for_reaggregate(
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(MessageId::new).collect())
+}
+
+/// 聚合任务租约声明
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateClaim {
+    pub account_id: AccountId,
+    pub message_id: MessageId,
+    pub generation: i64,
+    pub lease_token: String,
 }

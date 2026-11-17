@@ -144,7 +144,7 @@ pub async fn trigger_mail_sync(
                 )
                 .await;
             }
-            Err(AppError::from(crate::application::error::PortError::Network {
+            Err(AppError::from(crate::infrastructure::error::InfraError::Network {
                 message: "邮件同步超时，请稍后重试".into(),
             }))
         }
@@ -841,7 +841,7 @@ pub async fn refresh_mail_folders(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err(AppError::from(crate::application::error::PortError::Network {
+        Err(_) => Err(AppError::from(crate::infrastructure::error::InfraError::Network {
             message: "拉取文件夹列表超时，请检查网络后重试".into(),
         })),
     }
@@ -930,7 +930,7 @@ async fn refresh_mail_folders_inner(
                 let mut session = session_login_blocking(&endpoint, &auth)?;
                 let tree = discover_folder_tree(&mut session)?;
                 let _ = session.logout();
-                Ok::<_, crate::application::error::PortError>(tree)
+                Ok::<_, crate::infrastructure::error::InfraError>(tree)
             })
             .await
             .map_err(|e| AppError::internal(format!("IMAP 文件夹发现失败: {e}")))?

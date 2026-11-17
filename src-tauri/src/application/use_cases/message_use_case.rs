@@ -3,7 +3,8 @@
 use crate::application::dto::{
     ChangeOrigin, ChangeSet, DeleteMessagesCommand, MarkMessagesReadCommand,
 };
-use crate::application::error::{AppError, PortError};
+use crate::application::error::AppError;
+use crate::infrastructure::error::InfraError;
 use crate::application::self_view::apply_outbound_to_bundle;
 use crate::domain::entities::{MessageWithRecipients, PendingMessageMutation, PendingMutationKind};
 use crate::domain::services::resolve_self_addresses;
@@ -250,7 +251,7 @@ pub async fn flush_due_mutations(
         match push {
             Ok(()) => match mutations::acknowledge(&mut conn, &mutation).await {
                 Ok(()) => flushed += 1,
-                Err(PortError::Conflict { .. }) => {}
+                Err(InfraError::Conflict { .. }) => {}
                 Err(e) => return Err(e.into()),
             },
             Err(e) => {

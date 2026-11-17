@@ -3,7 +3,7 @@
 use super::loopback::{bind_redirect_listener, wait_for_authorization_code};
 use super::token_store::{self, TokenCache};
 use super::models::RemoteAccount;
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{AccountId, EmailAddress};
 use crate::infrastructure::config::AzureAuthConfig;
 use base64::Engine;
@@ -54,14 +54,14 @@ struct TokenEndpointResponse {
 pub async fn sign_in(
     _credentials_dir: &Path,
     config: &AzureAuthConfig,
-) -> Result<(RemoteAccount, TokenCache), PortError> {
+) -> Result<(RemoteAccount, TokenCache), InfraError> {
     let client_uuid = parse_client_id(&config.client_id)?;
     let scopes: Vec<String> = DEFAULT_SCOPES.iter().map(|s| (*s).to_owned()).collect();
-    let redirect_uri = Url::parse(&config.redirect_uri).map_err(|_| PortError::Auth {
+    let redirect_uri = Url::parse(&config.redirect_uri).map_err(|_| InfraError::Auth {
         message: format!("redirect_uri 无效: {}", config.redirect_uri),
     })?;
 
-    let pkce = ProofKeyCodeExchange::oneshot().map_err(|e| PortError::Auth {
+    let pkce = ProofKeyCodeExchange::oneshot().map_err(|e| InfraError::Auth {
         message: format!("生成 PKCE 失败: {e}"),
     })?;
 
@@ -85,11 +85,11 @@ pub async fn sign_in(
             .with_pkce(&pkce);
         url_builder.url()
     }
-    .map_err(|e| PortError::Auth {
+    .map_err(|e| InfraError::Auth {
         message: format!("构造授权 URL 失败: {e}"),
     })?;
 
-    webbrowser::open(auth_url.as_str()).map_err(|e| PortError::Auth {
+    webbrowser::open(auth_url.as_str()).map_err(|e| InfraError::Auth {
         message: format!("无法打开系统浏览器: {e}"),
     })?;
 
@@ -128,7 +128,7 @@ pub async fn sign_in(
     Ok((remote, cache))
 }
 
-pub async fn sign_out(credentials_dir: &Path, account_id: &AccountId) -> Result<(), PortError> {
+pub async fn sign_out(credentials_dir: &Path, account_id: &AccountId) -> Result<(), InfraError> {
     token_store::delete(credentials_dir, account_id)
 }
 
@@ -136,7 +136,7 @@ pub async fn save_token_cache(
     credentials_dir: &Path,
     account_id: &AccountId,
     cache: &TokenCache,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     token_store::save(credentials_dir, account_id, cache)
 }
 
@@ -145,9 +145,9 @@ pub async fn get_access_token(
     credentials_dir: &Path,
     config: &AzureAuthConfig,
     account_id: &AccountId,
-) -> Result<String, PortError> {
+) -> Result<String, InfraError> {
     let Some(mut cache) = token_store::load(credentials_dir, account_id)? else {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "账户未登录或凭证已清除，请重新登录".into(),
         });
     };
@@ -158,7 +158,7 @@ pub async fn get_access_token(
     }
 
     let Some(refresh_token) = cache.refresh_token.clone() else {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "访问令牌已过期且无刷新令牌，请重新登录".into(),
         });
     };
@@ -185,7 +185,7 @@ async fn exchange_authorization_code(
     redirect_uri: &Url,
     pkce: &ProofKeyCodeExchange,
     scopes: &[String],
-) -> Result<TokenEndpointResponse, PortError> {
+) -> Result<TokenEndpointResponse, InfraError> {
     if config.is_public_client() {
         let mut pub_client = PublicClientApplication::builder(&config.client_id);
         pub_client.with_tenant(&config.tenant);
@@ -202,7 +202,7 @@ async fn exchange_authorization_code(
     let secret = config
         .client_secret
         .as_deref()
-        .ok_or_else(|| PortError::Auth {
+        .ok_or_else(|| InfraError::Auth {
             message: "机密客户端缺少 client_secret".into(),
         })?;
     let mut conf = ConfidentialClientApplication::builder(client_id);
@@ -221,7 +221,7 @@ async fn refresh_access_token(
     config: &AzureAuthConfig,
     refresh_token: &str,
     scopes: &[String],
-) -> Result<TokenEndpointResponse, PortError> {
+) -> Result<TokenEndpointResponse, InfraError> {
     if config.is_public_client() {
         let mut pub_client = PublicClientApplication::builder(&config.client_id);
         pub_client.with_tenant(&config.tenant);
@@ -237,7 +237,7 @@ async fn refresh_access_token(
     let secret = config
         .client_secret
         .as_deref()
-        .ok_or_else(|| PortError::Auth {
+        .ok_or_else(|| InfraError::Auth {
             message: "机密客户端缺少 client_secret".into(),
         })?;
     let mut conf = ConfidentialClientApplication::builder(client_id);
@@ -253,20 +253,20 @@ async fn refresh_access_token(
 
 async fn execute_token_request(
     app: &mut (impl TokenCredentialExecutor + Send),
-) -> Result<TokenEndpointResponse, PortError> {
-    let response = app.execute_async().await.map_err(|e| PortError::Auth {
+) -> Result<TokenEndpointResponse, InfraError> {
+    let response = app.execute_async().await.map_err(|e| InfraError::Auth {
         message: format!("向微软换取令牌失败: {e}"),
     })?;
     let status = response.status();
-    let body = response.text().await.map_err(|e| PortError::Network {
+    let body = response.text().await.map_err(|e| InfraError::Network {
         message: format!("读取令牌响应失败: {e}"),
     })?;
     if !status.is_success() {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: format!("微软令牌端点返回错误 ({status})"),
         });
     }
-    serde_json::from_str(&body).map_err(|_| PortError::Auth {
+    serde_json::from_str(&body).map_err(|_| InfraError::Auth {
         message: "无法解析微软令牌响应".into(),
     })
 }
@@ -275,22 +275,22 @@ async fn fetch_remote_account(
     access_token: &str,
     home_account_id: Option<String>,
     tenant_id: Option<String>,
-) -> Result<RemoteAccount, PortError> {
+) -> Result<RemoteAccount, InfraError> {
     let client = GraphClient::new(access_token);
     let response = client
         .me()
         .get_user()
         .send()
         .await
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("拉取用户资料失败: {e}"),
         })?;
     if !response.status().is_success() {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: format!("拉取用户资料失败 ({})", response.status()),
         });
     }
-    let me: GraphMe = response.json().await.map_err(|_| PortError::Remote {
+    let me: GraphMe = response.json().await.map_err(|_| InfraError::Remote {
         message: "无法解析用户资料".into(),
         retryable: true,
     })?;
@@ -299,10 +299,10 @@ async fn fetch_remote_account(
         .mail
         .filter(|s| !s.trim().is_empty())
         .or(me.user_principal_name)
-        .ok_or_else(|| PortError::Auth {
+        .ok_or_else(|| InfraError::Auth {
             message: "用户资料缺少邮箱".into(),
         })?;
-    let email = EmailAddress::parse(&email_raw).ok_or_else(|| PortError::Auth {
+    let email = EmailAddress::parse(&email_raw).ok_or_else(|| InfraError::Auth {
         message: "用户邮箱无效".into(),
     })?;
     let display_name = me
@@ -321,8 +321,8 @@ async fn fetch_remote_account(
     })
 }
 
-fn parse_client_id(client_id: &str) -> Result<Uuid, PortError> {
-    Uuid::parse_str(client_id.trim()).map_err(|_| PortError::Auth {
+fn parse_client_id(client_id: &str) -> Result<Uuid, InfraError> {
+    Uuid::parse_str(client_id.trim()).map_err(|_| InfraError::Auth {
         message: "azure.json 中的 client_id 不是有效 UUID".into(),
     })
 }

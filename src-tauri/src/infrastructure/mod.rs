@@ -8,3 +8,5 @@ pub mod paths;
 pub mod repository;
 pub mod smtp;
 pub mod secret_store;
+
+pub mod error;

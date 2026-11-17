@@ -1,6 +1,6 @@
 //! 本机 OAuth 回跳监听（按配置中的 redirect_uri 绑定）
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,35 +11,35 @@ use url::Url;
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// 按配置的 `redirect_uri` 绑定本机监听器（主机 + 端口必须一致）。
-pub async fn bind_redirect_listener(redirect_uri: &Url) -> Result<TcpListener, PortError> {
+pub async fn bind_redirect_listener(redirect_uri: &Url) -> Result<TcpListener, InfraError> {
     let host = redirect_uri.host_str().unwrap_or("127.0.0.1");
     let bind_host = if host == "localhost" {
         "127.0.0.1"
     } else {
         host
     };
-    let port = redirect_uri.port().ok_or_else(|| PortError::Auth {
+    let port = redirect_uri.port().ok_or_else(|| InfraError::Auth {
         message: "redirect_uri 缺少显式端口".into(),
     })?;
     let addr = SocketAddr::new(
-        bind_host.parse().map_err(|_| PortError::Auth {
+        bind_host.parse().map_err(|_| InfraError::Auth {
             message: format!("无法解析回跳主机: {bind_host}"),
         })?,
         port,
     );
-    TcpListener::bind(addr).await.map_err(|e| PortError::Network {
+    TcpListener::bind(addr).await.map_err(|e| InfraError::Network {
         message: format!("无法绑定回跳地址 {addr}: {e}"),
     })
 }
 
 /// 等待一次 HTTP GET 回跳，解析 `code` 或 `error`
-pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String, PortError> {
+pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String, InfraError> {
     let accept = timeout(LOGIN_TIMEOUT, listener.accept())
         .await
-        .map_err(|_| PortError::Auth {
+        .map_err(|_| InfraError::Auth {
             message: "登录超时：未在时限内完成浏览器授权".into(),
         })?
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("等待浏览器回跳失败: {e}"),
         })?;
 
@@ -47,10 +47,10 @@ pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String
     let mut buf = vec![0u8; 8192];
     let n = timeout(Duration::from_secs(30), socket.read(&mut buf))
         .await
-        .map_err(|_| PortError::Network {
+        .map_err(|_| InfraError::Network {
             message: "读取回跳请求超时".into(),
         })?
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("读取回跳请求失败: {e}"),
         })?;
 
@@ -66,7 +66,7 @@ pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String
         .unwrap_or("/");
 
     let full = format!("http://localhost{path_and_query}");
-    let parsed = Url::parse(&full).map_err(|_| PortError::Auth {
+    let parsed = Url::parse(&full).map_err(|_| InfraError::Auth {
         message: "无法解析授权回跳 URL".into(),
     })?;
 
@@ -86,7 +86,7 @@ pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String
             "<html><body><h1>登录失败</h1><p>可以关闭此窗口返回 Postlet。</p></body></html>",
         )
         .await;
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: if desc.is_empty() {
                 format!("微软登录失败: {err}")
             } else {
@@ -107,7 +107,7 @@ pub async fn wait_for_authorization_code(listener: TcpListener) -> Result<String
             "<html><body><h1>登录失败</h1><p>回跳缺少授权码。</p></body></html>",
         )
         .await;
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "授权回跳缺少 code".into(),
         });
     };
@@ -126,7 +126,7 @@ async fn write_html_response(
     socket: &mut tokio::net::TcpStream,
     status: u16,
     body: &str,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let reason = match status {
         200 => "OK",
         _ => "Bad Request",
@@ -138,7 +138,7 @@ async fn write_html_response(
     socket
         .write_all(response.as_bytes())
         .await
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("写回跳响应失败: {e}"),
         })?;
     let _ = socket.shutdown().await;

@@ -1,40 +1,12 @@
-//! 应用层错误：PortError → AppError 映射
+//! 应用层错误：InfraError → AppError 映射
 
 use crate::domain::DomainError;
 
-/// 应用边界出站错误；不属于 Domain，禁止泄漏 SQL / Token / SDK 错误详情
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PortError {
-    Storage { message: String },
-    Auth { message: String },
-    Network { message: String },
-    Remote { message: String, retryable: bool },
-    Conflict { message: String },
-}
-
-impl std::fmt::Display for PortError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Storage { message } => write!(f, "存储故障: {message}"),
-            Self::Auth { message } => write!(f, "鉴权故障: {message}"),
-            Self::Network { message } => write!(f, "网络故障: {message}"),
-            Self::Remote { message, .. } => write!(f, "远端故障: {message}"),
-            Self::Conflict { message } => write!(f, "冲突: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for PortError {}
-
-impl From<sqlx::Error> for PortError {
-    fn from(_: sqlx::Error) -> Self {
-        Self::Storage { message: "本地数据库操作失败".into() }
-    }
-}
+use crate::infrastructure::error::InfraError;
 
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
-        PortError::from(error).into()
+        InfraError::from(error).into()
     }
 }
 
@@ -124,30 +96,30 @@ impl From<DomainError> for AppError {
     }
 }
 
-impl From<PortError> for AppError {
-    fn from(err: PortError) -> Self {
+impl From<InfraError> for AppError {
+    fn from(err: InfraError) -> Self {
         match err {
-            PortError::Storage { message } => Self {
+            InfraError::Storage { message } => Self {
                 code: AppErrorCode::Internal,
                 message,
                 retryable: false,
             },
-            PortError::Auth { message } => Self {
+            InfraError::Auth { message } => Self {
                 code: AppErrorCode::Auth,
                 message,
                 retryable: false,
             },
-            PortError::Network { message } => Self {
+            InfraError::Network { message } => Self {
                 code: AppErrorCode::Network,
                 message,
                 retryable: true,
             },
-            PortError::Remote { message, retryable } => Self {
+            InfraError::Remote { message, retryable } => Self {
                 code: AppErrorCode::Sync,
                 message,
                 retryable,
             },
-            PortError::Conflict { message } => Self::conflict(message),
+            InfraError::Conflict { message } => Self::conflict(message),
         }
     }
 }

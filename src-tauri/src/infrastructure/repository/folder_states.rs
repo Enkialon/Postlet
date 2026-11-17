@@ -1,6 +1,6 @@
 //! SQLite folder_states 模块函数；连接与事务由调用方持有。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::entities::MailFolderSyncState;
 use crate::domain::value_objects::{AccountId, FolderId};
 use sqlx::SqliteConnection;
@@ -9,7 +9,7 @@ pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     folder_id: &FolderId,
-) -> Result<Option<MailFolderSyncState>, PortError> {
+) -> Result<Option<MailFolderSyncState>, InfraError> {
     let row = sqlx::query(
         "SELECT * FROM mail_folder_sync_state WHERE account_id = ? AND folder_id = ?",
     )
@@ -26,7 +26,7 @@ pub async fn get(
 pub async fn list_by_account(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-) -> Result<Vec<MailFolderSyncState>, PortError> {
+) -> Result<Vec<MailFolderSyncState>, InfraError> {
     sqlx::query(
         "SELECT * FROM mail_folder_sync_state WHERE account_id = ?
          ORDER BY display_name COLLATE NOCASE, folder_id",
@@ -43,7 +43,7 @@ pub async fn list_by_account(
 pub async fn list_sync_enabled(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-) -> Result<Vec<MailFolderSyncState>, PortError> {
+) -> Result<Vec<MailFolderSyncState>, InfraError> {
     sqlx::query(
         "SELECT * FROM mail_folder_sync_state
          WHERE account_id = ? AND sync_enabled = 1
@@ -61,7 +61,7 @@ pub async fn list_sync_enabled(
 pub async fn upsert(
     conn: &mut SqliteConnection,
     state: &MailFolderSyncState,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO mail_folder_sync_state (
             account_id, folder_id, parent_folder_id, display_name, sync_enabled,
@@ -105,7 +105,7 @@ pub async fn upsert_discovered(
     display_name: &str,
     default_enabled: bool,
     now: i64,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let existing = get(conn, account_id, folder_id).await?;
     let state = MailFolderSyncState {
         account_id: account_id.clone(),
@@ -136,7 +136,7 @@ pub async fn set_sync_enabled(
     folder_id: &FolderId,
     enabled: bool,
     now: i64,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let result = sqlx::query(
         "UPDATE mail_folder_sync_state
          SET sync_enabled = ?, updated_at = ?
@@ -149,7 +149,7 @@ pub async fn set_sync_enabled(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Storage {
+        return Err(InfraError::Storage {
             message: format!("文件夹不存在: {folder_id}"),
         });
     }
@@ -160,7 +160,7 @@ pub async fn reset_cursors(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     folder_id: &FolderId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -182,7 +182,7 @@ pub async fn delete(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     folder_id: &FolderId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query("DELETE FROM mail_folder_sync_state WHERE account_id = ? AND folder_id = ?")
         .bind(account_id.as_str())
         .bind(folder_id.as_str())

@@ -1,7 +1,7 @@
 //! Microsoft Graph 联系人 Delta。
 
 use super::models::{ContactDeltaPage, RemoteContact};
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::EmailAddress;
 use graph_rs_sdk::{GraphClient, ODataQuery};
 use serde::Deserialize;
@@ -16,8 +16,8 @@ struct ODataList {
     delta_link: Option<String>,
 }
 
-fn map_http_err(context: &str, err: impl std::fmt::Display) -> PortError {
-    PortError::Network {
+fn map_http_err(context: &str, err: impl std::fmt::Display) -> InfraError {
+    InfraError::Network {
         message: format!("{context}: {err}"),
     }
 }
@@ -25,14 +25,14 @@ fn map_http_err(context: &str, err: impl std::fmt::Display) -> PortError {
 async fn ensure_success(
     response: reqwest::Response,
     context: &str,
-) -> Result<reqwest::Response, PortError> {
+) -> Result<reqwest::Response, InfraError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
     let retryable = status.as_u16() == 429 || status.is_server_error();
     let body = response.text().await.unwrap_or_default();
-    Err(PortError::Remote {
+    Err(InfraError::Remote {
         message: format!("{context} 失败 ({status}): {body}"),
         retryable,
     })
@@ -42,7 +42,7 @@ async fn ensure_success(
 pub async fn delta_contacts(
     access_token: &str,
     delta_or_next_link: Option<&str>,
-) -> Result<ContactDeltaPage, PortError> {
+) -> Result<ContactDeltaPage, InfraError> {
     let response = if let Some(link) = delta_or_next_link.filter(|s| !s.is_empty()) {
         get_absolute(access_token, link).await?
     } else {
@@ -57,7 +57,7 @@ pub async fn delta_contacts(
         ensure_success(response, "Graph contacts delta").await?
     };
 
-    let page: ODataList = response.json().await.map_err(|_| PortError::Remote {
+    let page: ODataList = response.json().await.map_err(|_| InfraError::Remote {
         message: "无法解析 Graph 联系人 Delta".into(),
         retryable: true,
     })?;
@@ -109,6 +109,6 @@ fn map_remote_contact(value: &Value) -> Option<RemoteContact> {
     })
 }
 
-async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, PortError> {
+async fn get_absolute(access_token: &str, link: &str) -> Result<reqwest::Response, InfraError> {
     super::http::get_absolute(access_token, link, "Graph contacts absolute GET").await
 }

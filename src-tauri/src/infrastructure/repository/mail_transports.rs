@@ -1,52 +1,52 @@
 //! SQLite account_mail_transport 模块函数。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::entities::AccountMailTransport;
 use crate::domain::value_objects::{
     AccountId, MailAuthKind, MailTlsMode, ReceiveProtocol, SendProtocol,
 };
 use sqlx::{Row, SqliteConnection};
 
-fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountMailTransport, PortError> {
+fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountMailTransport, InfraError> {
     let receive = row
         .try_get::<String, _>("receive_protocol")
-        .map_err(|_| PortError::Storage {
+        .map_err(|_| InfraError::Storage {
             message: "读取 receive_protocol 失败".into(),
         })?;
     let send = row
         .try_get::<String, _>("send_protocol")
-        .map_err(|_| PortError::Storage {
+        .map_err(|_| InfraError::Storage {
             message: "读取 send_protocol 失败".into(),
         })?;
     let auth = row
         .try_get::<String, _>("auth_kind")
-        .map_err(|_| PortError::Storage {
+        .map_err(|_| InfraError::Storage {
             message: "读取 auth_kind 失败".into(),
         })?;
     let imap_tls = row
         .try_get::<Option<String>, _>("imap_tls")
-        .map_err(|_| PortError::Storage {
+        .map_err(|_| InfraError::Storage {
             message: "读取 imap_tls 失败".into(),
         })?;
     let smtp_tls = row
         .try_get::<Option<String>, _>("smtp_tls")
-        .map_err(|_| PortError::Storage {
+        .map_err(|_| InfraError::Storage {
             message: "读取 smtp_tls 失败".into(),
         })?;
     Ok(AccountMailTransport {
         account_id: AccountId::new(
             row.try_get::<String, _>("account_id")
-                .map_err(|_| PortError::Storage {
+                .map_err(|_| InfraError::Storage {
                     message: "读取 account_id 失败".into(),
                 })?,
         ),
-        receive_protocol: ReceiveProtocol::parse(&receive).ok_or_else(|| PortError::Storage {
+        receive_protocol: ReceiveProtocol::parse(&receive).ok_or_else(|| InfraError::Storage {
             message: format!("无效 receive_protocol: {receive}"),
         })?,
-        send_protocol: SendProtocol::parse(&send).ok_or_else(|| PortError::Storage {
+        send_protocol: SendProtocol::parse(&send).ok_or_else(|| InfraError::Storage {
             message: format!("无效 send_protocol: {send}"),
         })?,
-        auth_kind: MailAuthKind::parse(&auth).ok_or_else(|| PortError::Storage {
+        auth_kind: MailAuthKind::parse(&auth).ok_or_else(|| InfraError::Storage {
             message: format!("无效 auth_kind: {auth}"),
         })?,
         credential_ref: row.try_get("credential_ref")?,
@@ -70,7 +70,7 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountMailTransport, PortEr
             .ok()
             .flatten()
             .map(|v| v != 0),
-        updated_at: row.try_get("updated_at").map_err(|_| PortError::Storage {
+        updated_at: row.try_get("updated_at").map_err(|_| InfraError::Storage {
             message: "读取 updated_at 失败".into(),
         })?,
     })
@@ -79,7 +79,7 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountMailTransport, PortEr
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-) -> Result<Option<AccountMailTransport>, PortError> {
+) -> Result<Option<AccountMailTransport>, InfraError> {
     let row = sqlx::query("SELECT * FROM account_mail_transport WHERE account_id = ?")
         .bind(account_id.as_str())
         .fetch_optional(&mut *conn)
@@ -90,7 +90,7 @@ pub async fn get(
 pub async fn upsert(
     conn: &mut SqliteConnection,
     transport: &AccountMailTransport,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO account_mail_transport (
             account_id, receive_protocol, send_protocol, auth_kind,
@@ -136,7 +136,7 @@ pub async fn ensure_default(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     now: i64,
-) -> Result<AccountMailTransport, PortError> {
+) -> Result<AccountMailTransport, InfraError> {
     if let Some(existing) = get(conn, account_id).await? {
         return Ok(existing);
     }

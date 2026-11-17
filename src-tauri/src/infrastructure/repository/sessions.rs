@@ -1,21 +1,19 @@
 //! SQLite sessions 模块函数；连接与事务由调用方持有。
 
-use crate::application::dto::{
-    CursorPage, MessagePreview, SessionListItem, SessionListQuery, SessionMessagesQuery,
-};
-use crate::application::error::PortError;
 use crate::domain::entities::{MessageWithRecipients, Session};
 use crate::domain::value_objects::{
     AccountId, ContactId, EmailAddress, GroupId, MessageId, PageDirection, SessionId, SessionKind,
 };
+use crate::infrastructure::error::InfraError;
 use crate::infrastructure::repository::accounts;
+use crate::query_page::CursorPage;
 use sqlx::{QueryBuilder, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &SessionId,
-) -> Result<Option<Session>, PortError> {
+) -> Result<Option<Session>, InfraError> {
     let row = sqlx::query("SELECT * FROM sessions WHERE account_id = ? AND id = ?")
         .bind(account_id.as_str())
         .bind(id.as_str())
@@ -27,11 +25,11 @@ pub async fn get(
         .map_err(Into::into)
 }
 
-pub async fn get_list_item(
+pub async fn get_projection(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &SessionId,
-) -> Result<Option<SessionListItem>, PortError> {
+) -> Result<Option<SessionProjection>, InfraError> {
     let Some(session) = get(conn, account_id, id).await? else {
         return Ok(None);
     };
@@ -42,7 +40,7 @@ pub async fn get_private_by_address(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     address: &EmailAddress,
-) -> Result<Option<Session>, PortError> {
+) -> Result<Option<Session>, InfraError> {
     let row = sqlx::query(
         "SELECT * FROM sessions WHERE account_id = ? AND kind = 'private' AND normalized_address = ?",
     )
@@ -60,7 +58,7 @@ pub async fn get_group_by_group_id(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     group_id: &GroupId,
-) -> Result<Option<Session>, PortError> {
+) -> Result<Option<Session>, InfraError> {
     let row = sqlx::query(
         "SELECT * FROM sessions WHERE account_id = ? AND kind = 'group' AND group_id = ?",
     )
@@ -79,7 +77,7 @@ pub async fn resolve_root(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &SessionId,
-) -> Result<Option<Session>, PortError> {
+) -> Result<Option<Session>, InfraError> {
     let mut current = id.clone();
     for _ in 0..32 {
         let Some(session) = get(conn, account_id, &current).await? else {
@@ -90,23 +88,26 @@ pub async fn resolve_root(
             None => return Ok(Some(session)),
         }
     }
-    Err(PortError::Conflict {
+    Err(InfraError::Conflict {
         message: "会话合并链过深或成环".into(),
     })
 }
 
 pub async fn list(
     conn: &mut SqliteConnection,
-    query: &SessionListQuery,
-) -> Result<CursorPage<SessionListItem>, PortError> {
-    let kind = query.kind.map(|k| k.as_str());
-    if query.limit == 0 || query.limit > 500 {
-        return Err(PortError::Conflict {
+    account_id: Option<&AccountId>,
+    cursor: Option<&str>,
+    limit: u32,
+    kind: Option<SessionKind>,
+) -> Result<CursorPage<SessionProjection>, InfraError> {
+    let kind = kind.map(|k| k.as_str());
+    if limit == 0 || limit > 500 {
+        return Err(InfraError::Conflict {
             message: "分页大小须为 1..500".into(),
         });
     }
-    let (cursor_at, mut cursor_account, cursor_id) = parse_session_cursor(query.cursor.as_deref())?;
-    let account_ids = accounts::resolve_list_account_ids(conn, query.account_id.as_ref()).await?;
+    let (cursor_at, mut cursor_account, cursor_id) = parse_session_cursor(cursor)?;
+    let account_ids = accounts::resolve_list_account_ids(conn, account_id).await?;
     if account_ids.is_empty() {
         return Ok(CursorPage::empty());
     }
@@ -144,13 +145,13 @@ pub async fn list(
     qb.push(
         ") ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
     );
-    qb.push_bind(i64::from(query.limit) + 1);
+    qb.push_bind(i64::from(limit) + 1);
 
     let rows = qb.build().fetch_all(&mut *conn).await?;
-    let has_more = rows.len() > query.limit as usize;
+    let has_more = rows.len() > limit as usize;
     let mut sessions = rows
         .iter()
-        .take(query.limit as usize)
+        .take(limit as usize)
         .map(super::rows::session)
         .collect::<Result<Vec<_>, _>>()?;
     let next_cursor = if has_more {
@@ -178,14 +179,14 @@ pub async fn list(
 
 fn parse_session_cursor(
     cursor: Option<&str>,
-) -> Result<(Option<i64>, Option<String>, Option<String>), PortError> {
+) -> Result<(Option<i64>, Option<String>, Option<String>), InfraError> {
     let Some(raw) = cursor else {
         return Ok((None, None, None));
     };
     let parts: Vec<&str> = raw.splitn(3, ':').collect();
     match parts.as_slice() {
         [at, account_id, id] => {
-            let at: i64 = at.parse().map_err(|_| PortError::Conflict {
+            let at: i64 = at.parse().map_err(|_| InfraError::Conflict {
                 message: "无效会话游标时间".into(),
             })?;
             Ok((
@@ -195,12 +196,12 @@ fn parse_session_cursor(
             ))
         }
         [at, id] => {
-            let at: i64 = at.parse().map_err(|_| PortError::Conflict {
+            let at: i64 = at.parse().map_err(|_| InfraError::Conflict {
                 message: "无效会话游标时间".into(),
             })?;
             Ok((Some(at), None, Some((*id).to_owned())))
         }
-        _ => Err(PortError::Conflict {
+        _ => Err(InfraError::Conflict {
             message: "无效会话游标".into(),
         }),
     }
@@ -209,7 +210,7 @@ fn parse_session_cursor(
 async fn enrich_item(
     conn: &mut SqliteConnection,
     session: Session,
-) -> Result<SessionListItem, PortError> {
+) -> Result<SessionProjection, InfraError> {
     let contact_display_name = if let Some(ref cid) = session.contact_id {
         sqlx::query_scalar::<_, String>(
             "SELECT display_name FROM contacts WHERE account_id = ? AND id = ?",
@@ -223,13 +224,12 @@ async fn enrich_item(
         None
     };
     let group_name = if let Some(ref gid) = session.group_id {
-        let row = sqlx::query(
-            "SELECT name, name_is_manual FROM groups WHERE account_id = ? AND id = ?",
-        )
-        .bind(session.account_id.as_str())
-        .bind(gid.as_str())
-        .fetch_optional(&mut *conn)
-        .await?;
+        let row =
+            sqlx::query("SELECT name, name_is_manual FROM groups WHERE account_id = ? AND id = ?")
+                .bind(session.account_id.as_str())
+                .bind(gid.as_str())
+                .fetch_optional(&mut *conn)
+                .await?;
         match row {
             Some(row) => {
                 use sqlx::Row;
@@ -240,12 +240,8 @@ async fn enrich_item(
                 } else {
                     // 自动群：列表展示优先用成员/联系人昵称拼标题
                     Some(
-                        super::groups::resolve_auto_title(
-                            &mut *conn,
-                            &session.account_id,
-                            gid,
-                        )
-                        .await?,
+                        super::groups::resolve_auto_title(&mut *conn, &session.account_id, gid)
+                            .await?,
                     )
                 }
             }
@@ -254,13 +250,7 @@ async fn enrich_item(
     } else {
         None
     };
-    let display_name = crate::domain::services::session_display_name(
-        session.kind,
-        contact_display_name.as_deref(),
-        session.normalized_address.as_ref().map(|a| a.as_str()),
-        group_name.as_deref(),
-    );
-    let last_message_preview = if let Some(ref mid) = session.last_message_id {
+    let last_message = if let Some(ref mid) = session.last_message_id {
         let row = sqlx::query(
             "SELECT * FROM messages WHERE account_id = ? AND id = ? AND sync_status != 'deleted_remote'",
         )
@@ -271,35 +261,22 @@ async fn enrich_item(
         match row {
             Some(row) => {
                 let m = super::rows::message(&row)?;
-                Some(MessagePreview {
-                    id: m.id,
-                    subject: m.subject,
-                    body_preview: m.body_preview,
-                    from_address: m.from_address,
-                    from_name: m.from_name,
-                    received_at: m.received_at,
-                    sent_at: m.sent_at,
-                    is_read: m.is_read,
-                    is_outbound: m.is_outbound,
-                    has_attachments: m.has_attachments,
-                    importance: m.importance,
-                })
+                Some(m)
             }
             None => None,
         }
     } else {
         None
     };
-    Ok(SessionListItem {
+    Ok(SessionProjection {
         session,
-        display_name,
-        last_message_preview,
+        last_message,
         contact_display_name,
         group_name,
     })
 }
 
-pub async fn upsert(conn: &mut SqliteConnection, session: &Session) -> Result<(), PortError> {
+pub async fn upsert(conn: &mut SqliteConnection, session: &Session) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO sessions (
             id, account_id, kind, normalized_address, contact_id, group_id, merged_into_id,
@@ -341,7 +318,7 @@ pub async fn set_hidden_at(
     session_id: &SessionId,
     hidden_at: Option<i64>,
     now: i64,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let result = sqlx::query(
         "UPDATE sessions
          SET hidden_at = ?, updated_at = ?
@@ -354,7 +331,7 @@ pub async fn set_hidden_at(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("会话不存在: {session_id}"),
         });
     }
@@ -368,9 +345,9 @@ pub async fn merge_into(
     source_id: &SessionId,
     target_id: &SessionId,
     now: i64,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     if source_id == target_id {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: "不能合并到自身".into(),
         });
     }
@@ -385,7 +362,7 @@ pub async fn merge_into(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("源会话不存在: {source_id}"),
         });
     }
@@ -396,7 +373,7 @@ pub async fn clear_contact_id_refs(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     contact_id: &ContactId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "UPDATE sessions SET contact_id = NULL, updated_at = ?
          WHERE account_id = ? AND contact_id = ?",
@@ -416,15 +393,18 @@ pub async fn clear_contact_id_refs(
 
 pub async fn list_messages(
     conn: &mut SqliteConnection,
-    query: &SessionMessagesQuery,
-) -> Result<CursorPage<MessageWithRecipients>, PortError> {
-    if query.limit == 0 || query.limit > 500 {
-        return Err(PortError::Conflict {
+    account_id: &AccountId,
+    session_id: &SessionId,
+    cursor: Option<&str>,
+    limit: u32,
+    direction: PageDirection,
+) -> Result<CursorPage<MessageWithRecipients>, InfraError> {
+    if limit == 0 || limit > 500 {
+        return Err(InfraError::Conflict {
             message: "分页大小须为 1..500".into(),
         });
     }
-    let (cursor_at, cursor_id) = parse_msg_cursor(query.cursor.as_deref())?;
-    let direction = query.direction;
+    let (cursor_at, cursor_id) = parse_msg_cursor(cursor)?;
     // 含 deleted_remote，由前端过滤
     let rows = match direction {
         PageDirection::Older => {
@@ -439,13 +419,13 @@ pub async fn list_messages(
                  ORDER BY COALESCE(received_at, sent_at, 0) DESC, id DESC
                  LIMIT ?",
             )
-            .bind(query.account_id.as_str())
-            .bind(query.session_id.as_str())
+            .bind(account_id.as_str())
+            .bind(session_id.as_str())
             .bind(cursor_id.as_deref())
             .bind(cursor_at.unwrap_or(i64::MAX))
             .bind(cursor_at.unwrap_or(i64::MAX))
             .bind(cursor_id.as_deref())
-            .bind(i64::from(query.limit) + 1)
+            .bind(i64::from(limit) + 1)
             .fetch_all(&mut *conn)
             .await?
         }
@@ -461,27 +441,27 @@ pub async fn list_messages(
                  ORDER BY COALESCE(received_at, sent_at, 0) ASC, id ASC
                  LIMIT ?",
             )
-            .bind(query.account_id.as_str())
-            .bind(query.session_id.as_str())
+            .bind(account_id.as_str())
+            .bind(session_id.as_str())
             .bind(cursor_id.as_deref())
             .bind(cursor_at.unwrap_or(-1))
             .bind(cursor_at.unwrap_or(-1))
             .bind(cursor_id.as_deref())
-            .bind(i64::from(query.limit) + 1)
+            .bind(i64::from(limit) + 1)
             .fetch_all(&mut *conn)
             .await?
         }
     };
 
-    let has_more = rows.len() > query.limit as usize;
-    let message_rows: Vec<_> = rows.into_iter().take(query.limit as usize).collect();
+    let has_more = rows.len() > limit as usize;
+    let message_rows: Vec<_> = rows.into_iter().take(limit as usize).collect();
     let mut items = Vec::with_capacity(message_rows.len());
     for row in &message_rows {
         let message = super::rows::message(row)?;
         let recipients = sqlx::query(
             "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
         )
-        .bind(query.account_id.as_str())
+        .bind(account_id.as_str())
         .bind(message.id.as_str())
         .fetch_all(&mut *conn)
         .await?
@@ -512,14 +492,14 @@ pub async fn list_messages(
     })
 }
 
-fn parse_msg_cursor(cursor: Option<&str>) -> Result<(Option<i64>, Option<String>), PortError> {
+fn parse_msg_cursor(cursor: Option<&str>) -> Result<(Option<i64>, Option<String>), InfraError> {
     let Some(raw) = cursor else {
         return Ok((None, None));
     };
-    let (at, id) = raw.split_once(':').ok_or_else(|| PortError::Conflict {
+    let (at, id) = raw.split_once(':').ok_or_else(|| InfraError::Conflict {
         message: "无效消息游标".into(),
     })?;
-    let at: i64 = at.parse().map_err(|_| PortError::Conflict {
+    let at: i64 = at.parse().map_err(|_| InfraError::Conflict {
         message: "无效消息游标时间".into(),
     })?;
     Ok((Some(at), Some(id.to_owned())))
@@ -529,7 +509,7 @@ pub async fn recompute_projection(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     session_id: &SessionId,
-) -> Result<Session, PortError> {
+) -> Result<Session, InfraError> {
     let last = sqlx::query(
         "SELECT id, COALESCE(received_at, sent_at) AS at
          FROM messages
@@ -598,7 +578,7 @@ pub async fn recompute_projection(
 
     get(conn, account_id, session_id)
         .await?
-        .ok_or_else(|| PortError::Conflict {
+        .ok_or_else(|| InfraError::Conflict {
             message: format!("会话不存在: {session_id}"),
         })
 }
@@ -609,16 +589,15 @@ pub async fn reassign_messages(
     account_id: &AccountId,
     message_ids: &[MessageId],
     target_session_id: &SessionId,
-) -> Result<Vec<SessionId>, PortError> {
+) -> Result<Vec<SessionId>, InfraError> {
     let mut old_ids = Vec::new();
     for mid in message_ids {
-        let old: Option<String> = sqlx::query_scalar(
-            "SELECT session_id FROM messages WHERE account_id = ? AND id = ?",
-        )
-        .bind(account_id.as_str())
-        .bind(mid.as_str())
-        .fetch_optional(&mut *conn)
-        .await?;
+        let old: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM messages WHERE account_id = ? AND id = ?")
+                .bind(account_id.as_str())
+                .bind(mid.as_str())
+                .fetch_optional(&mut *conn)
+                .await?;
         let Some(old) = old else {
             continue;
         };
@@ -652,7 +631,7 @@ pub async fn move_all_messages(
     account_id: &AccountId,
     source_session_id: &SessionId,
     target_session_id: &SessionId,
-) -> Result<u64, PortError> {
+) -> Result<u64, InfraError> {
     if source_session_id == target_session_id {
         return Ok(0);
     }
@@ -713,4 +692,12 @@ pub fn new_group(account_id: AccountId, group_id: GroupId, now: i64) -> Session 
         created_at: now,
         updated_at: now,
     }
+}
+
+/// 查询联表数据；展示 DTO 由 application 组装。
+pub struct SessionProjection {
+    pub session: Session,
+    pub contact_display_name: Option<String>,
+    pub group_name: Option<String>,
+    pub last_message: Option<crate::domain::entities::Message>,
 }

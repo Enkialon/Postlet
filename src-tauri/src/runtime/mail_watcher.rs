@@ -169,7 +169,7 @@ async fn run_cycle(
             let mut session = session_login_blocking(&endpoint2, &auth2)?;
             session
                 .select("INBOX")
-                .map_err(|e| crate::application::error::PortError::Remote {
+                .map_err(|e| crate::infrastructure::error::InfraError::Remote {
                     message: format!("SELECT INBOX 失败: {e}"),
                     retryable: true,
                 })?;

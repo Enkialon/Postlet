@@ -2,7 +2,7 @@
 
 use super::client::{list_capabilities, session_login_blocking, ImapAuth, ImapEndpoint};
 use super::sync::{sync_folder, FolderSyncResult};
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 
 #[derive(Debug, Clone)]
 pub struct ImapSyncBatch {
@@ -22,7 +22,7 @@ pub fn sync_account_blocking(
     auth: &ImapAuth,
     requests: &[FolderSyncRequest],
     page_limit: u32,
-) -> Result<ImapSyncBatch, PortError> {
+) -> Result<ImapSyncBatch, InfraError> {
     let mut session = session_login_blocking(endpoint, auth)?;
     let (idle_supported, _) = list_capabilities(&mut session)?;
 

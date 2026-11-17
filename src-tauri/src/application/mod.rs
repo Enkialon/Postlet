@@ -5,4 +5,4 @@ pub mod error;
 pub mod self_view;
 pub mod use_cases;
 
-pub use error::{AppError, AppErrorCode, PortError};
+pub use error::{AppError, AppErrorCode};

@@ -5,7 +5,7 @@
 use super::client::ImapSession;
 use super::parse::{decode_remote_key, parse_rfc822, remote_id};
 use crate::domain::mail::{RemoteMessageChange, RemoteMessage};
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::services::{imap_pending_boundary, missing_imap_page};
 use std::collections::{HashMap, HashSet};
 
@@ -32,12 +32,12 @@ pub fn sync_folder(
     stored_generation: Option<&str>,
     known_messages: &[(crate::domain::value_objects::RemoteKey, bool)],
     page_limit: u32,
-) -> Result<FolderSyncResult, PortError> {
-    let mailbox = session.select(folder).map_err(|e| PortError::Remote {
+) -> Result<FolderSyncResult, InfraError> {
+    let mailbox = session.select(folder).map_err(|e| InfraError::Remote {
         message: format!("IMAP SELECT {folder} 失败: {e}"),
         retryable: true,
     })?;
-    let uidvalidity = mailbox.uid_validity.filter(|v| *v > 0).ok_or_else(|| PortError::Remote {
+    let uidvalidity = mailbox.uid_validity.filter(|v| *v > 0).ok_or_else(|| InfraError::Remote {
         message: "IMAP SELECT 未返回有效 UIDVALIDITY，已停止同步".into(), retryable: false,
     })?;
     let known_uids: Vec<(u32, bool)> = known_messages.iter().filter_map(|(key, seen)| {
@@ -56,7 +56,7 @@ pub fn sync_folder(
     let page = missing_imap_page(&remote_uids, &known, page_limit);
     let fetched = fetch_uid_page(session, folder, uidvalidity, &page)?;
     if !page.is_empty() && fetched.ok_uids.is_empty() {
-        return Err(PortError::Remote {
+        return Err(InfraError::Remote {
             message: format!(
                 "IMAP 文件夹 {folder} 请求 {} 封，但无法读取正文，稍后重试",
                 page.len()
@@ -100,7 +100,7 @@ pub fn sync_folder(
                 .join(",");
             let fetches = session
                 .uid_fetch(set, "(UID FLAGS)")
-                .map_err(|e| PortError::Remote {
+                .map_err(|e| InfraError::Remote {
                     message: format!("IMAP FLAGS FETCH 失败: {e}"),
                     retryable: true,
                 })?;
@@ -133,8 +133,8 @@ pub fn sync_folder(
     })
 }
 
-fn search_uids(session: &mut ImapSession, query: &str) -> Result<HashSet<u32>, PortError> {
-    session.uid_search(query).map_err(|e| PortError::Remote {
+fn search_uids(session: &mut ImapSession, query: &str) -> Result<HashSet<u32>, InfraError> {
+    session.uid_search(query).map_err(|e| InfraError::Remote {
         message: format!("IMAP UID SEARCH 失败 ({query}): {e}"),
         retryable: true,
     })
@@ -150,7 +150,7 @@ fn fetch_uid_page(
     folder: &str,
     uidvalidity: u32,
     uid_list: &[u32],
-) -> Result<FetchPageResult, PortError> {
+) -> Result<FetchPageResult, InfraError> {
     let mut changes = Vec::new();
     let mut ok_uids = HashSet::new();
     if uid_list.is_empty() {
@@ -166,7 +166,7 @@ fn fetch_uid_page(
         let fetches = session
             .uid_fetch(&set, "(FLAGS INTERNALDATE BODY.PEEK[])")
             .or_else(|_| session.uid_fetch(&set, "(FLAGS BODY.PEEK[])"))
-            .map_err(|e| PortError::Remote {
+            .map_err(|e| InfraError::Remote {
                 message: format!("IMAP UID FETCH 失败: {e}"),
                 retryable: true,
             })?;
@@ -217,11 +217,11 @@ fn fetch_one_rfc822(
     folder: &str,
     uidvalidity: u32,
     uid: u32,
-) -> Result<Option<RemoteMessage>, PortError> {
+) -> Result<Option<RemoteMessage>, InfraError> {
     let fetches = session
         .uid_fetch(uid.to_string(), "(FLAGS INTERNALDATE BODY.PEEK[])")
         .or_else(|_| session.uid_fetch(uid.to_string(), "(FLAGS BODY.PEEK[])"))
-        .map_err(|e| PortError::Remote {
+        .map_err(|e| InfraError::Remote {
             message: format!("IMAP UID FETCH 单封失败 UID={uid}: {e}"),
             retryable: true,
         })?;

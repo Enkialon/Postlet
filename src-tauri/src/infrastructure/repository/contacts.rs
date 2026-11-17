@@ -1,17 +1,17 @@
 //! SQLite contacts 模块函数；连接与事务由调用方持有。
 
-use crate::application::dto::{ContactListQuery, CursorPage};
-use crate::application::error::PortError;
 use crate::domain::entities::Contact;
 use crate::domain::value_objects::{AccountId, ContactId, EmailAddress};
+use crate::infrastructure::error::InfraError;
 use crate::infrastructure::repository::accounts;
+use crate::query_page::CursorPage;
 use sqlx::{QueryBuilder, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &ContactId,
-) -> Result<Option<Contact>, PortError> {
+) -> Result<Option<Contact>, InfraError> {
     let row = sqlx::query("SELECT * FROM contacts WHERE account_id = ? AND id = ?")
         .bind(account_id.as_str())
         .bind(id.as_str())
@@ -27,7 +27,7 @@ pub async fn get_by_address(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     address: &EmailAddress,
-) -> Result<Option<Contact>, PortError> {
+) -> Result<Option<Contact>, InfraError> {
     let row = sqlx::query("SELECT * FROM contacts WHERE account_id = ? AND normalized_address = ?")
         .bind(account_id.as_str())
         .bind(address.as_str())
@@ -41,18 +41,21 @@ pub async fn get_by_address(
 
 pub async fn list(
     conn: &mut SqliteConnection,
-    query: &ContactListQuery,
-) -> Result<CursorPage<Contact>, PortError> {
-    if query.limit == 0 || query.limit > 500 {
-        return Err(PortError::Conflict {
+    account_id: Option<&AccountId>,
+    cursor: Option<&str>,
+    limit: u32,
+    search: Option<&str>,
+) -> Result<CursorPage<Contact>, InfraError> {
+    if limit == 0 || limit > 500 {
+        return Err(InfraError::Conflict {
             message: "分页大小须为 1..500".into(),
         });
     }
-    let account_ids = accounts::resolve_list_account_ids(conn, query.account_id.as_ref()).await?;
+    let account_ids = accounts::resolve_list_account_ids(conn, account_id).await?;
     if account_ids.is_empty() {
         return Ok(CursorPage::empty());
     }
-    let (cursor_account, cursor_id) = parse_entity_cursor(query.cursor.as_deref())?;
+    let (cursor_account, cursor_id) = parse_entity_cursor(cursor)?;
 
     let mut qb = QueryBuilder::new("SELECT * FROM contacts WHERE ");
     accounts::push_account_id_in(&mut qb, &account_ids);
@@ -70,7 +73,7 @@ pub async fn list(
         qb.push(")");
     }
     qb.push(") AND (");
-    if let Some(search) = query.search.as_deref() {
+    if let Some(search) = search {
         qb.push("instr(lower(display_name), lower(");
         qb.push_bind(search);
         qb.push(")) = 1 OR instr(normalized_address, lower(");
@@ -80,13 +83,13 @@ pub async fn list(
         qb.push("1 = 1");
     }
     qb.push(") ORDER BY account_id ASC, id ASC LIMIT ");
-    qb.push_bind(i64::from(query.limit) + 1);
+    qb.push_bind(i64::from(limit) + 1);
 
     let rows = qb.build().fetch_all(&mut *conn).await?;
-    let has_more = rows.len() > query.limit as usize;
+    let has_more = rows.len() > limit as usize;
     let items = rows
         .iter()
-        .take(query.limit as usize)
+        .take(limit as usize)
         .map(super::rows::contact)
         .collect::<Result<Vec<_>, _>>()?;
     let next_cursor = if has_more {
@@ -103,7 +106,7 @@ pub async fn list(
     })
 }
 
-pub async fn upsert(conn: &mut SqliteConnection, contact: &Contact) -> Result<(), PortError> {
+pub async fn upsert(conn: &mut SqliteConnection, contact: &Contact) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO contacts (
             id, account_id, graph_id, display_name, normalized_address, source, created_at, updated_at
@@ -132,14 +135,12 @@ pub async fn get_by_graph_id(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     graph_id: &str,
-) -> Result<Option<Contact>, PortError> {
-    let row = sqlx::query(
-        "SELECT * FROM contacts WHERE account_id = ? AND graph_id = ?",
-    )
-    .bind(account_id.as_str())
-    .bind(graph_id)
-    .fetch_optional(&mut *conn)
-    .await?;
+) -> Result<Option<Contact>, InfraError> {
+    let row = sqlx::query("SELECT * FROM contacts WHERE account_id = ? AND graph_id = ?")
+        .bind(account_id.as_str())
+        .bind(graph_id)
+        .fetch_optional(&mut *conn)
+        .await?;
     row.as_ref()
         .map(super::rows::contact)
         .transpose()
@@ -150,7 +151,7 @@ pub async fn delete(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &ContactId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     // 清空会话上的 contact_id 引用，避免悬挂外键语义
     super::sessions::clear_contact_id_refs(conn, account_id, id).await?;
     sqlx::query("DELETE FROM contacts WHERE account_id = ? AND id = ?")
@@ -164,7 +165,7 @@ pub async fn delete(
 /// 游标 `account_id:id`；兼容旧纯 `id`
 fn parse_entity_cursor(
     cursor: Option<&str>,
-) -> Result<(Option<String>, Option<String>), PortError> {
+) -> Result<(Option<String>, Option<String>), InfraError> {
     let Some(raw) = cursor else {
         return Ok((None, None));
     };

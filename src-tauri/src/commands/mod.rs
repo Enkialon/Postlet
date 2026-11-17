@@ -1,8 +1,8 @@
 //! Tauri IPC 薄胶水：参数 → 用例 → DTO；不含 Graph / 业务规则。
 
+use crate::query_page::CursorPage;
 use crate::application::dto::{
-    ComposeDraft, ContactListQuery, ContactSyncProgress, CreateManualGroupCommand, CursorPage,
-    DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
+    ComposeDraft, ContactListQuery, ContactSyncProgress, CreateManualGroupCommand,     DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
     EnsurePrivateSessionCommand, GroupListQuery, MailSyncProgress, MarkMessagesReadCommand,
     MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
     SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem,

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod domain;
 pub mod infrastructure;
 pub mod runtime;
+pub mod query_page;
 
 use application::dto::ComposeDraft;
 use application::use_cases::compose_use_case;

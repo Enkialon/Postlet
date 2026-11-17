@@ -1,7 +1,7 @@
 //! IMAP IDLE（阻塞）；不支持时由上层轮询。
 
 use super::client::ImapSession;
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use imap::extensions::idle::WaitOutcome;
 use std::time::Duration;
 
@@ -16,8 +16,8 @@ pub enum IdleOutcome {
 pub fn run_idle_until_cancel(
     session: &mut ImapSession,
     idle_timeout: Duration,
-) -> Result<IdleOutcome, PortError> {
-    let idle = session.idle().map_err(|e| PortError::Remote {
+) -> Result<IdleOutcome, InfraError> {
+    let idle = session.idle().map_err(|e| InfraError::Remote {
         message: format!("IMAP IDLE 初始化失败: {e}"),
         retryable: true,
     })?;

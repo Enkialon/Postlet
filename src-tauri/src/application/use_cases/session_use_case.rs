@@ -1,10 +1,11 @@
 //! 会话用例（主导航）
 use crate::infrastructure::repository::{accounts, contacts, groups, sessions};
+use crate::query_page::CursorPage;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::dto::{
-    CursorPage, EnsureGroupSessionCommand, EnsurePrivateSessionCommand, ReassignMessagesCommand,
+    EnsureGroupSessionCommand, EnsurePrivateSessionCommand, ReassignMessagesCommand,
     SessionListItem, SessionListQuery, SessionMessagesQuery,
 };
 use crate::application::error::AppError;
@@ -58,9 +59,24 @@ pub async fn list_sessions(
     query: SessionListQuery,
 ) -> Result<CursorPage<SessionListItem>, AppError> {
     let mut conn = db.acquire().await?;
-    let mut page = sessions::list(&mut conn, &query)
-        .await
-        .map_err(AppError::from)?;
+    let page = sessions::list(
+        &mut conn,
+        query.account_id.as_ref(),
+        query.cursor.as_deref(),
+        query.limit,
+        query.kind,
+    )
+    .await
+    .map_err(AppError::from)?;
+    let mut page = CursorPage {
+        items: page
+            .items
+            .into_iter()
+            .map(SessionListItem::from)
+            .collect::<Vec<_>>(),
+        next_cursor: page.next_cursor,
+        has_more: page.has_more,
+    };
     let account_ids = page
         .items
         .iter()
@@ -81,9 +97,10 @@ pub async fn get_session(
     session_id: &SessionId,
 ) -> Result<SessionListItem, AppError> {
     let mut conn = db.acquire().await?;
-    let mut item = sessions::get_list_item(&mut conn, account_id, session_id)
+    let projection = sessions::get_projection(&mut conn, account_id, session_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("会话不存在: {session_id}")))?;
+    let mut item = SessionListItem::from(projection);
     let self_set = self_set_for(&mut conn, account_id).await?;
     apply_session_item_outbound(&mut item, &self_set);
     Ok(item)
@@ -94,9 +111,16 @@ pub async fn list_messages(
     query: SessionMessagesQuery,
 ) -> Result<CursorPage<MessageWithRecipients>, AppError> {
     let mut conn = db.acquire().await?;
-    let mut page = sessions::list_messages(&mut conn, &query)
-        .await
-        .map_err(AppError::from)?;
+    let mut page = sessions::list_messages(
+        &mut conn,
+        &query.account_id,
+        &query.session_id,
+        query.cursor.as_deref(),
+        query.limit,
+        query.direction,
+    )
+    .await
+    .map_err(AppError::from)?;
     let self_set = self_set_for(&mut conn, &query.account_id).await?;
     for bundle in &mut page.items {
         apply_outbound_to_bundle(bundle, &self_set);
@@ -178,10 +202,9 @@ pub async fn ensure_group_session(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found(format!("群组不存在: {}", cmd.group_id)))?;
 
-    if let Some(mut existing) =
-        sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &group.id)
-            .await
-            .map_err(AppError::from)?
+    if let Some(mut existing) = sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &group.id)
+        .await
+        .map_err(AppError::from)?
     {
         // 若已合并，返回根会话
         if existing.merged_into_id.is_some() {
@@ -298,9 +321,7 @@ pub async fn reassign_messages(
     let target = sessions::resolve_root(&mut tx, &cmd.account_id, &cmd.target_session_id)
         .await
         .map_err(AppError::from)?
-        .ok_or_else(|| {
-            AppError::not_found(format!("目标会话不存在: {}", cmd.target_session_id))
-        })?;
+        .ok_or_else(|| AppError::not_found(format!("目标会话不存在: {}", cmd.target_session_id)))?;
     if target.merged_into_id.is_some() {
         return Err(AppError::conflict("目标会话已合并"));
     }

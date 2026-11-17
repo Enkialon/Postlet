@@ -1,6 +1,6 @@
 //! SQLite messages 模块函数；连接与事务由调用方持有。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::entities::MessageWithRecipients;
 use crate::domain::value_objects::{
     AccountId, EmailAddress, RemoteKey, MessageId, SessionId,
@@ -11,7 +11,7 @@ pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &MessageId,
-) -> Result<Option<MessageWithRecipients>, PortError> {
+) -> Result<Option<MessageWithRecipients>, InfraError> {
     let row = sqlx::query("SELECT * FROM messages WHERE account_id = ? AND id = ?")
         .bind(account_id.as_str())
         .bind(id.as_str())
@@ -33,7 +33,7 @@ pub async fn get_by_location(
     account_id: &AccountId,
     folder_id: &crate::domain::value_objects::FolderId,
     remote_key: &RemoteKey,
-) -> Result<Option<MessageWithRecipients>, PortError> {
+) -> Result<Option<MessageWithRecipients>, InfraError> {
     let row = sqlx::query("SELECT * FROM messages WHERE account_id = ? AND folder_id = ? AND remote_key = ?")
         .bind(account_id.as_str())
         .bind(folder_id.as_str())
@@ -56,7 +56,7 @@ pub async fn find_by_internet_message_id(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     internet_message_id: &str,
-) -> Result<Option<MessageWithRecipients>, PortError> {
+) -> Result<Option<MessageWithRecipients>, InfraError> {
     let trimmed = internet_message_id.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -84,7 +84,7 @@ async fn load_recipients(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_id: &MessageId,
-) -> Result<Vec<crate::domain::entities::MessageRecipient>, PortError> {
+) -> Result<Vec<crate::domain::entities::MessageRecipient>, InfraError> {
     sqlx::query(
         "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
     )
@@ -101,7 +101,7 @@ async fn load_recipients(
 pub async fn upsert_with_recipients(
     conn: &mut SqliteConnection,
     bundle: &MessageWithRecipients,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let m = &bundle.message;
     sqlx::query(
         "INSERT INTO messages (id, account_id, session_id, remote_key, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
@@ -186,7 +186,7 @@ pub async fn set_session_id(
     account_id: &AccountId,
     message_id: &MessageId,
     session_id: &SessionId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -209,7 +209,7 @@ pub async fn mark_read(
     account_id: &AccountId,
     message_ids: &[MessageId],
     is_read: bool,
-) -> Result<Vec<MessageId>, PortError> {
+) -> Result<Vec<MessageId>, InfraError> {
     let mut changed = Vec::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -238,7 +238,7 @@ pub async fn mark_deleted_remote(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_ids: &[MessageId],
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -261,7 +261,7 @@ pub async fn delete_physical(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_ids: &[MessageId],
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     for id in message_ids {
         sqlx::query("DELETE FROM messages WHERE account_id = ? AND id = ?")
             .bind(account_id.as_str())
@@ -277,7 +277,7 @@ pub async fn list_session_ids(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_ids: &[MessageId],
-) -> Result<Vec<SessionId>, PortError> {
+) -> Result<Vec<SessionId>, InfraError> {
     let mut out = Vec::new();
     for id in message_ids {
         let sid: Option<String> = sqlx::query_scalar(
@@ -301,7 +301,7 @@ pub async fn list_ids_by_session(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     session_id: &SessionId,
-) -> Result<Vec<MessageId>, PortError> {
+) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
          WHERE account_id = ? AND session_id = ? AND sync_status != 'deleted_remote'
@@ -319,7 +319,7 @@ pub async fn list_ids_involving_addresses(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     addresses: &[EmailAddress],
-) -> Result<Vec<MessageId>, PortError> {
+) -> Result<Vec<MessageId>, InfraError> {
     if addresses.is_empty() {
         return Ok(Vec::new());
     }

@@ -1,6 +1,6 @@
 //! Graph token 加密存储；不读取旧的明文开发凭据。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::AccountId;
 use serde::{Deserialize, Serialize};
 use crate::infrastructure::secret_store;
@@ -18,15 +18,15 @@ pub struct TokenCache {
     pub tenant: String,
 }
 
-pub fn save(credentials_dir: &Path, account_id: &AccountId, cache: &TokenCache) -> Result<(), PortError> {
+pub fn save(credentials_dir: &Path, account_id: &AccountId, cache: &TokenCache) -> Result<(), InfraError> {
     secret_store::save(credentials_dir, "graph", account_id.as_str(), cache)
 }
 
-pub fn load(credentials_dir: &Path, account_id: &AccountId) -> Result<Option<TokenCache>, PortError> {
+pub fn load(credentials_dir: &Path, account_id: &AccountId) -> Result<Option<TokenCache>, InfraError> {
     secret_store::load(credentials_dir, "graph", account_id.as_str())
 }
 
-pub fn delete(credentials_dir: &Path, account_id: &AccountId) -> Result<(), PortError> {
+pub fn delete(credentials_dir: &Path, account_id: &AccountId) -> Result<(), InfraError> {
     secret_store::delete(credentials_dir, "graph", account_id.as_str())
 }
 

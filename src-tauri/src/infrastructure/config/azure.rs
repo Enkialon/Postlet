@@ -2,7 +2,7 @@
 //!
 //! `client_id`、`redirect_uri` 必填；`client_secret` 可选（公开客户端 / PKCE 可省略）。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use serde::Deserialize;
 use std::fmt;
 use std::fs;
@@ -57,10 +57,10 @@ struct AzureAuthConfigFile {
 }
 
 /// 从 `azure.json` 加载鉴权字段。
-pub fn load_azure_auth_config(config_dir: &Path) -> Result<AzureAuthConfig, PortError> {
+pub fn load_azure_auth_config(config_dir: &Path) -> Result<AzureAuthConfig, InfraError> {
     let path = config_dir.join("azure.json");
     if !path.exists() {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: format!(
                 "未找到 Azure 配置：请在 {} 写入 client_id、redirect_uri（公开客户端可省略 client_secret）",
                 path.display()
@@ -68,11 +68,11 @@ pub fn load_azure_auth_config(config_dir: &Path) -> Result<AzureAuthConfig, Port
         });
     }
 
-    let raw = fs::read_to_string(&path).map_err(|e| PortError::Storage {
+    let raw = fs::read_to_string(&path).map_err(|e| InfraError::Storage {
         message: format!("读取 azure.json 失败: {e}"),
     })?;
     let file_cfg: AzureAuthConfigFile =
-        serde_json::from_str(&raw).map_err(|e| PortError::Storage {
+        serde_json::from_str(&raw).map_err(|e| InfraError::Storage {
             message: format!("解析 azure.json 失败: {e}"),
         })?;
 
@@ -103,32 +103,32 @@ fn require_field(
     value: Option<String>,
     name: &str,
     path: &Path,
-) -> Result<String, PortError> {
+) -> Result<String, InfraError> {
     value
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| PortError::Auth {
+        .ok_or_else(|| InfraError::Auth {
             message: format!("未配置 Azure {name}：请在 {} 中填写", path.display()),
         })
 }
 
-fn validate_redirect_uri(raw: &str) -> Result<(), PortError> {
-    let url = Url::parse(raw).map_err(|_| PortError::Auth {
+fn validate_redirect_uri(raw: &str) -> Result<(), InfraError> {
+    let url = Url::parse(raw).map_err(|_| InfraError::Auth {
         message: format!("redirect_uri 不是合法 URL: {raw}"),
     })?;
     if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "redirect_uri 仅支持 http/https".into(),
         });
     }
     let host = url.host_str().unwrap_or("");
     if host != "localhost" && host != "127.0.0.1" {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "桌面登录 redirect_uri 主机须为 localhost 或 127.0.0.1".into(),
         });
     }
     if url.port().is_none() {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "redirect_uri 必须显式包含端口，例如 http://localhost:12141/desktop".into(),
         });
     }

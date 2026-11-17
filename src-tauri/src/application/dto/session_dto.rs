@@ -54,3 +54,34 @@ pub struct SessionListItem {
     pub contact_display_name: Option<String>,
     pub group_name: Option<String>,
 }
+
+impl From<crate::infrastructure::repository::sessions::SessionProjection> for SessionListItem {
+    fn from(row: crate::infrastructure::repository::sessions::SessionProjection) -> Self {
+        let display_name = crate::domain::services::session_display_name(
+            row.session.kind,
+            row.contact_display_name.as_deref(),
+            row.session.normalized_address.as_ref().map(|a| a.as_str()),
+            row.group_name.as_deref(),
+        );
+        let last_message_preview = row.last_message.map(|m| MessagePreview {
+            id: m.id,
+            subject: m.subject,
+            body_preview: m.body_preview,
+            from_address: m.from_address,
+            from_name: m.from_name,
+            received_at: m.received_at,
+            sent_at: m.sent_at,
+            is_read: m.is_read,
+            is_outbound: m.is_outbound,
+            has_attachments: m.has_attachments,
+            importance: m.importance,
+        });
+        Self {
+            session: row.session,
+            display_name,
+            last_message_preview,
+            contact_display_name: row.contact_display_name,
+            group_name: row.group_name,
+        }
+    }
+}

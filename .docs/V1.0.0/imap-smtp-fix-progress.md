@@ -56,3 +56,11 @@
 - mutation 纯数据移入 domain，入队保存 target_folder_id/target_remote_key，执行不重新读取消息来改目标。终止任务显式 is_active=false，停止自动派发及本地意图覆盖，错误保留；非重试错误也终止。无远端定位不生成远端任务。
 - 验证：本轮全套 Rust 含原生钥匙串 31 项通过；补充显式终止标记后再次通过 20 项单元测试（原生钥匙串 1 项默认跳过）及前端构建。覆盖 UIDVALIDITY 缺失/变化时无写命令、非法 key、新旧 UID 10 实体隔离、旧删除/已读意图不继承、旧目标停止且正文保留。
 - 仍需与本地 Folder 身份、定位状态/修订和任务 lease 一起完成重命名/退役/并发晚到保护；不能将以上测试等同于 I-06/I-10 全部验收完成。
+
+## A-02：已解决
+
+- 技术错误统一归 infrastructure::error::InfraError，application 映射为 AppError；删除旧应用层 PortError，无兼容别名。
+- 邮件事实与 mutation 为纯 domain 类型；Graph 账户/联系人适配结果和仓储任务 lease 返回值归 infrastructure。
+- 仓储接收实际筛选/分页参数，返回实体或必要查询投影；会话展示名与 MessagePreview/SessionListItem 由 application 组装，IPC 查询 DTO 保留在 application。
+- 只有确实跨层复用的 CursorPage 放在无 IO 的小型 query_page 模块；没有新增接口层、Repository trait 或事务管理对象。
+- 验证：infrastructure 全目录无 application 导入，domain 无反向依赖。`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests` 29 项通过、2 项原生钥匙串测试默认跳过；覆盖列表展示、账号隔离和跨仓储事务提交/回滚。

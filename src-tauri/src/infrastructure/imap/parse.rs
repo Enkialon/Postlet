@@ -11,8 +11,8 @@ pub fn remote_id(uidvalidity: u32, uid: u32) -> RemoteKey {
 }
 
 /// Only the IMAP adapter interprets the opaque remote key.
-pub fn decode_remote_key(key: &RemoteKey) -> Result<(u32, u32), crate::application::error::PortError> {
-    let invalid = || crate::application::error::PortError::Conflict { message: "IMAP 定位无效，请重新同步".into() };
+pub fn decode_remote_key(key: &RemoteKey) -> Result<(u32, u32), crate::infrastructure::error::InfraError> {
+    let invalid = || crate::infrastructure::error::InfraError::Conflict { message: "IMAP 定位无效，请重新同步".into() };
     let mut parts = key.as_str().split(':');
     if parts.next() != Some("imap") { return Err(invalid()); }
     let generation = parts.next().and_then(|s| s.parse::<u32>().ok()).filter(|v| *v > 0).ok_or_else(invalid)?;

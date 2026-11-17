@@ -312,7 +312,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     let account_id = seed_signed_in_mailbox(&db).await;
     let mut conn = db.acquire().await.unwrap();
 
-    let before = sessions::list(
+    let before = list_sessions(
         &mut conn,
         &SessionListQuery {
             account_id: None,
@@ -337,7 +337,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
         "退出后账户行仍在，便于再登录关联"
     );
 
-    let sess = sessions::list(
+    let sess = list_sessions(
         &mut conn,
         &SessionListQuery {
             account_id: None,
@@ -350,7 +350,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .unwrap();
     assert!(sess.items.is_empty());
 
-    let cts = contacts::list(
+    let cts = list_contacts(
         &mut conn,
         &ContactListQuery {
             account_id: None,
@@ -363,7 +363,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .unwrap();
     assert!(cts.items.is_empty());
 
-    let gs = groups::list(
+    let gs = list_groups(
         &mut conn,
         &GroupListQuery {
             account_id: None,
@@ -379,7 +379,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     accounts::set_signed_in(&mut conn, &account_id, true)
         .await
         .unwrap();
-    let again = sessions::list(
+    let again = list_sessions(
         &mut conn,
         &SessionListQuery {
             account_id: None,
@@ -397,7 +397,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
         .await
         .unwrap();
     assert!(accounts::list_ids(&mut conn).await.unwrap().is_empty());
-    let hidden_in_all = sessions::list(
+    let hidden_in_all = list_sessions(
         &mut conn,
         &SessionListQuery {
             account_id: None,
@@ -409,7 +409,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .await
     .unwrap();
     assert!(hidden_in_all.items.is_empty());
-    let single = sessions::list(
+    let single = list_sessions(
         &mut conn,
         &SessionListQuery {
             account_id: Some(account_id.clone()),
@@ -421,4 +421,17 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
     .await
     .unwrap();
     assert_eq!(single.items.len(), before.items.len());
+}
+
+async fn list_sessions(conn: &mut sqlx::SqliteConnection, query: &SessionListQuery)
+    -> Result<postlet_lib::query_page::CursorPage<sessions::SessionProjection>, postlet_lib::infrastructure::error::InfraError> {
+    sessions::list(conn, query.account_id.as_ref(), query.cursor.as_deref(), query.limit, query.kind).await
+}
+async fn list_contacts(conn: &mut sqlx::SqliteConnection, query: &ContactListQuery)
+    -> Result<postlet_lib::query_page::CursorPage<Contact>, postlet_lib::infrastructure::error::InfraError> {
+    contacts::list(conn, query.account_id.as_ref(), query.cursor.as_deref(), query.limit, query.search.as_deref()).await
+}
+async fn list_groups(conn: &mut sqlx::SqliteConnection, query: &GroupListQuery)
+    -> Result<postlet_lib::query_page::CursorPage<Group>, postlet_lib::infrastructure::error::InfraError> {
+    groups::list(conn, query.account_id.as_ref(), query.cursor.as_deref(), query.limit, query.search.as_deref()).await
 }

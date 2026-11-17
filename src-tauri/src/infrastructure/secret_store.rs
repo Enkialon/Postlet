@@ -1,7 +1,7 @@
 //! 系统钥匙串保护加密密钥，普通磁盘仅保存认证加密的密文。
 //! 使用加密文件以避免系统凭据项对大型 OAuth token 的长度限制。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
@@ -14,13 +14,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn failure(message: &str) -> PortError {
-    PortError::Storage {
+fn failure(message: &str) -> InfraError {
+    InfraError::Storage {
         message: message.into(),
     }
 }
 
-fn cipher(dir: &Path, create: bool) -> Result<Aes256Gcm, PortError> {
+fn cipher(dir: &Path, create: bool) -> Result<Aes256Gcm, InfraError> {
     fs::create_dir_all(dir).map_err(|_| failure("创建凭据目录失败"))?;
     let canonical = fs::canonicalize(dir).map_err(|_| failure("解析凭据目录失败"))?;
     // 跨进程串行首次密钥创建，防止两个实例各自生成密钥后覆盖。
@@ -66,7 +66,7 @@ fn path(dir: &Path, kind: &str, id: &str) -> PathBuf {
     dir.join(format!("{kind}-{encoded}.secret"))
 }
 
-fn encrypt(cipher: &Aes256Gcm, raw: &[u8], identity: &[u8]) -> Result<Vec<u8>, PortError> {
+fn encrypt(cipher: &Aes256Gcm, raw: &[u8], identity: &[u8]) -> Result<Vec<u8>, InfraError> {
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let encrypted = cipher
         .encrypt(
@@ -82,7 +82,7 @@ fn encrypt(cipher: &Aes256Gcm, raw: &[u8], identity: &[u8]) -> Result<Vec<u8>, P
     Ok(result)
 }
 
-fn decrypt(cipher: &Aes256Gcm, encrypted: &[u8], identity: &[u8]) -> Result<Vec<u8>, PortError> {
+fn decrypt(cipher: &Aes256Gcm, encrypted: &[u8], identity: &[u8]) -> Result<Vec<u8>, InfraError> {
     if encrypted.len() < 12 {
         return Err(failure("本地凭据损坏，请重新登录"));
     }
@@ -97,7 +97,7 @@ fn decrypt(cipher: &Aes256Gcm, encrypted: &[u8], identity: &[u8]) -> Result<Vec<
         .map_err(|_| failure("本地凭据校验失败，请重新登录"))
 }
 
-fn replace(path: &Path, raw: &[u8]) -> Result<(), PortError> {
+fn replace(path: &Path, raw: &[u8]) -> Result<(), InfraError> {
     let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())
         .map_err(|_| failure("创建凭据临时文件失败"))?;
     file.write_all(raw).map_err(|_| failure("写入凭据失败"))?;
@@ -113,7 +113,7 @@ fn replace(path: &Path, raw: &[u8]) -> Result<(), PortError> {
     Ok(())
 }
 
-pub fn save<T: Serialize>(dir: &Path, kind: &str, id: &str, value: &T) -> Result<(), PortError> {
+pub fn save<T: Serialize>(dir: &Path, kind: &str, id: &str, value: &T) -> Result<(), InfraError> {
     let cipher = cipher(dir, true)?;
     let raw = serde_json::to_vec(value).map_err(|_| failure("序列化凭据失败"))?;
     let identity = format!("{kind}:{id}");
@@ -123,7 +123,7 @@ pub fn save<T: Serialize>(dir: &Path, kind: &str, id: &str, value: &T) -> Result
     )
 }
 
-pub fn load<T: DeserializeOwned>(dir: &Path, kind: &str, id: &str) -> Result<Option<T>, PortError> {
+pub fn load<T: DeserializeOwned>(dir: &Path, kind: &str, id: &str) -> Result<Option<T>, InfraError> {
     let raw = match fs::read(path(dir, kind, id)) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -136,7 +136,7 @@ pub fn load<T: DeserializeOwned>(dir: &Path, kind: &str, id: &str) -> Result<Opt
         .map_err(|_| failure("本地凭据格式无效"))
 }
 
-pub fn delete(dir: &Path, kind: &str, id: &str) -> Result<(), PortError> {
+pub fn delete(dir: &Path, kind: &str, id: &str) -> Result<(), InfraError> {
     match fs::remove_file(path(dir, kind, id)) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -144,7 +144,7 @@ pub fn delete(dir: &Path, kind: &str, id: &str) -> Result<(), PortError> {
     }
 }
 
-pub fn list_ids(dir: &Path, kind: &str) -> Result<Vec<String>, PortError> {
+pub fn list_ids(dir: &Path, kind: &str) -> Result<Vec<String>, InfraError> {
     let mut ids = Vec::new();
     for entry in fs::read_dir(dir).map_err(|_| failure("读取凭据目录失败"))? {
         let entry = entry.map_err(|_| failure("读取凭据目录项失败"))?;
@@ -210,7 +210,7 @@ mod tests {
     #[ignore = "writes an isolated temporary OS keyring entry"]
     fn native_keyring_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let result = (|| -> Result<(), PortError> {
+        let result = (|| -> Result<(), InfraError> {
             let value = "large-secret-token".repeat(1000);
             save(dir.path(), "graph", "test-account", &value)?;
             assert_eq!(

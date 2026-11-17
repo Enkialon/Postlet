@@ -1,10 +1,11 @@
 //! 群组用例
 use crate::infrastructure::repository::{groups, sessions};
+use crate::query_page::CursorPage;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::application::dto::{
-    CreateManualGroupCommand, CursorPage, GroupListQuery, HideGroupCommand, MergeSessionsCommand,
+    CreateManualGroupCommand, GroupListQuery, HideGroupCommand, MergeSessionsCommand,
     RenameGroupCommand, UpdateGroupSendMembersCommand,
 };
 use crate::application::error::AppError;
@@ -25,7 +26,15 @@ pub async fn list_groups(
     query: GroupListQuery,
 ) -> Result<CursorPage<Group>, AppError> {
     let mut conn = db.acquire().await?;
-    groups::list(&mut conn, &query).await.map_err(Into::into)
+    groups::list(
+        &mut conn,
+        query.account_id.as_ref(),
+        query.cursor.as_deref(),
+        query.limit,
+        query.search.as_deref(),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_group(
@@ -132,10 +141,9 @@ pub async fn hide_group(db: &SqlitePool, cmd: HideGroupCommand) -> Result<(), Ap
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found(format!("群组不存在: {}", cmd.group_id)))?;
 
-    if let Some(session) =
-        sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &cmd.group_id)
-            .await
-            .map_err(AppError::from)?
+    if let Some(session) = sessions::get_group_by_group_id(&mut tx, &cmd.account_id, &cmd.group_id)
+        .await
+        .map_err(AppError::from)?
     {
         let root = if session.merged_into_id.is_some() {
             sessions::resolve_root(&mut tx, &cmd.account_id, &session.id)
@@ -196,15 +204,9 @@ pub async fn update_send_members(
             last_seen_at: now,
         });
     }
-    groups::replace_send_members(
-        &mut tx,
-        &cmd.account_id,
-        &group.id,
-        &members,
-        cmd.is_manual,
-    )
-    .await
-    .map_err(AppError::from)?;
+    groups::replace_send_members(&mut tx, &cmd.account_id, &group.id, &members, cmd.is_manual)
+        .await
+        .map_err(AppError::from)?;
     let out = groups::list_participants(&mut tx, &cmd.account_id, &group.id)
         .await
         .map_err(AppError::from)?;

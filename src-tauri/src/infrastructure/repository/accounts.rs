@@ -1,6 +1,6 @@
 //! SQLite accounts 模块函数；连接与事务由调用方持有。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::entities::Account;
 use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
@@ -8,7 +8,7 @@ use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 pub async fn get(
     conn: &mut SqliteConnection,
     id: &AccountId,
-) -> Result<Option<Account>, PortError> {
+) -> Result<Option<Account>, InfraError> {
     let row = sqlx::query("SELECT * FROM accounts WHERE id = ?")
         .bind(id.as_str())
         .fetch_optional(&mut *conn)
@@ -22,7 +22,7 @@ pub async fn get(
 pub async fn get_by_email(
     conn: &mut SqliteConnection,
     email: &EmailAddress,
-) -> Result<Option<Account>, PortError> {
+) -> Result<Option<Account>, InfraError> {
     let row = sqlx::query("SELECT * FROM accounts WHERE email = ?")
         .bind(email.as_str())
         .fetch_optional(&mut *conn)
@@ -36,7 +36,7 @@ pub async fn get_by_email(
 pub async fn get_by_home_account_id(
     conn: &mut SqliteConnection,
     home_account_id: &str,
-) -> Result<Option<Account>, PortError> {
+) -> Result<Option<Account>, InfraError> {
     let row = sqlx::query("SELECT * FROM accounts WHERE home_account_id = ?")
         .bind(home_account_id)
         .fetch_optional(&mut *conn)
@@ -47,7 +47,7 @@ pub async fn get_by_home_account_id(
         .map_err(Into::into)
 }
 
-pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError> {
+pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraError> {
     sqlx::query("SELECT * FROM accounts WHERE is_signed_in = 1 ORDER BY id")
         .fetch_all(&mut *conn)
         .await?
@@ -58,7 +58,7 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError
 }
 
 /// 全部账户行（含已退出）；别名冲突校验用。
-pub async fn list_all(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortError> {
+pub async fn list_all(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraError> {
     sqlx::query("SELECT * FROM accounts ORDER BY id")
         .fetch_all(&mut *conn)
         .await?
@@ -72,7 +72,7 @@ pub async fn list_all(conn: &mut SqliteConnection) -> Result<Vec<Account>, PortE
 ///
 /// 退出只清凭证并把 `is_signed_in=0`；未退出也可关掉 `include_in_all` 而不进跨账号扫描。
 /// 指定单账号过滤时不走此集合（见 [`resolve_list_account_ids`]）。
-pub async fn list_ids(conn: &mut SqliteConnection) -> Result<Vec<AccountId>, PortError> {
+pub async fn list_ids(conn: &mut SqliteConnection) -> Result<Vec<AccountId>, InfraError> {
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM accounts WHERE is_signed_in = 1 AND include_in_all = 1 ORDER BY id",
     )
@@ -85,7 +85,7 @@ pub async fn list_ids(conn: &mut SqliteConnection) -> Result<Vec<AccountId>, Por
 pub async fn resolve_list_account_ids(
     conn: &mut SqliteConnection,
     account_id: Option<&AccountId>,
-) -> Result<Vec<AccountId>, PortError> {
+) -> Result<Vec<AccountId>, InfraError> {
     if let Some(id) = account_id {
         return Ok(vec![id.clone()]);
     }
@@ -109,7 +109,7 @@ pub fn push_account_id_in<'qb>(
 pub async fn upsert_identity(
     conn: &mut SqliteConnection,
     account: &Account,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let aliases_json = serde_json::to_string(
         &account
             .aliases
@@ -117,7 +117,7 @@ pub async fn upsert_identity(
             .map(|a| a.as_str())
             .collect::<Vec<_>>(),
     )
-    .map_err(|e| PortError::Storage {
+    .map_err(|e| InfraError::Storage {
         message: format!("aliases_json 序列化失败: {e}"),
     })?;
     sqlx::query(
@@ -153,7 +153,7 @@ pub async fn upsert_identity(
     Ok(())
 }
 
-pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<(), PortError> {
+pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<(), InfraError> {
     let aliases_json = serde_json::to_string(
         &account
             .aliases
@@ -161,7 +161,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
             .map(|a| a.as_str())
             .collect::<Vec<_>>(),
     )
-    .map_err(|e| PortError::Storage {
+    .map_err(|e| InfraError::Storage {
         message: format!("aliases_json 序列化失败: {e}"),
     })?;
     sqlx::query(
@@ -209,7 +209,7 @@ pub async fn set_signed_in(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     signed_in: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -223,7 +223,7 @@ pub async fn set_signed_in(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("账户不存在: {account_id}"),
         });
     }
@@ -233,7 +233,7 @@ pub async fn set_signed_in(
 /// 进程启动时清掉遗留的 running，避免 UI 永久显示「同步中」。
 pub async fn clear_stale_mail_sync_running(
     conn: &mut SqliteConnection,
-) -> Result<u64, PortError> {
+) -> Result<u64, InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -256,7 +256,7 @@ pub async fn update_mail_sync_meta(
     error: Option<&str>,
     // 传入则更新「发起同步」时间；成功结束勿传成功时刻
     mail_sync_triggered_at: Option<TimestampMs>,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "UPDATE accounts SET mail_sync_status = ?, mail_sync_error = ?, mail_sync_triggered_at = COALESCE(?, mail_sync_triggered_at), updated_at = ?
          WHERE id = ?",
@@ -281,7 +281,7 @@ pub async fn update_contact_sync_meta(
     account_id: &AccountId,
     contact_delta_link: Option<&str>,
     contact_synced_at: Option<TimestampMs>,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "UPDATE accounts SET contact_delta_link = ?, contact_synced_at = COALESCE(?, contact_synced_at), updated_at = ?
          WHERE id = ?",
@@ -304,7 +304,7 @@ pub async fn update_display_settings(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     include_in_all: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -318,7 +318,7 @@ pub async fn update_display_settings(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("账户不存在: {account_id}"),
         });
     }
@@ -329,7 +329,7 @@ pub async fn update_aliases(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     aliases: &[EmailAddress],
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -340,7 +340,7 @@ pub async fn update_aliases(
             .map(|a| a.as_str())
             .collect::<Vec<_>>(),
     )
-    .map_err(|e| PortError::Storage {
+    .map_err(|e| InfraError::Storage {
         message: format!("aliases_json 序列化失败: {e}"),
     })?;
     let result = sqlx::query(
@@ -352,14 +352,14 @@ pub async fn update_aliases(
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("账户不存在: {account_id}"),
         });
     }
     Ok(())
 }
 
-pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), PortError> {
+pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), InfraError> {
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(id.as_str())
         .execute(&mut *conn)
@@ -373,7 +373,7 @@ pub async fn delete(conn: &mut SqliteConnection, id: &AccountId) -> Result<(), P
 pub async fn clear_local_chat_data(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let id = account_id.as_str();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

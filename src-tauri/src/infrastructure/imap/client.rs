@@ -2,7 +2,7 @@
 //!
 //! 使用阻塞 `imap` crate；异步边界由 `spawn_blocking` 包裹。
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{MailTlsMode, RemoteKey};
 use super::parse::decode_remote_key;
 use imap::Session;
@@ -27,19 +27,19 @@ pub enum ImapAuth {
 
 pub type ImapSession = Session<native_tls::TlsStream<TcpStream>>;
 
-fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, PortError> {
+fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, InfraError> {
     use std::net::ToSocketAddrs;
     let addr = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("IMAP 解析主机失败: {e}"),
         })?
         .next()
-        .ok_or_else(|| PortError::Network {
+        .ok_or_else(|| InfraError::Network {
             message: format!("IMAP 主机无可用地址: {}", endpoint.host),
         })?;
     let tcp = TcpStream::connect_timeout(&addr, IMAP_IO_TIMEOUT).map_err(|e| {
-        PortError::Network {
+        InfraError::Network {
             message: format!("IMAP 连接超时或失败: {e}"),
         }
     })?;
@@ -52,22 +52,22 @@ fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, PortError> {
 pub fn session_login_blocking(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
-) -> Result<ImapSession, PortError> {
+) -> Result<ImapSession, InfraError> {
     if matches!(auth, ImapAuth::OAuth2 { .. }) {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "通用 IMAP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
         });
     }
     let tls = TlsConnector::builder()
         .build()
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("TLS 构建失败: {e}"),
         })?;
 
     let client = match endpoint.tls {
         MailTlsMode::Implicit => {
             let tcp = connect_tcp(endpoint)?;
-            let tls_stream = tls.connect(&endpoint.host, tcp).map_err(|e| PortError::Network {
+            let tls_stream = tls.connect(&endpoint.host, tcp).map_err(|e| InfraError::Network {
                 message: format!("IMAP TLS 握手失败: {e}"),
             })?;
             imap::Client::new(tls_stream)
@@ -77,11 +77,11 @@ pub fn session_login_blocking(
             &endpoint.host,
             &tls,
         )
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("IMAP STARTTLS 连接失败: {e}"),
         })?,
         MailTlsMode::Plain => {
-            return Err(PortError::Remote {
+            return Err(InfraError::Remote {
                 message: "明文 IMAP 已禁用，请使用 TLS 或 STARTTLS".into(),
                 retryable: false,
             });
@@ -92,7 +92,7 @@ pub fn session_login_blocking(
         ImapAuth::Password { username, password } => {
             let username = username.trim();
             let password = password.trim();
-            client.login(username, password).map_err(|(e, _)| PortError::Auth {
+            client.login(username, password).map_err(|(e, _)| InfraError::Auth {
                 message: format!("IMAP 密码登录失败: {e}"),
             })
         }
@@ -103,17 +103,17 @@ pub fn session_login_blocking(
 pub async fn session_login(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
-) -> Result<ImapSession, PortError> {
+) -> Result<ImapSession, InfraError> {
     let endpoint = endpoint.clone();
     let auth = auth.clone();
     tokio::task::spawn_blocking(move || session_login_blocking(&endpoint, &auth))
         .await
-        .map_err(|e| PortError::Network {
+        .map_err(|e| InfraError::Network {
             message: format!("IMAP 登录任务失败: {e}"),
         })?
 }
 
-pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, PortError> {
+pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, InfraError> {
     Ok(discover_folder_tree(session)?
         .into_iter()
         .map(|f| f.name)
@@ -128,8 +128,8 @@ pub struct ImapFolderNode {
 }
 
 /// LIST 全树；按 delimiter 推导父路径（多级）。
-pub fn discover_folder_tree(session: &mut ImapSession) -> Result<Vec<ImapFolderNode>, PortError> {
-    let list = session.list(Some(""), Some("*")).map_err(|e| PortError::Remote {
+pub fn discover_folder_tree(session: &mut ImapSession) -> Result<Vec<ImapFolderNode>, InfraError> {
+    let list = session.list(Some(""), Some("*")).map_err(|e| InfraError::Remote {
         message: format!("IMAP LIST 失败: {e}"),
         retryable: true,
     })?;
@@ -154,8 +154,8 @@ pub fn discover_folder_tree(session: &mut ImapSession) -> Result<Vec<ImapFolderN
     Ok(out)
 }
 
-pub fn list_capabilities(session: &mut ImapSession) -> Result<(bool, Vec<String>), PortError> {
-    let caps = session.capabilities().map_err(|e| PortError::Remote {
+pub fn list_capabilities(session: &mut ImapSession) -> Result<(bool, Vec<String>), InfraError> {
+    let caps = session.capabilities().map_err(|e| InfraError::Remote {
         message: format!("IMAP CAPABILITY 失败: {e}"),
         retryable: true,
     })?;
@@ -170,13 +170,13 @@ pub fn uid_set_seen<T: std::io::Read + std::io::Write>(
     folder: &str,
     remote_key: &RemoteKey,
     is_read: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let (generation, uid) = decode_remote_key(remote_key)?;
-    let selected = session.select(folder).map_err(|_| PortError::Remote {
+    let selected = session.select(folder).map_err(|_| InfraError::Remote {
         message: "IMAP SELECT 失败".into(), retryable: true,
     })?;
     if selected.uid_validity != Some(generation) {
-        return Err(PortError::Conflict { message: "IMAP UIDVALIDITY 已改变，旧操作已停止，请同步后重新操作".into() });
+        return Err(InfraError::Conflict { message: "IMAP UIDVALIDITY 已改变，旧操作已停止，请同步后重新操作".into() });
     }
     let seq = format!("{uid}");
     let result = if is_read {
@@ -184,7 +184,7 @@ pub fn uid_set_seen<T: std::io::Read + std::io::Write>(
     } else {
         session.uid_store(&seq, "-FLAGS (\\Seen)")
     };
-    result.map_err(|e| PortError::Remote {
+    result.map_err(|e| InfraError::Remote {
         message: format!("IMAP STORE FLAGS 失败: {e}"),
         retryable: true,
     })?;
@@ -197,7 +197,7 @@ pub async fn uid_set_seen_async(
     folder: &str,
     remote_key: &RemoteKey,
     is_read: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let endpoint = endpoint.clone();
     let auth = auth.clone();
     let folder = folder.to_string();
@@ -209,7 +209,7 @@ pub async fn uid_set_seen_async(
         out
     })
     .await
-    .map_err(|e| PortError::Network {
+    .map_err(|e| InfraError::Network {
         message: format!("IMAP STORE 任务失败: {e}"),
     })?
 }
@@ -219,32 +219,32 @@ pub fn uid_delete<T: std::io::Read + std::io::Write>(
     session: &mut Session<T>,
     folder: &str,
     remote_key: &RemoteKey,
-) -> Result<(), PortError> {
-    let capabilities = session.capabilities().map_err(|_| PortError::Remote {
+) -> Result<(), InfraError> {
+    let capabilities = session.capabilities().map_err(|_| InfraError::Remote {
         message: "IMAP 删除能力检查失败，尚未标记删除".into(),
         retryable: true,
     })?;
     if !capabilities.has_str("UIDPLUS") {
-        return Err(PortError::Remote {
+        return Err(InfraError::Remote {
             message: "服务器不支持 UIDPLUS，无法安全永久删除单封邮件".into(),
             retryable: false,
         });
     }
     let (generation, uid) = decode_remote_key(remote_key)?;
-    let selected = session.select(folder).map_err(|_| PortError::Remote {
+    let selected = session.select(folder).map_err(|_| InfraError::Remote {
         message: "IMAP SELECT 失败".into(), retryable: true,
     })?;
     if selected.uid_validity != Some(generation) {
-        return Err(PortError::Conflict { message: "IMAP UIDVALIDITY 已改变，旧操作已停止，请同步后重新操作".into() });
+        return Err(InfraError::Conflict { message: "IMAP UIDVALIDITY 已改变，旧操作已停止，请同步后重新操作".into() });
     }
     let seq = format!("{uid}");
     session
         .uid_store(&seq, "+FLAGS (\\Deleted)")
-        .map_err(|e| PortError::Remote {
+        .map_err(|e| InfraError::Remote {
             message: format!("IMAP STORE \\Deleted 未确认，目标可能已标记删除: {e}"),
             retryable: true,
         })?;
-    session.uid_expunge(&seq).map_err(|e| PortError::Remote {
+    session.uid_expunge(&seq).map_err(|e| InfraError::Remote {
         message: format!("目标已标记 \\Deleted；UID EXPUNGE 未确认，未执行整夹清理: {e}"),
         retryable: true,
     })?;
@@ -256,7 +256,7 @@ pub async fn uid_delete_async(
     auth: &ImapAuth,
     folder: &str,
     remote_key: &RemoteKey,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     let endpoint = endpoint.clone();
     let auth = auth.clone();
     let folder = folder.to_string();
@@ -268,7 +268,7 @@ pub async fn uid_delete_async(
         out
     })
     .await
-    .map_err(|e| PortError::Network {
+    .map_err(|e| InfraError::Network {
         message: format!("IMAP 删除任务失败: {e}"),
     })?
 }
@@ -285,7 +285,7 @@ mod tests {
             &ImapEndpoint { host: "must-not-resolve.invalid".into(), port: 993, tls: MailTlsMode::Implicit },
             &ImapAuth::OAuth2 { username: "user".into(), access_token: "token".into() },
         ).err().unwrap();
-        assert!(matches!(error, PortError::Auth { .. }));
+        assert!(matches!(error, InfraError::Auth { .. }));
         assert!(error.to_string().contains("不支持 OAuth2"));
     }
 
@@ -311,7 +311,7 @@ mod tests {
         }
     }
 
-    fn delete_with_responses(responses: &str) -> (Result<(), PortError>, String) {
+    fn delete_with_responses(responses: &str) -> (Result<(), InfraError>, String) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         let stream = ScriptedStream {
             responses: Cursor::new(format!("a1 OK login\r\n{responses}").into_bytes()),
@@ -329,7 +329,7 @@ mod tests {
         let (result, commands) = delete_with_responses(
             "* CAPABILITY IMAP4rev1\r\na2 OK capabilities\r\n",
         );
-        assert!(matches!(result, Err(PortError::Remote { retryable: false, .. })));
+        assert!(matches!(result, Err(InfraError::Remote { retryable: false, .. })));
         assert!(!commands.contains("SELECT"));
         assert!(!commands.contains("STORE"));
         assert!(!commands.contains("EXPUNGE"));
@@ -340,7 +340,7 @@ mod tests {
         for selected in ["* OK [UIDVALIDITY 2] generation\r\n", ""] {
             let responses = format!("* CAPABILITY IMAP4rev1 UIDPLUS\r\na2 OK capabilities\r\n* FLAGS (\\Seen \\Deleted)\r\n* 1 EXISTS\r\n{selected}a3 OK selected\r\n");
             let (result, commands) = delete_with_responses(&responses);
-            assert!(matches!(result, Err(PortError::Conflict { .. })), "{result:?}");
+            assert!(matches!(result, Err(InfraError::Conflict { .. })), "{result:?}");
             assert!(!commands.contains("STORE"));
             assert!(!commands.contains("EXPUNGE"));
 
@@ -351,7 +351,7 @@ mod tests {
             };
             let mut session = imap::Client::new(stream).login("user", "secret").map_err(|(error, _)| error).unwrap();
             let result = uid_set_seen(&mut session, "INBOX", &RemoteKey::new("imap:1:20"), true);
-            assert!(matches!(result, Err(PortError::Conflict { .. })), "{result:?}");
+            assert!(matches!(result, Err(InfraError::Conflict { .. })), "{result:?}");
             assert!(!String::from_utf8(commands.lock().unwrap().clone()).unwrap().contains("STORE"));
         }
     }

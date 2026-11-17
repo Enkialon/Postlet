@@ -1,6 +1,7 @@
 //! 聚合后台用例：领取 jobs → decide_aggregation → 写 session_id → complete。
 
-use crate::application::dto::{AggregateClaim, ChangeOrigin, ChangeSet};
+use crate::application::dto::{ChangeOrigin, ChangeSet};
+use crate::infrastructure::repository::jobs::AggregateClaim;
 use crate::application::error::AppError;
 use crate::domain::entities::{Contact, Group, GroupParticipant, MessageWithRecipients};
 use crate::domain::services::{

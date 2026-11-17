@@ -1,17 +1,17 @@
 //! SQLite groups 模块函数；连接与事务由调用方持有。
 
-use crate::application::dto::{CursorPage, GroupListQuery};
-use crate::application::error::PortError;
 use crate::domain::entities::{Group, GroupParticipant};
 use crate::domain::value_objects::{AccountId, GroupId};
+use crate::infrastructure::error::InfraError;
 use crate::infrastructure::repository::accounts;
+use crate::query_page::CursorPage;
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection};
 
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &GroupId,
-) -> Result<Option<Group>, PortError> {
+) -> Result<Option<Group>, InfraError> {
     let row = sqlx::query("SELECT * FROM groups WHERE account_id = ? AND id = ?")
         .bind(account_id.as_str())
         .bind(id.as_str())
@@ -28,7 +28,7 @@ pub async fn get_for_display(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     id: &GroupId,
-) -> Result<Option<Group>, PortError> {
+) -> Result<Option<Group>, InfraError> {
     let mut group = match get(conn, account_id, id).await? {
         Some(g) => g,
         None => return Ok(None),
@@ -39,18 +39,21 @@ pub async fn get_for_display(
 
 pub async fn list(
     conn: &mut SqliteConnection,
-    query: &GroupListQuery,
-) -> Result<CursorPage<Group>, PortError> {
-    if query.limit == 0 || query.limit > 500 {
-        return Err(PortError::Conflict {
+    account_id: Option<&AccountId>,
+    cursor: Option<&str>,
+    limit: u32,
+    search: Option<&str>,
+) -> Result<CursorPage<Group>, InfraError> {
+    if limit == 0 || limit > 500 {
+        return Err(InfraError::Conflict {
             message: "分页大小须为 1..500".into(),
         });
     }
-    let account_ids = accounts::resolve_list_account_ids(conn, query.account_id.as_ref()).await?;
+    let account_ids = accounts::resolve_list_account_ids(conn, account_id).await?;
     if account_ids.is_empty() {
         return Ok(CursorPage::empty());
     }
-    let (cursor_account, cursor_id) = parse_entity_cursor(query.cursor.as_deref())?;
+    let (cursor_account, cursor_id) = parse_entity_cursor(cursor)?;
 
     let mut qb = QueryBuilder::new("SELECT * FROM groups WHERE ");
     accounts::push_account_id_in(&mut qb, &account_ids);
@@ -68,7 +71,7 @@ pub async fn list(
         qb.push(")");
     }
     qb.push(") AND (");
-    if let Some(search) = query.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(search) = search.map(str::trim).filter(|s| !s.is_empty()) {
         // 群名，或成员昵称/联系人昵称/地址前缀
         qb.push("instr(lower(name), lower(");
         qb.push_bind(search);
@@ -87,8 +90,7 @@ pub async fn list(
         qb.push_bind(search);
         qb.push(")) = 1 OR instr(lower(COALESCE(c.display_name, '')), lower(");
         qb.push_bind(search);
-        qb.push(")) = 1))",
-        );
+        qb.push(")) = 1))");
     } else {
         qb.push("1 = 1");
     }
@@ -103,13 +105,13 @@ pub async fn list(
             AND s.hidden_at IS NOT NULL
         ) ORDER BY account_id ASC, id ASC LIMIT ",
     );
-    qb.push_bind(i64::from(query.limit) + 1);
+    qb.push_bind(i64::from(limit) + 1);
 
     let rows = qb.build().fetch_all(&mut *conn).await?;
-    let has_more = rows.len() > query.limit as usize;
+    let has_more = rows.len() > limit as usize;
     let mut items = rows
         .iter()
-        .take(query.limit as usize)
+        .take(limit as usize)
         .map(super::rows::group)
         .collect::<Result<Vec<_>, _>>()?;
     for g in &mut items {
@@ -134,7 +136,7 @@ pub async fn resolve_auto_title(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     group_id: &GroupId,
-) -> Result<String, PortError> {
+) -> Result<String, InfraError> {
     let parts = list_participants(conn, account_id, group_id).await?;
     if parts.is_empty() {
         return Ok("群组".into());
@@ -166,7 +168,7 @@ pub async fn resolve_auto_title(
 async fn apply_display_name(
     conn: &mut SqliteConnection,
     group: &mut Group,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     if group.name_is_manual {
         return Ok(());
     }
@@ -174,7 +176,7 @@ async fn apply_display_name(
     Ok(())
 }
 
-pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), PortError> {
+pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO groups (
             id, account_id, name, name_is_manual, source, send_members_is_manual,
@@ -194,7 +196,7 @@ pub async fn insert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     Ok(())
 }
 
-pub async fn upsert(conn: &mut SqliteConnection, group: &Group) -> Result<(), PortError> {
+pub async fn upsert(conn: &mut SqliteConnection, group: &Group) -> Result<(), InfraError> {
     sqlx::query(
         "INSERT INTO groups (
             id, account_id, name, name_is_manual, source, send_members_is_manual,
@@ -220,7 +222,7 @@ pub async fn upsert(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     Ok(())
 }
 
-pub async fn update(conn: &mut SqliteConnection, group: &Group) -> Result<(), PortError> {
+pub async fn update(conn: &mut SqliteConnection, group: &Group) -> Result<(), InfraError> {
     let result = sqlx::query(
         "UPDATE groups SET
             name = ?, name_is_manual = ?, source = ?, send_members_is_manual = ?,
@@ -237,7 +239,7 @@ pub async fn update(conn: &mut SqliteConnection, group: &Group) -> Result<(), Po
     .execute(&mut *conn)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(PortError::Conflict {
+        return Err(InfraError::Conflict {
             message: format!("群组不存在: {}", group.id),
         });
     }
@@ -248,7 +250,7 @@ pub async fn list_participants(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     group_id: &GroupId,
-) -> Result<Vec<GroupParticipant>, PortError> {
+) -> Result<Vec<GroupParticipant>, InfraError> {
     sqlx::query(
         "SELECT * FROM group_participants WHERE account_id = ? AND group_id = ? ORDER BY normalized_address",
     )
@@ -267,13 +269,12 @@ pub async fn list_group_ids_with_addresses(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     addresses: &[crate::domain::value_objects::EmailAddress],
-) -> Result<Vec<GroupId>, PortError> {
+) -> Result<Vec<GroupId>, InfraError> {
     if addresses.is_empty() {
         return Ok(Vec::new());
     }
-    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-        "SELECT DISTINCT group_id FROM group_participants WHERE account_id = ",
-    );
+    let mut qb: QueryBuilder<Sqlite> =
+        QueryBuilder::new("SELECT DISTINCT group_id FROM group_participants WHERE account_id = ");
     qb.push_bind(account_id.as_str());
     qb.push(" AND normalized_address IN (");
     {
@@ -283,7 +284,10 @@ pub async fn list_group_ids_with_addresses(
         }
     }
     qb.push(")");
-    let rows = qb.build_query_scalar::<String>().fetch_all(&mut *conn).await?;
+    let rows = qb
+        .build_query_scalar::<String>()
+        .fetch_all(&mut *conn)
+        .await?;
     Ok(rows.into_iter().map(GroupId::new).collect())
 }
 
@@ -292,7 +296,7 @@ pub async fn find_auto_group_by_exact_members(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     members: &[crate::domain::value_objects::EmailAddress],
-) -> Result<Option<GroupId>, PortError> {
+) -> Result<Option<GroupId>, InfraError> {
     if members.is_empty() {
         return Ok(None);
     }
@@ -327,7 +331,7 @@ pub async fn find_auto_group_by_exact_members(
 pub async fn upsert_participants(
     conn: &mut SqliteConnection,
     participants: &[GroupParticipant],
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     for p in participants {
         sqlx::query(
             "INSERT INTO group_participants (
@@ -361,7 +365,7 @@ pub async fn replace_send_members(
     group_id: &GroupId,
     members: &[GroupParticipant],
     send_members_is_manual: bool,
-) -> Result<(), PortError> {
+) -> Result<(), InfraError> {
     sqlx::query(
         "UPDATE group_participants SET is_send_member = 0
          WHERE account_id = ? AND group_id = ?",
@@ -391,7 +395,7 @@ pub async fn replace_send_members(
 
 fn parse_entity_cursor(
     cursor: Option<&str>,
-) -> Result<(Option<String>, Option<String>), PortError> {
+) -> Result<(Option<String>, Option<String>), InfraError> {
     let Some(raw) = cursor else {
         return Ok((None, None));
     };

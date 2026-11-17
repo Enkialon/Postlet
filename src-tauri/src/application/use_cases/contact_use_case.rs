@@ -1,8 +1,9 @@
 //! 联系人用例
 use crate::infrastructure::repository::contacts;
+use crate::query_page::CursorPage;
 use sqlx::SqlitePool;
 
-use crate::application::dto::{ContactListQuery, CursorPage};
+use crate::application::dto::ContactListQuery;
 use crate::application::error::AppError;
 use crate::domain::entities::Contact;
 use crate::domain::value_objects::{AccountId, ContactId, EmailAddress};
@@ -15,7 +16,15 @@ pub async fn list_contacts(
     query: ContactListQuery,
 ) -> Result<CursorPage<Contact>, AppError> {
     let mut conn = db.acquire().await?;
-    contacts::list(&mut conn, &query).await.map_err(Into::into)
+    contacts::list(
+        &mut conn,
+        query.account_id.as_ref(),
+        query.cursor.as_deref(),
+        query.limit,
+        query.search.as_deref(),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 /// 在指定账户内按本地联系人 ID 查询；不存在时返回未找到错误。

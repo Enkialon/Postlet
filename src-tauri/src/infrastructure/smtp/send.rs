@@ -1,6 +1,6 @@
 //! SMTP 发送实现（lettre）
 
-use crate::application::error::PortError;
+use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::MailTlsMode;
 use lettre::message::{header, Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -48,13 +48,13 @@ pub struct SmtpSendResult {
     pub accepted: bool,
 }
 
-fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, PortError> {
+fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, InfraError> {
     let parsed = if name.trim().is_empty() {
         addr.parse()
     } else {
         format!("{name} <{addr}>").parse()
     };
-    parsed.map_err(|e| PortError::Remote {
+    parsed.map_err(|e| InfraError::Remote {
         message: format!("无效邮箱地址: {e}"),
         retryable: false,
     })
@@ -64,9 +64,9 @@ pub async fn send_message(
     endpoint: &SmtpEndpoint,
     auth: &SmtpAuth,
     mail: &SmtpOutgoing,
-) -> Result<SmtpSendResult, PortError> {
+) -> Result<SmtpSendResult, InfraError> {
     if matches!(auth, SmtpAuth::OAuth2 { .. }) {
-        return Err(PortError::Auth {
+        return Err(InfraError::Auth {
             message: "通用 SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
         });
     }
@@ -91,19 +91,19 @@ pub async fn send_message(
 
     let message = build_body(builder, mail)?;
 
-    let tls_params = TlsParameters::new(endpoint.host.clone()).map_err(|e| PortError::Network {
+    let tls_params = TlsParameters::new(endpoint.host.clone()).map_err(|e| InfraError::Network {
         message: format!("SMTP TLS 参数失败: {e}"),
     })?;
 
     let builder = match endpoint.tls {
         MailTlsMode::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(&endpoint.host)
-            .map_err(|e| PortError::Network {
+            .map_err(|e| InfraError::Network {
                 message: format!("SMTP relay 失败: {e}"),
             })?
             .port(endpoint.port)
             .tls(Tls::Wrapper(tls_params)),
         MailTlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::relay(&endpoint.host)
-            .map_err(|e| PortError::Network {
+            .map_err(|e| InfraError::Network {
                 message: format!("SMTP relay 失败: {e}"),
             })?
             .port(endpoint.port)
@@ -126,7 +126,7 @@ pub async fn send_message(
     transport
         .send(message)
         .await
-        .map_err(|e| PortError::Remote {
+        .map_err(|e| InfraError::Remote {
             message: format!("SMTP 发送失败: {e}"),
             retryable: true,
         })?;
@@ -134,7 +134,7 @@ pub async fn send_message(
     Ok(SmtpSendResult { accepted: true })
 }
 
-fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, PortError> {
+fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, InfraError> {
     let text = mail.text_body.clone().unwrap_or_default();
     let html = mail.html_body.clone();
 
@@ -143,12 +143,12 @@ fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, P
             let multipart = MultiPart::alternative()
                 .singlepart(SinglePart::plain(text))
                 .singlepart(SinglePart::html(html));
-            return builder.multipart(multipart).map_err(|e| PortError::Remote {
+            return builder.multipart(multipart).map_err(|e| InfraError::Remote {
                 message: format!("构造邮件失败: {e}"),
                 retryable: false,
             });
         }
-        return builder.body(text).map_err(|e| PortError::Remote {
+        return builder.body(text).map_err(|e| InfraError::Remote {
             message: format!("构造邮件失败: {e}"),
             retryable: false,
         });
@@ -174,7 +174,7 @@ fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, P
         mixed = mixed.singlepart(part);
     }
 
-    builder.multipart(mixed).map_err(|e| PortError::Remote {
+    builder.multipart(mixed).map_err(|e| InfraError::Remote {
         message: format!("构造带附件邮件失败: {e}"),
         retryable: false,
     })
@@ -196,7 +196,7 @@ mod tests {
             &SmtpAuth::OAuth2 { username: "user".into(), access_token: "token".into() },
             &mail,
         ).await.unwrap_err();
-        assert!(matches!(error, PortError::Auth { .. }));
+        assert!(matches!(error, InfraError::Auth { .. }));
         assert!(error.to_string().contains("不支持 OAuth2"));
     }
 }
