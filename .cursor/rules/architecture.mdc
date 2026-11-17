@@ -13,5 +13,6 @@ alwaysApply: true
 - 入站在前端（Port → Adapter → RS 桥）；`commands/` 仅 IPC 胶水，非业务入站层
 - UI 不直接 `invoke` 散落业务
 - 文件夹不是主导航模型
+- **统一邮件模型以 IMAP 语义为准**：domain / DTO / **SQLite 表**禁止 Graph 专名；仅 `infrastructure/graph` 可出现 Graph API 名并映射进去（见 `mail-model-imap-canonical.mdc`）
 
 详见根目录 `AGENTS.md`。

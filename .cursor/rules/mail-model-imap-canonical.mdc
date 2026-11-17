@@ -1,0 +1,42 @@
+---
+description: 邮件领域与库表以 IMAP 语义为准；Graph 专名仅限 infrastructure/graph
+alwaysApply: true
+---
+
+# 邮件模型：IMAP 为规范，Graph 只做映射
+
+跨 Graph / IMAP 的**统一领域、仓储、前端 DTO、设置 UI、SQLite 表**必须用 **IMAP 可表达的语义**（文件夹 SPECIAL-USE 角色、UID/游标、消息归属夹等）。**禁止**把 Microsoft Graph 专有字段名或枚举当作统一模型的一等公民。
+
+## 硬约束
+
+- **Canonical = IMAP**：文件夹角色、同步策略、垃圾夹、增量游标等，先按 IMAP（含 RFC 6154 SPECIAL-USE 一类概念）设计；Graph 在 `infrastructure/graph` **映射进该形状**
+- **数据库表坚决禁止 Graph 专名**：`migrations/`、统一落库列名、索引语义不得出现 `well_known_name` / `junkemail` / `sentitems` / `change_key` / Graph-only delta URL 等；列名与取值须协议中性或 IMAP 对齐（例：`role = junk`，`remote_id`，IMAP 形状游标）
+- **领域 / 前端 Port / 统一 DTO 同样禁止** Graph 专有词成为跨协议字段或 UI 文案依赖
+- **允许**：`infrastructure/graph` 内部为查询/解析使用 Graph API 名（well-known、changeKey、deltaLink 等）；**写入 SQLite / 出站到 domain 之前必须译成**统一 IMAP 对齐语义（例：`junkemail` → 文件夹 `role = junk`）
+- **禁止**：为 Graph 再造第二套「只在 Outlook 账号生效」的业务字段或表列；禁止 UI/用例 `if graph { … } else { … }` 分叉业务含义
+- **存量例外**：已有远端主键类列（如历史 `graph_id`）若仍表示「远端消息 id」，新设计与破坏性重构应改为协议中性命名（如 `remote_id`）；**新增**列/能力不得再引入 Graph 专名
+
+## 边界对照
+
+```text
+❌ BAD — 库表 / domain / 前端
+mail_folder_sync_state.well_known_name = 'junkemail'
+messages.graph_change_key
+messages.is_graph_junk
+
+✅ GOOD — 库表 / domain / 前端（IMAP 语义）
+mail_folder_sync_state.role = 'junk'   -- SPECIAL-USE 对齐
+messages.folder_id                     -- junk 由 folder.role 派生
+messages.remote_id                     -- 协议中性远端主键
+
+✅ GOOD — 仅 infrastructure/graph（可出现 Graph 词）
+GET .../mailFolders/... ; map_well_known("junkemail") -> FolderRole::Junk
+parse changeKey locally, do not persist as graph_change_key column
+```
+
+## 检查
+
+- [ ] 新迁移列名在纯 IMAP 账号上是否有同等含义、且不含 Graph 专名？
+- [ ] Graph 特有名是否只出现在 `infrastructure/graph`（及该层临时解析结构）？
+- [ ] 落库前是否已译成 IMAP/协议中性形状？
+- [ ] 调度/垃圾/频率是否读统一文件夹投影（如 `role`），而非 Graph well-known 字符串？

@@ -1,101 +1,97 @@
-# 联系人会话优先邮件客户端 — Agent 指南
+# Postlet — Agent 指南
 
-## 版本阶段（硬约束）
+## 1. 核心工程原则
 
-本仓库是**未上线的第一版（V1）**产品开发，不是已发布客户端的维护分支。
+- **第一性原则**：从实际问题和业务本质出发，不受既有设计模式、架构惯例束缚。
+- **KISS**：正确性、安全性优先；在满足约束的方案中，始终选择最简单的。
+- **YAGNI**：不为假设的未来需求、理论上的通用性或极端场景提前设计。
+- **简化优先**：遇到复杂问题，先考虑能否简化模型、消除问题，而不是增加抽象和补偿机制。
+- **最小改动**：优先复用现有代码、数据结构和依赖；不增加无明确必要性的层、接口或框架。
+- **设计约束**：遵循已确认的设计文档。发现更简单的方案可以提出，但不得擅自改变业务规则或扩大任务范围。
 
-- **不考虑**对旧安装、旧本地库、旧 IPC / DTO、旧配置文件的兼容升级与迁移包袱
-- 需要改模型、删字段、换协议形状、重构 UI 时：**直接改到正确形态**，不要为「万一有人升级」保留双轨、废弃别名或临时垫片
-- 目标是把 **V1 一次做对**：清晰架构、干净数据形状、可维护实现；错误设计宁可拆掉重做，也不要堆兼容层
-- 若确需本地开发库重置，以迁移/清库说明即可，不为此保留长期兼容代码
+**核心准则：任何新增复杂度都必须证明其必要性。代码量最少不等于整体设计最简单。**
 
-## 产品定位
+## 2. V1 阶段约束
 
-基于 **Tauri 2** 的桌面邮件客户端：UI 以**联系人 / 会话（conversation）**为一等公民，而不是传统文件夹收件箱优先。
+本项目尚未上线，目标是实现干净、正确、可维护的 V1。
 
-- 支持 **Microsoft Outlook / Microsoft Graph** 与 **通用 IMAP + SMTP**
-- 协议按账号配置选择（`receive_protocol` / `send_protocol`），**不得**把服务商名称直接等同于协议类型
-- 邮件、联系人、会话列表均围绕「与某人的往来」组织；文件夹只是协议同步投影，不是主导航
+- 不考虑旧安装、数据库、IPC、DTO、配置的升级兼容。
+- 错误设计直接修正，不保留兼容双轨、废弃别名或临时垫片。
+- 必要时允许重建开发数据库，不为迁移历史数据增加长期代码。
+- 不擅自增加 V1 范围或实现设计文档明确暂缓的功能。
 
-## 技术栈硬约束
+## 3. 产品与业务模型
 
-| 层 | 选型 | 禁止 |
-|---|---|---|
-| 桌面壳 | Tauri 2 | Electron / 纯 Web 壳 |
-| Graph 客户端 | `graph-rs-sdk`（Rust） | 前端直连 Graph、其他 Graph SDK |
-| IMAP / SMTP | Rust 基础设施模块（如 `async-imap` / `lettre`） | 前端直连邮箱协议 |
-| 邮件后端 | Graph 与 IMAP+SMTP 并存，按账号协议字段路由 | 用品牌名硬编码协议 |
-| Rust 架构 | DDD | 大泥球 / 命令里直接堆协议调用 |
-| 前端 ↔ Rust | 适配器：先接口，再实现调 RS 桥 | UI 组件直接 `invoke` 散落业务 |
+Postlet 是基于 **Tauri 2** 的联系人/会话优先桌面邮件客户端。
 
-## 入站边界（桌面应用）
+- **Session 是一等公民**；Contact/Group 是关联实体或投影，文件夹不是默认主导航。
+- Message 属于一个 Account、一个 Session，最多对应一个远端位置。
+- 不同账号、不同远端位置的 Message 独立；同位置重复同步必须幂等。
+- 移动按旧位置移除、新位置新增处理，不进行跨位置内容去重或身份合并。
+- 支持 Microsoft Graph 和通用 IMAP/SMTP，按账号协议配置路由，不根据邮箱品牌硬编码。
+- 以标准 IMAP/RFC 能力为统一业务基线；Graph 专有身份属性不得参与业务身份、会话归属或去重规则。
 
-本项目是桌面应用：**前端（Port + Adapter）就是入站适配器**，不在 Rust 侧再单独建 `interfaces/` 入站层。
+## 4. 技术栈与架构
 
-## Rust DDD 分层
+- 桌面：Tauri 2；前端：Vue 3。
+- Graph：Rust `graph-rs-sdk`。
+- IMAP/SMTP：Rust infrastructure 中的协议模块。
+- 存储：SQLite。
+- 所有邮件协议访问均在 Rust，前端不直接请求 Graph/IMAP/SMTP。
 
-```
+### Rust 分层
+
+```text
 src-tauri/
-  domain/          # 实体、值对象、纯规则函数（纯 Rust，无 Graph/IMAP/Tauri/SQLx）
-  application/     # 用例模块函数，直接调用基础设施并控制事务
-  infrastructure/  # SQLite Repository、Graph、IMAP、SMTP、OAuth 模块函数
-  commands/        # 可选：Tauri IPC 薄胶水（非 DDD 层，仅 serde/invoke 桥接）
-  runtime/         # 变更分发、邮件同步 / IDLE / 轮询调度
+  domain/          # 实体、值对象、纯业务规则
+  application/     # 用例编排、事务控制
+  infrastructure/  # SQLite、Graph、IMAP、SMTP、OAuth
+  commands/        # Tauri IPC 薄胶水
+  runtime/         # 后台调度、事件分发
 ```
 
-规则：
+约束：
 
-1. **依赖方向**：`commands`（薄）→ `application` → `infrastructure`（具体模块函数）/ `domain`（纯规则）；`infrastructure` → `domain`。Application 允许使用 `SqlitePool` 与具体事务。
-2. **domain 零 IO**：不得依赖 `graph-rs-sdk`、IMAP/SMTP 库、`tauri`、文件系统、网络
-3. **Rust 用例与 Repository 使用模块函数**：不注入 Repository / TransactionManager / Policy trait 对象；用例接收 `&SqlitePool`，Repository 借用同一事务连接。Graph / IMAP / SMTP 调用只出现在 `infrastructure`。前端 Port 接口约定不变。
-4. **会话优先模型**：领域核心是 `Session`（一等公民）；`Contact` / `Group` 是会话关联投影；`Message` 只属一个 `session_id`；文件夹不是主导航
-5. **协议扩展**：在 `infrastructure` 增加对等模块函数（与现有 `graph::mail` 同形），由 application 按账号协议路由；避免重复造第二套同步/存储/调度
-6. 新增能力顺序：领域概念与纯规则 → Repository 模块函数契约 → Application 编排与基础设施实现 →（如需）Tauri command 胶水；跨仓储写入由 Application 控制同一数据库事务。
-7. **不设 `interfaces/`**：真正的入站在前端；Rust `commands/` 只做 IPC，不算业务入站层
+- domain 无 IO，不依赖 Tauri、数据库或协议库。
+- application 调用具体 infrastructure 模块函数；不依赖 runtime 或 Tauri AppState。
+- infrastructure 不反向依赖 application。
+- Repository/UseCase 使用模块函数，不引入 Repository、TransactionManager trait 对象。
+- application 可以使用 SqlitePool，并显式管理跨仓储事务。
+- 协议差异限制在 infrastructure，不复制整套业务架构。
+- Graph 专有字段不得进入统一领域模型或通用数据库结构。
+- 不额外创建 Rust `interfaces/` 层；commands 只处理 IPC。
 
-## 前端适配器约定（真正的入站）
+### 前端 Port / Adapter
 
-前端不直接把业务绑在 Tauri `invoke` 上，统一走适配器：
-
+```text
+UI / Features
+      ↓
+Ports（接口）
+      ↑
+Adapters（Tauri invoke）
 ```
-ui / features
-    ↓ 依赖
-ports（接口：TypeScript interface / 抽象）
-    ↓ 由实现类满足
-adapters（实现类：调用 RS 桥 / invoke）
-```
 
-强制顺序：
+- UI、hooks、stores 依赖 Port，不直接调用 `invoke`。
+- Tauri Adapter 实现 Port，统一处理 IPC 调用。
+- 优先复用已有 Port/Adapter，不为每个功能创建新接口。
+- commands 不包含业务规则或协议实现。
 
-1. **先写接口**（如 `MailPort`、`ContactPort`、`SessionPort`）
-2. **再写实现类**（如 `TauriMailAdapter`），内部调用 RS 桥
-3. UI / hooks / stores **只依赖接口**，通过 DI / 工厂注入实现
+## 5. Agent 工作规则
 
-禁止：
+1. 修改前先阅读相关代码和设计文档，理解现有实现。
+2. 先找最简单的正确方案，不机械套用 DDD、设计模式或分层流程。
+3. 只修改任务涉及的部分，不顺手扩展功能或重构无关模块。
+4. 仅在确实涉及某一层时修改该层，不为遵循固定流程而创建无用代码。
+5. 保留必要的错误处理、数据安全和失败恢复，不以简单为由牺牲正确性。
+6. 完成后验证相关功能；未验证的行为不得宣称已通过。
+7. 如发现设计存在问题，说明更简单的替代方案及影响，不擅自推翻已确认的业务不变量。
 
-- 页面/组件里直接 `invoke('xxx')` 拼业务
-- 为「省事」跳过接口，让 feature 绑定具体 adapter
-- 在前端再包一层 Graph REST 或 IMAP/SMTP（所有协议流量经 Rust）
+## 6. 非目标
 
-## RS 桥（Tauri commands，IPC 胶水）
+- 自建邮件服务器或服务端中转。
+- 以文件夹为中心的传统邮件 UI。
+- 按邮箱品牌维护独立业务架构。
+- 未上线 V1 的历史版本兼容。
+- 没有明确需求的通用框架和提前扩展设计。
 
-- 非 DDD 分层：仅参数校验 → 调 application 用例 → 映射可序列化 DTO
-- 不在 command 内写 Graph / IMAP / SMTP 细节或业务规则
-- 错误：统一映射到前端可展示的结构
-
-## 实现时检查清单
-
-- [ ] 是否按未上线 V1 处理：无兼容双轨、无「仅为升级」的垫片？
-- [ ] 新功能是否从领域规则/模块契约开始，而不是从协议 endpoint 或 UI 开始？
-- [ ] Graph 是否只在 `infrastructure` + `graph-rs-sdk`？IMAP/SMTP 是否只在对应 infrastructure 模块？
-- [ ] 前端是否先有 Port 接口，再有调用 RS 桥的 Adapter？
-- [ ] UI 是否按联系人/会话导航，而非文件夹优先？
-- [ ] domain 是否仍无 Tauri / Graph / IMAP / SMTP 依赖？
-- [ ] 是否按账号协议字段路由，而非按服务商品牌硬编码？
-
-## 非目标（当前不做）
-
-- 服务端中转 / 自建邮件服务器
-- 以文件夹树为默认信息架构
-- 为每个邮箱品牌单独一套业务架构（协议能力复用同一同步与存储）
-- 已发布版本之间的向前/向后兼容与灰度迁移方案（产品尚未上线）
+**最终原则：解决真实问题，选择最简单的正确实现。不要为了架构而架构。**
