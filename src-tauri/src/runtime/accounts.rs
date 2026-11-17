@@ -47,7 +47,10 @@ pub async fn sign_out(state: &AppState, account_id: &AccountId) -> Result<(), Ap
 
 pub async fn clear_local_data(state: &AppState, account_id: &AccountId) -> Result<(), AppError> {
     let _paused = quiesce(state, account_id).await?;
-    account_use_case::clear_local_data(state, account_id).await
+    let changeset =
+        account_use_case::clear_local_data(&state.db, &state.paths, account_id).await?;
+    state.changes.dispatch(changeset);
+    Ok(())
 }
 
 pub async fn upsert_imap_smtp_account(

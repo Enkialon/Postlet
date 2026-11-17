@@ -28,16 +28,6 @@ fn now_ms() -> TimestampMs {
         .unwrap_or(0)
 }
 
-/// 本地入队后异步冲刷远端；不阻塞用例返回（调度器仍会兜底）。
-fn spawn_flush_due_mutations(db: &SqlitePool, paths: &AppPaths, account_id: &AccountId) {
-    let db = db.clone();
-    let paths = paths.clone();
-    let account_id = account_id.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = flush_due_mutations(&db, &paths, &account_id, 32).await;
-    });
-}
-
 fn backoff_ms(attempts: i32) -> i64 {
     let exp = attempts.clamp(0, 6) as u32;
     (5_000i64).saturating_mul(1i64 << exp).min(15 * 60_000)
@@ -117,7 +107,6 @@ pub async fn ensure_message_body(
 /// 批量修改已读：本地更新 + 入队后立即返回；远端由后台 flush。
 pub async fn mark_read(
     db: &SqlitePool,
-    paths: &AppPaths,
     cmd: MarkMessagesReadCommand,
 ) -> Result<ChangeSet, AppError> {
     let mut tx = db.begin().await?;
@@ -134,16 +123,13 @@ pub async fn mark_read(
     }
     tx.commit().await?;
 
-    if !changed.is_empty() {
-        spawn_flush_due_mutations(db, paths, &cmd.account_id);
-    }
-
     Ok(ChangeSet {
         account_id: cmd.account_id,
         session_ids,
-        message_ids: changed,
+        message_ids: changed.clone(),
         new_incoming_ids: Vec::new(),
         account_cleared: false,
+        pending_remote_flush: !changed.is_empty(),
         origin: ChangeOrigin::UserAction,
     })
 }
@@ -151,7 +137,6 @@ pub async fn mark_read(
 /// 批量删除邮件：本地软删 + 入队后立即返回；远端由后台 flush。
 pub async fn delete_messages(
     db: &SqlitePool,
-    paths: &AppPaths,
     cmd: DeleteMessagesCommand,
 ) -> Result<ChangeSet, AppError> {
     if cmd.message_ids.is_empty() {
@@ -161,6 +146,7 @@ pub async fn delete_messages(
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
             account_cleared: false,
+            pending_remote_flush: false,
             origin: ChangeOrigin::UserAction,
         });
     }
@@ -194,16 +180,13 @@ pub async fn delete_messages(
     }
     tx.commit().await?;
 
-    if !changed.is_empty() {
-        spawn_flush_due_mutations(db, paths, &cmd.account_id);
-    }
-
     Ok(ChangeSet {
         account_id: cmd.account_id,
         session_ids,
-        message_ids: changed,
+        message_ids: changed.clone(),
         new_incoming_ids: Vec::new(),
         account_cleared: false,
+        pending_remote_flush: !changed.is_empty(),
         origin: ChangeOrigin::UserAction,
     })
 }

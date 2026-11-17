@@ -15,8 +15,8 @@
 |---|---|---|---|
 | 01 | [完成收发认证拆分并恢复构建](01-auth-configuration.md) | A-05、I-17 | 无（已完成） |
 | 02 | [移除统一账号模型中的 Graph 专有身份](02-account-identity.md) | Account Graph 登录元数据清理（A-01 的账号投影残留）；A-02 仅回归确认，不重做 | 01（已完成） |
-| 03 | [持久化草稿和受管理附件](03-attachment-storage.md) | I-07；为 I-08 提供内容引用，队列归 Task 08 | 01 |
-| 04 | [移除用例反向依赖并提供受控 worker 入口](04-application-runtime-boundary.md) | A-03、A-02 | 01、02 |
+| 03 | [持久化草稿和受管理附件](03-attachment-storage.md)（已完成） | I-07；为 I-08 提供内容引用，队列归 Task 08 | 01 |
+| 04 | [移除用例反向依赖并提供受控 worker 入口](04-application-runtime-boundary.md)（已完成） | A-03、A-02 | 01、02 |
 | 05 | [持久化账号变更版本并恢复前端刷新](05-change-version.md) | A-03 | 04 |
 | 06 | [生成可重放的发送内容和正确回复头](06-outbound-snapshot.md) | I-07、I-08、I-11、A-06 | 03、04 |
 | 07 | [分类 SMTP 错误与不确定结果](07-smtp-results.md) | I-18、I-08 | 01、06 |

@@ -1,6 +1,6 @@
 //! 账号任务持有 gate；取消等待者只发信号，后台任务必须完成退出与收尾。
 
-use crate::application::dto::TriggerMailSyncCommand;
+use crate::application::dto::{ChangeSet, TriggerMailSyncCommand};
 use crate::application::error::AppError;
 use crate::application::use_cases::sync_use_case;
 use crate::domain::entities::MailFolderSyncState;
@@ -44,35 +44,36 @@ pub async fn trigger_mail_sync(
     changes: &ChangeDispatcher,
     gate: &MailSyncGate,
     cmd: TriggerMailSyncCommand,
-) -> Result<(), AppError> {
-    trigger_mail_sync_controlled(
+) -> Result<Option<ChangeSet>, AppError> {
+    let result = trigger_mail_sync_controlled(
         db,
         paths,
-        changes,
         gate,
         cmd,
         MailOperation::new(Duration::from_secs(10 * 60)),
     )
-    .await
+    .await?;
+    if let Some(changeset) = &result {
+        changes.dispatch(changeset.clone());
+    }
+    Ok(result)
 }
 
 pub(crate) async fn trigger_mail_sync_controlled(
     db: &SqlitePool,
     paths: &AppPaths,
-    changes: &ChangeDispatcher,
     gate: &MailSyncGate,
     cmd: TriggerMailSyncCommand,
     operation: MailOperation,
-) -> Result<(), AppError> {
+) -> Result<Option<ChangeSet>, AppError> {
     let account_id = cmd.account_id.to_string();
     let db = db.clone();
     let paths = paths.clone();
-    let changes = changes.clone();
     run_owned(gate, &account_id, operation, move |operation| async move {
-        sync_use_case::trigger_mail_sync(&db, &paths, &changes, &operation, cmd).await
+        sync_use_case::trigger_mail_sync(&db, &paths, &operation, cmd).await
     })
-    .await?;
-    Ok(())
+    .await?
+    .ok_or_else(|| AppError::conflict("邮件同步进行中，请稍后重试"))
 }
 
 pub async fn refresh_mail_folders(
@@ -190,4 +191,17 @@ mod tests {
         assert!(caller.await.unwrap().is_err());
         assert!(gate.try_acquire("a").is_some());
     }
+}
+
+/// 本地已提交的待推远端变更：立即在后台冲刷，调度器仍会兜底。
+pub fn spawn_pending_flush(db: SqlitePool, paths: AppPaths, account_id: AccountId) {
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::application::use_cases::message_use_case::flush_due_mutations(
+            &db,
+            &paths,
+            &account_id,
+            32,
+        )
+        .await;
+    });
 }

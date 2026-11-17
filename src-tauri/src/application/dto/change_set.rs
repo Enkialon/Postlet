@@ -13,6 +13,9 @@ pub struct ChangeSet {
     /// 账号本地数据被整表清空（如清理数据）；前端应整列表失效
     #[serde(default)]
     pub account_cleared: bool,
+    /// 已入队待推远端的变更；runtime 据此立即冲刷（取值为本地信号，不参与前端渲染）
+    #[serde(default)]
+    pub pending_remote_flush: bool,
     pub origin: ChangeOrigin,
 }
 
@@ -38,12 +41,14 @@ impl ChangeSet {
             message_ids: Vec::new(),
             new_incoming_ids: Vec::new(),
             account_cleared: false,
+            pending_remote_flush: false,
             origin,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         !self.account_cleared
+            && !self.pending_remote_flush
             && self.session_ids.is_empty()
             && self.message_ids.is_empty()
             && self.new_incoming_ids.is_empty()

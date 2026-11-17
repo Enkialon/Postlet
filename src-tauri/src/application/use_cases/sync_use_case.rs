@@ -26,7 +26,6 @@ use crate::infrastructure::repository::{
     sessions,
 };
 use crate::application::use_cases::aggregate_worker_use_case;
-use crate::runtime::ChangeDispatcher;
 use crate::infrastructure::mail::operation::MailOperation;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -86,10 +85,9 @@ async fn load_mail_sync_transport(
 pub async fn trigger_mail_sync(
     db: &SqlitePool,
     paths: &AppPaths,
-    changes: &ChangeDispatcher,
     operation: &MailOperation,
     cmd: TriggerMailSyncCommand,
-) -> Result<(), AppError> {
+) -> Result<Option<ChangeSet>, AppError> {
     operation.checkpoint()?;
     let cmd = &cmd;
     let mut conn = db.acquire().await?;
@@ -133,9 +131,6 @@ pub async fn trigger_mail_sync(
             )
             .await
             .map_err(AppError::from)?;
-            if !changeset.is_empty() {
-                changes.dispatch(changeset);
-            }
             // 同步后重入队再排空：修正 In-Reply-To 误挂私聊、同成员自动群复用
             let _ = aggregate_worker_use_case::requeue_account_messages(
                 db,
@@ -143,9 +138,8 @@ pub async fn trigger_mail_sync(
                 512,
             )
             .await;
-            let _ =
-                aggregate_worker_use_case::process_available_jobs(db, Some(changes), 256).await;
-            Ok(())
+            let (_, aggregated) = aggregate_worker_use_case::process_available_jobs(db, 256).await?;
+            Ok(merge_changesets(changeset, aggregated))
         }
         Err(e) => {
             if let Ok(mut c) = db.acquire().await {
@@ -241,6 +235,23 @@ async fn sync_graph_mail(
     let mut seen = HashSet::new();
     changeset.session_ids.retain(|c| seen.insert(c.clone()));
     Ok(changeset)
+}
+
+/// 合并两个已提交的 ChangeSet；都为空时返回 None。
+pub fn merge_changesets(a: ChangeSet, b: Option<ChangeSet>) -> Option<ChangeSet> {
+    let Some(b) = b else {
+        return (!a.is_empty()).then_some(a);
+    };
+    let mut out = a;
+    out.session_ids.extend(b.session_ids);
+    out.message_ids.extend(b.message_ids);
+    out.new_incoming_ids.extend(b.new_incoming_ids);
+    out.account_cleared |= b.account_cleared;
+    let mut seen = HashSet::new();
+    out.session_ids.retain(|c| seen.insert(c.clone()));
+    let mut seen_msg = HashSet::new();
+    out.message_ids.retain(|c| seen_msg.insert(c.clone()));
+    (!out.is_empty()).then_some(out)
 }
 
 /// 已提交的文件夹进度决定是否继续补拉，不依赖 IDLE 新邮件事件。

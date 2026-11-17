@@ -12,8 +12,8 @@ use crate::domain::value_objects::{
     RecipientRole, SessionId, TimestampMs,
 };
 use crate::infrastructure::attachment_store;
+use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, attachments, messages, sessions};
-use crate::AppState;
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,10 +154,11 @@ pub async fn get_draft(
 
 /// 保存会话草稿（SQLite + 附件引用）；持附件锁覆盖引用变更与回收。
 pub async fn save_draft(
-    state: &AppState,
+    db: &SqlitePool,
+    paths: &AppPaths,
     cmd: SaveComposeDraftCommand,
 ) -> Result<ComposeDraft, AppError> {
-    save_draft_with_refs(&state.db, &state.paths, cmd).await
+    save_draft_with_refs(db, paths, cmd).await
 }
 
 pub async fn save_draft_with_refs(
@@ -251,11 +252,12 @@ pub async fn save_draft_with_refs(
 
 /// 清除会话草稿并回收无引用附件。
 pub async fn clear_draft(
-    state: &AppState,
+    db: &SqlitePool,
+    paths: &AppPaths,
     account_id: &AccountId,
     session_id: &SessionId,
 ) -> Result<(), AppError> {
-    let _lock = attachment_store::lock_account(&state.paths.attachments_dir, account_id).map_err(
+    let _lock = attachment_store::lock_account(&paths.attachments_dir, account_id).map_err(
         |err| match err {
             crate::infrastructure::error::InfraError::Conflict { message } => AppError {
                 code: crate::application::error::AppErrorCode::Conflict,
@@ -265,44 +267,46 @@ pub async fn clear_draft(
             other => other.into(),
         },
     )?;
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     attachments::delete_draft(&mut tx, account_id, session_id).await?;
     tx.commit().await?;
-    attachment_use_case::recycle_unreferenced(&state.db, &state.paths, account_id, Some(&_lock))
-        .await?;
+    attachment_use_case::recycle_unreferenced(db, paths, account_id, Some(&_lock)).await?;
     Ok(())
 }
 
 /// 清除某账号下全部草稿与附件内容（清理本地数据时用）。
 pub async fn clear_drafts_for_account(
-    state: &AppState,
+    db: &SqlitePool,
+    paths: &AppPaths,
     account_id: &AccountId,
 ) -> Result<(), AppError> {
-    let _lock = match attachment_store::lock_account(&state.paths.attachments_dir, account_id) {
+    let _lock = match attachment_store::lock_account(&paths.attachments_dir, account_id) {
         Ok(lock) => Some(lock),
         Err(crate::infrastructure::error::InfraError::Conflict { .. }) => None,
         Err(err) => return Err(err.into()),
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     attachments::delete_drafts_for_account(&mut tx, account_id).await?;
     // message_attachments 随 messages 删除；此处清内容行
     attachments::delete_contents_for_account(&mut tx, account_id).await?;
     tx.commit().await?;
-    attachment_use_case::purge_account_files(&state.paths.attachments_dir, account_id)?;
+    attachment_use_case::purge_account_files(&paths.attachments_dir, account_id)?;
     Ok(())
 }
 
 /// 导入附件（Port 入口）。
 pub async fn import_attachment(
-    state: &AppState,
+    db: &SqlitePool,
+    paths: &AppPaths,
     cmd: ImportAttachmentCommand,
 ) -> Result<ComposeAttachmentDraft, AppError> {
-    attachment_use_case::import_attachment(&state.db, &state.paths, cmd).await
+    attachment_use_case::import_attachment(db, paths, cmd).await
 }
 
 /// 本地发送：落库 outbound 邮件到指定 Session；清除草稿。附件发送仍拒绝至 Task 08。
 pub async fn send(
-    state: &AppState,
+    db: &SqlitePool,
+    paths: &AppPaths,
     cmd: SendComposedMailCommand,
 ) -> Result<MessageWithRecipients, AppError> {
     if !cmd.attachments.is_empty() {
@@ -310,7 +314,6 @@ pub async fn send(
             "附件内容存储尚未接通发送通道，无法发送含附件的邮件；草稿已保留",
         ));
     }
-    let db: &SqlitePool = &state.db;
     let mut tx = db.begin().await?;
 
     let account = accounts::get(&mut tx, &cmd.account_id)
@@ -428,12 +431,10 @@ pub async fn send(
     attachments::delete_draft(&mut tx, &cmd.account_id, &cmd.session_id).await?;
     tx.commit().await?;
 
-    if let Ok(lock) =
-        attachment_store::lock_account(&state.paths.attachments_dir, &cmd.account_id)
-    {
+    if let Ok(lock) = attachment_store::lock_account(&paths.attachments_dir, &cmd.account_id) {
         let _ = attachment_use_case::recycle_unreferenced(
-            &state.db,
-            &state.paths,
+            db,
+            paths,
             &cmd.account_id,
             Some(&lock),
         )
@@ -441,8 +442,8 @@ pub async fn send(
     }
 
     let _ = crate::application::use_cases::outbound_use_case::flush_pending_message(
-        &state.db,
-        &state.paths,
+        db,
+        paths,
         &cmd.account_id,
         &message_id,
     )

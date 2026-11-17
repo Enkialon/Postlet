@@ -70,7 +70,11 @@ pub async fn update_account_aliases(
     state: State<'_, AppState>,
     cmd: UpdateAccountAliasesCommand,
 ) -> Result<Account, AppError> {
-    account_use_case::update_aliases(&state.db, &state.changes, cmd).await
+    let (account, changeset) = account_use_case::update_aliases(&state.db, cmd).await?;
+    if let Some(changeset) = changeset {
+        state.changes.dispatch(changeset);
+    }
+    Ok(account)
 }
 
 #[tauri::command]
@@ -185,8 +189,17 @@ pub async fn mark_messages_read(
     state: State<'_, AppState>,
     cmd: MarkMessagesReadCommand,
 ) -> Result<(), AppError> {
-    let changes = message_use_case::mark_read(&state.db, &state.paths, cmd).await?;
+    let account_id = cmd.account_id.clone();
+    let changes = message_use_case::mark_read(&state.db, cmd).await?;
+    let flush = changes.pending_remote_flush;
     state.changes.dispatch(changes);
+    if flush {
+        crate::runtime::mail_sync::spawn_pending_flush(
+            state.db.clone(),
+            state.paths.clone(),
+            account_id,
+        );
+    }
     Ok(())
 }
 
@@ -195,8 +208,17 @@ pub async fn delete_messages(
     state: State<'_, AppState>,
     cmd: DeleteMessagesCommand,
 ) -> Result<(), AppError> {
-    let changes = message_use_case::delete_messages(&state.db, &state.paths, cmd).await?;
+    let account_id = cmd.account_id.clone();
+    let changes = message_use_case::delete_messages(&state.db, cmd).await?;
+    let flush = changes.pending_remote_flush;
     state.changes.dispatch(changes);
+    if flush {
+        crate::runtime::mail_sync::spawn_pending_flush(
+            state.db.clone(),
+            state.paths.clone(),
+            account_id,
+        );
+    }
     Ok(())
 }
 
@@ -388,7 +410,7 @@ pub async fn compose_save_draft(
     state: State<'_, AppState>,
     cmd: SaveComposeDraftCommand,
 ) -> Result<ComposeDraft, AppError> {
-    compose_use_case::save_draft(&state, cmd).await
+    compose_use_case::save_draft(&state.db, &state.paths, cmd).await
 }
 
 #[tauri::command]
@@ -398,7 +420,8 @@ pub async fn compose_clear_draft(
     session_id: String,
 ) -> Result<(), AppError> {
     compose_use_case::clear_draft(
-        &state,
+        &state.db,
+        &state.paths,
         &AccountId::new(account_id),
         &SessionId::new(session_id),
     )
@@ -410,7 +433,7 @@ pub async fn compose_import_attachment(
     state: State<'_, AppState>,
     cmd: ImportAttachmentCommand,
 ) -> Result<ComposeAttachmentDraft, AppError> {
-    compose_use_case::import_attachment(&state, cmd).await
+    compose_use_case::import_attachment(&state.db, &state.paths, cmd).await
 }
 
 #[tauri::command]
@@ -418,5 +441,5 @@ pub async fn compose_send(
     state: State<'_, AppState>,
     cmd: SendComposedMailCommand,
 ) -> Result<MessageWithRecipients, AppError> {
-    compose_use_case::send(&state, cmd).await
+    compose_use_case::send(&state.db, &state.paths, cmd).await
 }

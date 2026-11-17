@@ -82,10 +82,9 @@ async fn run_cycle(
     let Some(operation) = control.begin_operation(Duration::from_secs(10 * 60)) else {
         return false;
     };
-    if let Err(error) = crate::runtime::mail_sync::trigger_mail_sync_controlled(
+    match crate::runtime::mail_sync::trigger_mail_sync_controlled(
         db,
         paths,
-        changes,
         gate,
         TriggerMailSyncCommand {
             account_id: account_id.clone(),
@@ -95,8 +94,12 @@ async fn run_cycle(
     )
     .await
     {
-        eprintln!("IMAP 同步失败，稍后重试: {}", error.message);
-        return false;
+        Ok(Some(changeset)) => changes.dispatch(changeset),
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("IMAP 同步失败，稍后重试: {}", error.message);
+            return false;
+        }
     }
     if control.is_stopped() {
         return false;

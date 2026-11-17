@@ -19,9 +19,11 @@ pub fn spawn(db: SqlitePool, changes: ChangeDispatcher) {
                 let changes2 = changes.clone();
                 let running2 = running.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ =
-                        aggregate_worker_use_case::process_available_jobs(&db2, Some(&changes2), 32)
-                            .await;
+                    if let Ok((_, Some(changeset))) =
+                        aggregate_worker_use_case::process_available_jobs(&db2, 32).await
+                    {
+                        changes2.dispatch(changeset);
+                    }
                     running2.store(false, Ordering::SeqCst);
                 });
             }

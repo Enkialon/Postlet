@@ -15,7 +15,6 @@ use crate::domain::value_objects::{
 use crate::infrastructure::repository::{
     accounts, contacts, groups, jobs, messages, sessions,
 };
-use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -36,14 +35,13 @@ fn backoff_ms(attempts: i32) -> i64 {
     (3_000i64).saturating_mul(1i64 << exp).min(10 * 60_000)
 }
 
-/// 处理至多 `limit` 条可用聚合任务；可选分发 ChangeSet。
+/// 处理至多 `limit` 条可用聚合任务；返回完成数与已提交的合并 ChangeSet。
 pub async fn process_available_jobs(
     db: &SqlitePool,
-    changes: Option<&ChangeDispatcher>,
     limit: u32,
-) -> Result<u32, AppError> {
+) -> Result<(u32, Option<ChangeSet>), AppError> {
     if limit == 0 {
-        return Ok(0);
+        return Ok((0, None));
     }
     let account_ids = {
         let mut conn = db.acquire().await?;
@@ -116,15 +114,15 @@ pub async fn process_available_jobs(
         }
     }
 
-    if let (Some(dispatcher), Some(mut cs)) = (changes, changeset_acc) {
+    if let Some(cs) = changeset_acc.as_mut() {
         let mut seen = HashSet::new();
         cs.session_ids.retain(|c| seen.insert(c.clone()));
-        if !cs.is_empty() {
-            dispatcher.dispatch(cs);
+        if cs.is_empty() {
+            changeset_acc = None;
         }
     }
 
-    Ok(completed)
+    Ok((completed, changeset_acc))
 }
 
 /// 单条任务：校验租约代次后决策并写投影。
@@ -343,6 +341,7 @@ async fn apply_plan(
             message_ids: vec![message_id.clone()],
             new_incoming_ids: Vec::new(),
             account_cleared: false,
+            pending_remote_flush: false,
             origin: ChangeOrigin::Rebuild,
         });
     };
@@ -454,6 +453,7 @@ async fn apply_plan(
         message_ids: vec![message_id.clone()],
         new_incoming_ids: Vec::new(),
         account_cleared: false,
+        pending_remote_flush: false,
         origin: ChangeOrigin::Rebuild,
     })
 }
@@ -695,8 +695,7 @@ pub async fn requeue_account_messages(
 pub async fn relocate_self_keyed_private_sessions(
     db: &SqlitePool,
     account_id: &AccountId,
-    changes: Option<&ChangeDispatcher>,
-) -> Result<u32, AppError> {
+) -> Result<(u32, Option<ChangeSet>), AppError> {
     let (account, message_ids, stale_session_ids) = {
         let mut conn = db.acquire().await?;
         let account = accounts::get(&mut conn, account_id)
@@ -755,7 +754,7 @@ pub async fn relocate_self_keyed_private_sessions(
     };
 
     if message_ids.is_empty() {
-        return Ok(0);
+        return Ok((0, None));
     }
 
     let self_set = resolve_self_addresses(&account);
@@ -837,6 +836,7 @@ pub async fn relocate_self_keyed_private_sessions(
                         message_ids: Vec::new(),
                         new_incoming_ids: Vec::new(),
                         account_cleared: false,
+                        pending_remote_flush: false,
                         origin: ChangeOrigin::Rebuild,
                     });
                 }
@@ -845,17 +845,17 @@ pub async fn relocate_self_keyed_private_sessions(
         tx.commit().await?;
     }
 
-    if let (Some(dispatcher), Some(mut cs)) = (changes, changeset_acc) {
+    if let Some(cs) = changeset_acc.as_mut() {
         let mut seen = HashSet::new();
         cs.session_ids.retain(|c| seen.insert(c.clone()));
         let mut seen_msg = HashSet::new();
         cs.message_ids.retain(|c| seen_msg.insert(c.clone()));
-        if !cs.is_empty() {
-            dispatcher.dispatch(cs);
+        if cs.is_empty() {
+            changeset_acc = None;
         }
     }
 
-    Ok(moved)
+    Ok((moved, changeset_acc))
 }
 
 // 供同步路径创建临时私聊 Session

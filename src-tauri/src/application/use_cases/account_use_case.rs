@@ -1,5 +1,4 @@
 //! 账户用例
-use crate::AppState;
 use crate::domain::entities::AccountMailTransport;
 use crate::domain::value_objects::{AccountId, CredentialRef, EmailAddress, ReceiveProtocol, SyncStatus, TimestampMs};
 use crate::infrastructure::config::load_azure_auth_config;
@@ -8,7 +7,6 @@ use crate::infrastructure::graph::{TokenCache, models::RemoteAccount};
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
-use crate::runtime::ChangeDispatcher;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -222,26 +220,29 @@ pub async fn sign_out(
 ///
 /// 与 `sign_out` 相反侧重：不删凭据、不改 `is_signed_in`；删会话/邮件/联系人/群与同步游标。
 /// Runtime 先暂停并等待旧任务退出，避免与写入竞态。
-pub async fn clear_local_data(state: &AppState, account_id: &AccountId) -> Result<(), AppError> {
+pub async fn clear_local_data(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+) -> Result<ChangeSet, AppError> {
     {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = db.acquire().await?;
         let _ = accounts::get(&mut conn, account_id)
             .await?
             .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
     }
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = db.begin().await?;
     accounts::clear_local_chat_data(&mut tx, account_id)
         .await
         .map_err(AppError::from)?;
     tx.commit().await?;
 
-    compose_use_case::clear_drafts_for_account(state, account_id).await?;
+    compose_use_case::clear_drafts_for_account(db, paths, account_id).await?;
 
     let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
     changeset.account_cleared = true;
-    state.changes.dispatch(changeset);
-    Ok(())
+    Ok(changeset)
 }
 
 /// 更新账户显示配置（是否纳入「全部账号」列表）。
@@ -265,9 +266,8 @@ pub async fn update_display_settings(
 /// 集合变化时：把「对端已变 self」的私聊消息迁到正确会话（读路径动态判定 is_outbound）。
 pub async fn update_aliases(
     db: &SqlitePool,
-    changes: &ChangeDispatcher,
     cmd: UpdateAccountAliasesCommand,
-) -> Result<Account, AppError> {
+) -> Result<(Account, Option<ChangeSet>), AppError> {
     let mut tx = db.begin().await?;
     let account = accounts::get(&mut tx, &cmd.account_id)
         .await?
@@ -285,15 +285,14 @@ pub async fn update_aliases(
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
     tx.commit().await?;
 
-    if aliases_changed {
-        let _ = aggregate_worker_use_case::relocate_self_keyed_private_sessions(
-            db,
-            &updated.id,
-            Some(changes),
-        )
-        .await?;
-    }
-    Ok(updated)
+    let changes = if aliases_changed {
+        let (_, changeset) =
+            aggregate_worker_use_case::relocate_self_keyed_private_sessions(db, &updated.id).await?;
+        changeset
+    } else {
+        None
+    };
+    Ok((updated, changes))
 }
 
 fn normalize_aliases(
