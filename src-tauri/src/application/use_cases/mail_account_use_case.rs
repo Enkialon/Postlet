@@ -42,9 +42,9 @@ pub async fn upsert_imap_smtp_account(
     credentials::save(&paths.credentials_dir, &credential_ref, &secret).await?;
     let result = persist_account(db, cmd, &credential_ref).await;
     match result {
-        Ok((account, old_ref)) => {
-            if let Some(old_ref) = old_ref {
-                credentials::delete(&paths.credentials_dir, &old_ref)
+        Ok((account, previous)) => {
+            if let Some(previous) = previous {
+                credentials::delete_for_transport(&paths.credentials_dir, &previous)
                     .await
                     .map_err(|_| {
                         AppError::internal("账号配置已保存，但旧凭据回收失败；重启时会再次清理")
@@ -114,7 +114,7 @@ async fn persist_account(
     db: &SqlitePool,
     cmd: UpsertImapSmtpAccountCommand,
     credential_ref: &str,
-) -> Result<(Account, Option<String>), AppError> {
+) -> Result<(Account, Option<AccountMailTransport>), AppError> {
     let email =
         EmailAddress::parse(&cmd.email).ok_or_else(|| AppError::validation("邮箱地址无效"))?;
     let now = now_ms();
@@ -125,8 +125,9 @@ async fn persist_account(
         .map_err(AppError::from)?;
     let previous_transport = if let Some(account) = &existing {
         mail_transports::get(&mut tx, &account.id).await?
-    } else { None };
-    let old_ref = previous_transport.as_ref().and_then(|transport| transport.credential_ref.clone());
+    } else {
+        None
+    };
     let account = if let Some(mut acc) = existing {
         acc.display_name = if cmd.display_name.trim().is_empty() {
             email.as_str().to_string()
@@ -184,42 +185,93 @@ async fn persist_account(
         imap_idle_supported: None,
         updated_at: now,
     };
-    if previous_transport.as_ref().is_some_and(|old| old.receive_protocol != transport.receive_protocol
-        || old.imap_host != transport.imap_host || old.imap_port != transport.imap_port
-        || old.imap_tls != transport.imap_tls || old.username != transport.username) {
-        let folders = crate::infrastructure::repository::folder_states::list_by_account(&mut tx, &account.id).await?;
-        for folder in folders {
-            crate::infrastructure::repository::folder_states::retire(&mut tx, &account.id, &folder.folder_id, now).await?;
-            let affected = sqlx::query_as::<_, (String, String)>("SELECT id, session_id FROM messages WHERE account_id = ? AND folder_id = ?")
-                .bind(account.id.as_str()).bind(folder.folder_id.as_str()).fetch_all(&mut *tx).await?;
-            for (mid, sid) in affected {
-                let mid = crate::domain::value_objects::MessageId::new(mid);
-                crate::infrastructure::repository::messages::set_location_status(&mut tx, &account.id, &mid, crate::domain::mail::LocationStatus::Invalidated).await?;
-                crate::infrastructure::repository::mutations::stop_for_message(&mut tx, &account.id, &mid, "收信身份或端点已改变，旧操作已停止").await?;
-                crate::infrastructure::repository::sessions::recompute_projection(&mut tx, &account.id, &crate::domain::value_objects::SessionId::new(sid)).await?;
-            }
-        }
+    if previous_transport.as_ref().is_some_and(|old| {
+        old.receive_protocol != transport.receive_protocol
+            || old.imap_host != transport.imap_host
+            || old.imap_port != transport.imap_port
+            || old.imap_tls != transport.imap_tls
+            || old.username != transport.username
+    }) {
+        retire_mail_identity(
+            &mut tx,
+            &account.id,
+            now,
+            "收信身份或端点已改变，旧操作已停止",
+        )
+        .await?;
     }
     mail_transports::upsert(&mut tx, &transport)
         .await
         .map_err(AppError::from)?;
     tx.commit().await?;
 
-    Ok((account, old_ref))
+    Ok((account, previous_transport))
 }
 
-/// 启动恢复：仅删除没有配置引用的暂存/旧通用凭据；与配置切换互斥。
+pub(crate) async fn retire_mail_identity(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    now: i64,
+    reason: &str,
+) -> Result<(), AppError> {
+    let folders =
+        crate::infrastructure::repository::folder_states::list_by_account(conn, account_id).await?;
+    for folder in folders {
+        crate::infrastructure::repository::folder_states::retire(
+            conn,
+            account_id,
+            &folder.folder_id,
+            now,
+        )
+        .await?;
+        let affected = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, session_id FROM messages WHERE account_id = ? AND folder_id = ?",
+        )
+        .bind(account_id.as_str())
+        .bind(folder.folder_id.as_str())
+        .fetch_all(&mut *conn)
+        .await?;
+        for (mid, sid) in affected {
+            let mid = crate::domain::value_objects::MessageId::new(mid);
+            crate::infrastructure::repository::messages::set_location_status(
+                conn,
+                account_id,
+                &mid,
+                crate::domain::mail::LocationStatus::Invalidated,
+            )
+            .await?;
+            crate::infrastructure::repository::mutations::stop_for_message(
+                conn, account_id, &mid, reason,
+            )
+            .await?;
+            crate::infrastructure::repository::sessions::recompute_projection(
+                conn,
+                account_id,
+                &crate::domain::value_objects::SessionId::new(sid),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 启动恢复：仅删除没有配置引用的暂存/旧凭据；与配置切换互斥。
 pub async fn recover_credentials(db: &SqlitePool, paths: &AppPaths) -> Result<(), AppError> {
     let _lock = credentials::lock(&paths.credentials_dir)?;
-    let references = sqlx::query_scalar::<_, String>(
-        "SELECT credential_ref FROM account_mail_transport WHERE credential_ref IS NOT NULL",
-    )
-    .fetch_all(db)
-    .await?;
-    for reference in crate::infrastructure::secret_store::list_ids(&paths.credentials_dir, "mail")?
-    {
-        if !references.contains(&reference) {
-            credentials::delete(&paths.credentials_dir, &reference).await?;
+    for (kind, auth_kind) in [("mail", "password"), ("graph", "oauth2")] {
+        let references = sqlx::query_scalar::<_, String>(
+            "SELECT credential_ref FROM account_mail_transport WHERE credential_ref IS NOT NULL AND auth_kind = ?",
+        ).bind(auth_kind).fetch_all(db).await?;
+        for reference in
+            crate::infrastructure::secret_store::list_ids(&paths.credentials_dir, kind)?
+        {
+            if !references.contains(&reference) {
+                crate::infrastructure::secret_store::delete(
+                    &paths.credentials_dir,
+                    kind,
+                    &reference,
+                )?;
+            }
         }
     }
     Ok(())

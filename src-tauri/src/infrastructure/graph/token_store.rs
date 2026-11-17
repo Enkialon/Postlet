@@ -1,9 +1,8 @@
 //! Graph token 加密存储；不读取旧的明文开发凭据。
 
 use crate::infrastructure::error::InfraError;
-use crate::domain::value_objects::AccountId;
-use serde::{Deserialize, Serialize};
 use crate::infrastructure::secret_store;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// 持久化的 OAuth token 缓存（禁止写入业务 SQLite）
@@ -18,16 +17,19 @@ pub struct TokenCache {
     pub tenant: String,
 }
 
-pub fn save(credentials_dir: &Path, account_id: &AccountId, cache: &TokenCache) -> Result<(), InfraError> {
-    secret_store::save(credentials_dir, "graph", account_id.as_str(), cache)
+pub fn save(
+    credentials_dir: &Path,
+    credential_ref: &str,
+    cache: &TokenCache,
+) -> Result<(), InfraError> {
+    secret_store::save(credentials_dir, "graph", credential_ref, cache)
 }
 
-pub fn load(credentials_dir: &Path, account_id: &AccountId) -> Result<Option<TokenCache>, InfraError> {
-    secret_store::load(credentials_dir, "graph", account_id.as_str())
-}
-
-pub fn delete(credentials_dir: &Path, account_id: &AccountId) -> Result<(), InfraError> {
-    secret_store::delete(credentials_dir, "graph", account_id.as_str())
+pub fn load(
+    credentials_dir: &Path,
+    credential_ref: &str,
+) -> Result<Option<TokenCache>, InfraError> {
+    secret_store::load(credentials_dir, "graph", credential_ref)
 }
 
 /// access token 是否仍可用（提前 2 分钟视为过期）

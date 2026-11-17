@@ -101,7 +101,7 @@ pub async fn ensure_message_body(
                     .ok_or_else(|| AppError::validation("邮件文件夹已失效"))?
             };
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-            let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+            let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?)
                 .await
                 .map_err(AppError::from)?;
             let (content_type, content) = graph::mail::get_message_body(&token, &folder.remote_binding, &remote_key)
@@ -247,14 +247,14 @@ pub async fn flush_due_mutations(
         let push = match (mutation.kind, transport.receive_protocol) {
             (PendingMutationKind::Read, ReceiveProtocol::Graph) => {
                 let is_read = mutation.desired_is_read.unwrap_or(true);
-                push_graph_read(paths, account_id, &binding, &mutation, is_read).await
+                push_graph_read(paths, &transport, &binding, &mutation, is_read).await
             }
             (PendingMutationKind::Read, ReceiveProtocol::Imap) => {
                 let is_read = mutation.desired_is_read.unwrap_or(true);
                 push_imap_read(db, paths, account_id, &transport, &binding, &mutation, is_read).await
             }
             (PendingMutationKind::Delete, ReceiveProtocol::Graph) => {
-                push_graph_delete(paths, account_id, &binding, &mutation).await
+                push_graph_delete(paths, &transport, &binding, &mutation).await
             }
             (PendingMutationKind::Delete, ReceiveProtocol::Imap) => {
                 push_imap_delete(db, paths, account_id, &transport, &binding, &mutation).await
@@ -281,14 +281,14 @@ pub async fn flush_due_mutations(
 
 async fn push_graph_read(
     paths: &AppPaths,
-    account_id: &AccountId,
+    transport: &crate::domain::entities::AccountMailTransport,
     remote_binding: &str,
     mutation: &PendingMessageMutation,
     is_read: bool,
 ) -> Result<(), AppError> {
     let remote_key = &mutation.target_remote_key;
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(transport)?)
         .await
         .map_err(AppError::from)?;
     graph::mail::patch_message_read(&token, remote_binding, &remote_key, is_read)
@@ -359,13 +359,13 @@ async fn push_imap_read(
 
 async fn push_graph_delete(
     paths: &AppPaths,
-    account_id: &AccountId,
+    transport: &crate::domain::entities::AccountMailTransport,
     remote_binding: &str,
     mutation: &PendingMessageMutation,
 ) -> Result<(), AppError> {
     let remote_key = &mutation.target_remote_key;
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(transport)?)
         .await
         .map_err(AppError::from)?;
     graph::mail::delete_message(&token, remote_binding, &remote_key)

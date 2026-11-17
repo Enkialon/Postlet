@@ -88,6 +88,7 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
     let paths = paths(root.path());
     let db = db::open_memory().await.unwrap();
     let task_paths = paths.clone();
+    let blocked_path = root.path().join("not-a-directory");
     let result = async move {
         let paths = task_paths;
         let account = mail_account_use_case::upsert_imap_smtp_account(&db, &paths, command())
@@ -106,7 +107,7 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
 
         // 保存新秘密失败时数据库尚未改变。
         let mut broken_paths = paths.clone();
-        let blocked = root.path().join("not-a-directory");
+        let blocked = blocked_path;
         std::fs::write(&blocked, b"blocked").unwrap();
         broken_paths.credentials_dir = blocked;
         assert!(

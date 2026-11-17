@@ -37,9 +37,7 @@ pub async fn get_account(
 
 #[tauri::command]
 pub async fn account_sign_in(state: State<'_, AppState>) -> Result<Account, AppError> {
-    let account = account_use_case::sign_in(&state.db, &state.paths).await?;
-    state.mail_watchers.changed(&account.id);
-    Ok(account)
+    crate::runtime::accounts::sign_in(&state).await
 }
 
 #[tauri::command]

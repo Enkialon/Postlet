@@ -303,7 +303,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn config() -> AccountMailTransport {
-        let mut config = AccountMailTransport::graph_default(AccountId::new("a"), 1);
+        let mut config = AccountMailTransport::graph_default(AccountId::new("a"), "graph-reference".into(), 1);
         config.receive_protocol = ReceiveProtocol::Imap;
         config.auth_kind = MailAuthKind::Password;
         config.credential_ref = Some("reference-one".into());

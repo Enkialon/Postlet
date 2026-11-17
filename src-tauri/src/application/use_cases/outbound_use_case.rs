@@ -51,7 +51,7 @@ pub async fn flush_pending_message(
 
     match transport.send_protocol {
         SendProtocol::Graph => {
-            send_via_graph(paths, &account.id, &bundle).await?;
+            send_via_graph(paths, &transport, &bundle).await?;
         }
         SendProtocol::Smtp => {
             send_via_smtp(paths, &account, &transport, &bundle).await?;
@@ -70,11 +70,11 @@ pub async fn flush_pending_message(
 
 async fn send_via_graph(
     paths: &AppPaths,
-    account_id: &AccountId,
+    transport: &crate::domain::entities::AccountMailTransport,
     bundle: &MessageWithRecipients,
 ) -> Result<(), AppError> {
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(transport)?)
         .await
         .map_err(AppError::from)?;
 

@@ -48,7 +48,7 @@ async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_s
     assert!(mail_transports::get(&mut conn, &account.id).await.unwrap().is_none());
     assert!(sqlx::query("INSERT INTO account_mail_transport(account_id,updated_at) VALUES (?,?)")
         .bind(account.id.as_str()).bind(now).execute(&mut *conn).await.is_err());
-    let graph = AccountMailTransport::graph_default(account.id.clone(), now);
+    let graph = AccountMailTransport::graph_default(account.id.clone(), "graph-reference".into(), now);
     mail_transports::upsert(&mut conn, &graph).await.unwrap();
     let t = mail_transports::require(&mut conn, &account.id).await.unwrap();
     assert_eq!(t.receive_protocol, ReceiveProtocol::Graph);

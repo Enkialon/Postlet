@@ -1,8 +1,8 @@
 //! 通用邮箱凭证；系统钥匙串保护密钥，磁盘仅保存密文。
 
-use crate::infrastructure::error::InfraError;
 use crate::domain::entities::AccountMailTransport;
 use crate::domain::value_objects::MailAuthKind;
+use crate::infrastructure::error::InfraError;
 use crate::infrastructure::secret_store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -50,6 +50,20 @@ pub async fn load(
 
 pub async fn delete(credentials_dir: &Path, credential_ref: &str) -> Result<(), InfraError> {
     secret_store::delete(credentials_dir, "mail", credential_ref)
+}
+
+pub async fn delete_for_transport(
+    credentials_dir: &Path,
+    transport: &AccountMailTransport,
+) -> Result<(), InfraError> {
+    if let Some(reference) = &transport.credential_ref {
+        let kind = match transport.auth_kind {
+            MailAuthKind::Password => "mail",
+            MailAuthKind::OAuth2 => "graph",
+        };
+        secret_store::delete(credentials_dir, kind, reference)?;
+    }
+    Ok(())
 }
 
 /// 配置切换与启动回收共用跨进程锁；忙时明确返回，避免回收正在暂存的凭据。

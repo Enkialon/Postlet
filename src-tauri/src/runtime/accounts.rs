@@ -20,6 +20,26 @@ async fn quiesce(
     Ok((gate, watcher))
 }
 
+pub async fn sign_in(state: &AppState) -> Result<Account, AppError> {
+    let pending = account_use_case::begin_graph_sign_in(&state.paths).await?;
+    let existing = account_use_case::graph_sign_in_account(&state.db, &pending).await?;
+    let _paused = match &existing {
+        Some(id) => Some(quiesce(state, id).await?),
+        None => None,
+    };
+    let account = account_use_case::complete_graph_sign_in(
+        &state.db,
+        &state.paths,
+        pending,
+        existing.as_ref(),
+    )
+    .await?;
+    if _paused.is_none() {
+        state.mail_watchers.changed(&account.id);
+    }
+    Ok(account)
+}
+
 pub async fn sign_out(state: &AppState, account_id: &AccountId) -> Result<(), AppError> {
     let _paused = quiesce(state, account_id).await?;
     account_use_case::sign_out(&state.db, &state.paths, account_id).await

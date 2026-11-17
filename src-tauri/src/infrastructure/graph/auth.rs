@@ -1,17 +1,17 @@
 //! Graph / OAuth：授权码 + PKCE；机密客户端带 secret，公开客户端走 SPA 流。
 
 use super::loopback::{bind_redirect_listener, wait_for_authorization_code};
-use super::token_store::{self, TokenCache};
 use super::models::RemoteAccount;
-use crate::infrastructure::error::InfraError;
-use crate::domain::value_objects::{AccountId, EmailAddress};
+use super::token_store::{self, TokenCache};
+use crate::domain::value_objects::EmailAddress;
 use crate::infrastructure::config::AzureAuthConfig;
+use crate::infrastructure::error::InfraError;
 use base64::Engine;
+use graph_rs_sdk::GraphClient;
 use graph_rs_sdk::identity::{
     AuthorizationCodeCredential, AuthorizationCodeSpaCredential, ConfidentialClientApplication,
     GenPkce, ProofKeyCodeExchange, PublicClientApplication, TokenCredentialExecutor,
 };
-use graph_rs_sdk::GraphClient;
 use serde::Deserialize;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +27,23 @@ const DEFAULT_SCOPES: &[&str] = &[
     "Mail.Send",
     "Contacts.Read",
 ];
+
+pub fn credential_reference(
+    transport: &crate::domain::entities::AccountMailTransport,
+) -> Result<&str, InfraError> {
+    if transport.auth_kind != crate::domain::value_objects::MailAuthKind::OAuth2 {
+        return Err(InfraError::Auth {
+            message: "Graph 需要 OAuth 凭据".into(),
+        });
+    }
+    transport
+        .credential_ref
+        .as_deref()
+        .filter(|reference| !reference.is_empty())
+        .ok_or_else(|| InfraError::Auth {
+            message: "Graph 账号缺少凭据引用，请重新登录".into(),
+        })
+}
 
 #[derive(Debug, Deserialize)]
 struct GraphMe {
@@ -50,11 +67,8 @@ struct TokenEndpointResponse {
     client_info: Option<String>,
 }
 
-/// 打开系统浏览器完成登录，返回远端账户资料与 token 缓存（尚未按本地 AccountId 落盘）。
-pub async fn sign_in(
-    _credentials_dir: &Path,
-    config: &AzureAuthConfig,
-) -> Result<(RemoteAccount, TokenCache), InfraError> {
+/// 打开系统浏览器完成登录，返回远端账户资料与尚未持久化的 token 缓存。
+pub async fn sign_in(config: &AzureAuthConfig) -> Result<(RemoteAccount, TokenCache), InfraError> {
     let client_uuid = parse_client_id(&config.client_id)?;
     let scopes: Vec<String> = DEFAULT_SCOPES.iter().map(|s| (*s).to_owned()).collect();
     let redirect_uri = Url::parse(&config.redirect_uri).map_err(|_| InfraError::Auth {
@@ -128,25 +142,21 @@ pub async fn sign_in(
     Ok((remote, cache))
 }
 
-pub async fn sign_out(credentials_dir: &Path, account_id: &AccountId) -> Result<(), InfraError> {
-    token_store::delete(credentials_dir, account_id)
-}
-
 pub async fn save_token_cache(
     credentials_dir: &Path,
-    account_id: &AccountId,
+    credential_ref: &str,
     cache: &TokenCache,
 ) -> Result<(), InfraError> {
-    token_store::save(credentials_dir, account_id, cache)
+    token_store::save(credentials_dir, credential_ref, cache)
 }
 
 /// 读取本地凭证；必要时用 refresh_token 刷新并回写。
 pub async fn get_access_token(
     credentials_dir: &Path,
     config: &AzureAuthConfig,
-    account_id: &AccountId,
+    credential_ref: &str,
 ) -> Result<String, InfraError> {
-    let Some(mut cache) = token_store::load(credentials_dir, account_id)? else {
+    let Some(mut cache) = token_store::load(credentials_dir, credential_ref)? else {
         return Err(InfraError::Auth {
             message: "账户未登录或凭证已清除，请重新登录".into(),
         });
@@ -157,6 +167,15 @@ pub async fn get_access_token(
         return Ok(cache.access_token);
     }
 
+    // 与配置切换/孤儿回收互斥，并重新读取以免重复刷新或复活已删除的引用。
+    let _lock = crate::infrastructure::mail::credentials::lock(credentials_dir)?;
+    cache =
+        token_store::load(credentials_dir, credential_ref)?.ok_or_else(|| InfraError::Auth {
+            message: "凭据已变更，请重新登录".into(),
+        })?;
+    if token_store::is_access_token_fresh(&cache, now_unix_ms()) {
+        return Ok(cache.access_token);
+    }
     let Some(refresh_token) = cache.refresh_token.clone() else {
         return Err(InfraError::Auth {
             message: "访问令牌已过期且无刷新令牌，请重新登录".into(),
@@ -175,7 +194,7 @@ pub async fn get_access_token(
             cache.scopes = parts;
         }
     }
-    token_store::save(credentials_dir, account_id, &cache)?;
+    token_store::save(credentials_dir, credential_ref, &cache)?;
     Ok(cache.access_token)
 }
 

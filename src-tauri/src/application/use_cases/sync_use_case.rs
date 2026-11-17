@@ -119,7 +119,7 @@ pub async fn trigger_mail_sync(
     }
 
     let result = match transport.receive_protocol {
-        ReceiveProtocol::Graph => sync_graph_mail(db, paths, operation, cmd).await,
+        ReceiveProtocol::Graph => sync_graph_mail(db, paths, operation, cmd, &transport).await,
         ReceiveProtocol::Imap => sync_imap_mail(db, paths, operation, cmd, &transport).await,
     };
 
@@ -170,9 +170,10 @@ async fn sync_graph_mail(
     paths: &AppPaths,
     operation: &MailOperation,
     cmd: &TriggerMailSyncCommand,
+    transport: &crate::domain::entities::AccountMailTransport,
 ) -> Result<ChangeSet, AppError> {
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, &cmd.account_id))
+    let token = operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?))
         .await
         .map_err(AppError::from)?;
 
@@ -666,7 +667,7 @@ pub async fn trigger_contact_sync(
     }
 
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, &cmd.account_id)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?)
         .await
         .map_err(AppError::from)?;
 
@@ -811,7 +812,7 @@ pub async fn refresh_mail_folders(
         ReceiveProtocol::Graph => {
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
             let token =
-                operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, account_id))
+                operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?))
                     .await
                     .map_err(AppError::from)?;
             let remote = operation.wait(graph::mail::list_mail_folders(&token))

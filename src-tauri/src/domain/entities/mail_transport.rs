@@ -28,13 +28,13 @@ pub struct AccountMailTransport {
 
 impl AccountMailTransport {
     /// Outlook / Graph 默认配置
-    pub fn graph_default(account_id: AccountId, now: TimestampMs) -> Self {
+    pub fn graph_default(account_id: AccountId, credential_ref: String, now: TimestampMs) -> Self {
         Self {
             account_id,
             receive_protocol: ReceiveProtocol::Graph,
             send_protocol: SendProtocol::Graph,
             auth_kind: MailAuthKind::OAuth2,
-            credential_ref: None,
+            credential_ref: Some(credential_ref),
             imap_host: None,
             imap_port: None,
             imap_tls: None,
