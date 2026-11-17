@@ -110,8 +110,7 @@ async function submitImap(): Promise<void> {
     smtp_port: Number(form.smtp_port) || 587,
     smtp_tls: form.smtp_tls,
     username: form.username.trim() || email,
-    // 授权码粘贴常带首尾空白，不 trim 会被 QQ 直接判 Login fail
-    password: form.password.trim(),
+    password: form.password,
     access_token: null,
     refresh_token: null,
     expires_at_ms: null,

@@ -122,3 +122,8 @@
 - 测试覆盖配置不变复用、凭据切换前旧线程退出、退出/协议切换移除、再登录单实例、意外退出恢复、清空后同配置重建、暂停请求取消不滞留、真实管理循环的 Pause/Resume、账号发现排除退出态，以及 gate 排空后仍阻止新同步。核心协议取消仍由 I-15 的真实本地 TCP/原生 TLS 测试覆盖；没有连接真实邮箱或驱动 Tauri IPC 窗口验收。
 - 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 57 项通过（47 单元 + 10 集成），含 TLS 和系统钥匙串。`cargo check --manifest-path src-tauri/Cargo.toml --offline` 通过；未改前端 IPC 数据结构。
 - 尚需 A-04/I-10/I-08 将 mutation、发送及联系人/聚合等任务接入共同账号生命周期；A-05 还需修正 Graph 登录切换时的显式配置构造和凭据提交边界。因此不将本轮监听器测试等同于全部账号后台任务均已完整验收。
+
+## I-15：补正前端密码路径
+
+- 端到端代码复核发现 AddAccountDialog 仍在提交前 trim 密码；此前协议层原样传递测试没有覆盖此 UI 路径。删除该转换及按品牌解释的注释，表单将密码原样交给已有 Port/Adapter。
+- 验证：`pnpm build` 通过（含 vue-tsc）；全局检索未再发现密码 trim 路径。未执行真实账号表单登录，不将构建通过等同于已完成邮箱端到端认证。
