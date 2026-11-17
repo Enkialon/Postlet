@@ -321,10 +321,8 @@ async fn sync_imap_mail(
 
     {
         let mut conn = db.acquire().await?;
-        let mut t = transport.clone();
-        t.imap_idle_supported = Some(batch.idle_supported);
-        t.updated_at = now_ms();
-        mail_transports::upsert(&mut conn, &t)
+        operation.checkpoint()?;
+        mail_transports::record_imap_idle_support(&mut conn, transport, batch.idle_supported)
             .await
             .map_err(AppError::from)?;
     }

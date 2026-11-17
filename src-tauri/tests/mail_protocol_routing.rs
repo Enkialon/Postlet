@@ -75,4 +75,48 @@ async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
     assert_eq!(loaded.send_protocol, SendProtocol::Smtp);
     assert_eq!(loaded.imap_port, Some(993));
     assert_eq!(loaded.imap_idle_supported, Some(true));
+
+    // SMTP 配置可以独立改变；收信能力观测只更新自己的字段，不整行写回旧快照。
+    let mut current = imap.clone();
+    current.smtp_host = Some("new-smtp.example.com".into());
+    current.updated_at = now + 1;
+    mail_transports::upsert(&mut conn, &current).await.unwrap();
+    assert!(mail_transports::record_imap_idle_support(&mut conn, &imap, false).await.unwrap());
+    let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
+    assert_eq!(after.smtp_host, current.smtp_host);
+    assert_eq!(after.updated_at, current.updated_at);
+    assert_eq!(after.imap_idle_supported, Some(false));
+
+    // 挂起的旧探测在凭据轮换后返回，不能恢复旧引用或写入旧能力。
+    current.credential_ref = Some("rotated-credential".into());
+    current.imap_idle_supported = None;
+    current.updated_at += 1;
+    mail_transports::upsert(&mut conn, &current).await.unwrap();
+    assert!(!mail_transports::record_imap_idle_support(&mut conn, &imap, true).await.unwrap());
+    let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
+    assert_eq!(after.credential_ref, current.credential_ref);
+    assert_eq!(after.imap_idle_supported, None);
+    assert_eq!(after.updated_at, current.updated_at);
+
+    // 同一个引用下改变端点、TLS 或用户名，同样不能接受旧观测。
+    for field in ["host", "port", "tls", "username", "protocol"] {
+        let mut changed = current.clone();
+        match field {
+            "host" => changed.imap_host = Some("new-imap.example.com".into()),
+            "port" => changed.imap_port = Some(143),
+            "tls" => changed.imap_tls = Some(MailTlsMode::StartTls),
+            "username" => changed.username = Some("other-user".into()),
+            "protocol" => changed.receive_protocol = ReceiveProtocol::Graph,
+            _ => unreachable!(),
+        }
+        mail_transports::upsert(&mut conn, &changed).await.unwrap();
+        assert!(!mail_transports::record_imap_idle_support(&mut conn, &current, true).await.unwrap(), "{field}");
+        let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
+        assert_eq!(after.imap_idle_supported, None);
+    }
+
+    mail_transports::upsert(&mut conn, &current).await.unwrap();
+    accounts::set_signed_in(&mut conn, &account.id, false).await.unwrap();
+    assert!(!mail_transports::record_imap_idle_support(&mut conn, &current, true).await.unwrap());
+    assert_eq!(mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap().imap_idle_supported, None);
 }

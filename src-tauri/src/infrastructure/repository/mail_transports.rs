@@ -131,6 +131,33 @@ pub async fn upsert(
     Ok(())
 }
 
+/// 能力观测只属于探测时的收信配置，不能用旧快照覆盖新端点或凭据。
+pub async fn record_imap_idle_support(
+    conn: &mut SqliteConnection,
+    observed_config: &AccountMailTransport,
+    supported: bool,
+) -> Result<bool, InfraError> {
+    if observed_config.receive_protocol != ReceiveProtocol::Imap { return Ok(false); }
+    let result = sqlx::query(
+        "UPDATE account_mail_transport SET imap_idle_supported = ?
+         WHERE account_id = ? AND receive_protocol = 'imap'
+           AND auth_kind = ? AND credential_ref IS ?
+           AND imap_host IS ? AND imap_port IS ? AND imap_tls IS ? AND username IS ?
+           AND EXISTS (SELECT 1 FROM accounts
+                       WHERE id = account_mail_transport.account_id AND is_signed_in = 1)",
+    )
+    .bind(supported)
+    .bind(observed_config.account_id.as_str())
+    .bind(observed_config.auth_kind.as_str())
+    .bind(&observed_config.credential_ref)
+    .bind(&observed_config.imap_host)
+    .bind(observed_config.imap_port.map(i64::from))
+    .bind(observed_config.imap_tls.map(|tls| tls.as_str()))
+    .bind(&observed_config.username)
+    .execute(&mut *conn).await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// 确保账号有协议行；缺失则写入 Graph 默认。
 pub async fn ensure_default(
     conn: &mut SqliteConnection,

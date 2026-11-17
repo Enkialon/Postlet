@@ -105,3 +105,10 @@
 - 锁定 imap 2.4 的 Client::secure 仅支持裸 TcpStream；为保留受控流，STARTTLS 前导复用已锁定 imap-proto 解析器，严格验证问候与对应 tag 的 OK、限制明文响应总量；TLS 完成后才交回 imap Client 登录，不缓存升级前能力、不重复等待问候。依据 [RFC 3501 §6.2.1](https://www.rfc-editor.org/rfc/rfc3501#section-6.2.1)。
 - 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 49 项通过（39 单元 + 10 集成），含真实系统钥匙串。覆盖调用方取消/总超时后线程收尾期间同账号仍被锁定、退出后允许重入、其他账号独立；已认证 IMAP SELECT 停滞时取消、底层有限等待、阶段绝对期限、IDLE 普通超时与重置后取消、STARTTLS 问候/拒绝/错误 tag/额外明文/长度上限，以及前一轮连接和密码测试。单元测试阶段约 2 秒，取消测试有显式耗时上限；未执行真实邮箱收发。
 - I-14 账号退出/配置变更的 watcher 管理、I-10 mutation 认领与顺序、A-03 变更版本/部分提交事件仍按各自问题继续处理，不以本项取消和持锁验证代替其验收。
+
+## I-17 / I-14：迟到能力观测不再回滚新配置（追加）
+
+- 检查监听生命周期时发现：同步结束后用旧 AccountMailTransport 快照整行 upsert，可能把刚切换的凭据引用和 SMTP 设置写回旧值。现改为仅更新 imap_idle_supported；不修改配置时间或其他字段。
+- SQL 同时核对仍登录、IMAP 协议、收信端点/TLS/用户名/认证种类及探测时的凭据引用。凭据或收信配置已变化时丢弃迟到能力观测；仅 SMTP 配置变化时保留新 SMTP 配置并接受仍有效的收信观测。
+- 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --test mail_protocol_routing` 2 项通过；路由测试增加 SMTP 更新、凭据轮换、主机/端口/TLS/用户名/协议切换及退出登录后迟到观测的交错场景。未连接真实邮箱。
+- 本次修复配置覆盖竞态；I-14 的任务表、退出等待、重建和清理数据生命周期仍继续实施。
