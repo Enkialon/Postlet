@@ -235,12 +235,22 @@ pub async fn uid_set_seen_async(
     })?
 }
 
-/// 标记 `\Deleted` 并 UID EXPUNGE（不支持 UID EXPUNGE 时回退 EXPUNGE）。
-pub fn uid_delete(
-    session: &mut ImapSession,
+/// 仅清除指定 UID；没有 UIDPLUS 时不产生任何删除副作用。
+pub fn uid_delete<T: std::io::Read + std::io::Write>(
+    session: &mut Session<T>,
     folder: &str,
     uid: u32,
 ) -> Result<(), PortError> {
+    let capabilities = session.capabilities().map_err(|_| PortError::Remote {
+        message: "IMAP 删除能力检查失败，尚未标记删除".into(),
+        retryable: true,
+    })?;
+    if !capabilities.has_str("UIDPLUS") {
+        return Err(PortError::Remote {
+            message: "服务器不支持 UIDPLUS，无法安全永久删除单封邮件".into(),
+            retryable: false,
+        });
+    }
     session
         .select(folder)
         .map_err(|e| PortError::Remote {
@@ -251,19 +261,14 @@ pub fn uid_delete(
     session
         .uid_store(&seq, "+FLAGS (\\Deleted)")
         .map_err(|e| PortError::Remote {
-            message: format!("IMAP STORE \\Deleted 失败: {e}"),
+            message: format!("IMAP STORE \\Deleted 未确认，目标可能已标记删除: {e}"),
             retryable: true,
         })?;
-    match session.uid_expunge(&seq) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            session.expunge().map_err(|e| PortError::Remote {
-                message: format!("IMAP EXPUNGE 失败: {e}"),
-                retryable: true,
-            })?;
-            Ok(())
-        }
-    }
+    session.uid_expunge(&seq).map_err(|e| PortError::Remote {
+        message: format!("目标已标记 \\Deleted；UID EXPUNGE 未确认，未执行整夹清理: {e}"),
+        retryable: true,
+    })?;
+    Ok(())
 }
 
 pub async fn uid_delete_async(
@@ -285,4 +290,78 @@ pub async fn uid_delete_async(
     .map_err(|e| PortError::Network {
         message: format!("IMAP 删除任务失败: {e}"),
     })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    struct ScriptedStream {
+        responses: Cursor<Vec<u8>>,
+        commands: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.responses.read(buf)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.commands.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn delete_with_responses(responses: &str) -> (Result<(), PortError>, String) {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let stream = ScriptedStream {
+            responses: Cursor::new(format!("a1 OK login\r\n{responses}").into_bytes()),
+            commands: commands.clone(),
+        };
+        let mut session = imap::Client::new(stream).login("user", "secret")
+            .map_err(|(err, _)| err).unwrap();
+        let result = uid_delete(&mut session, "INBOX", 20);
+        let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+        (result, written)
+    }
+
+    #[test]
+    fn deletion_without_uidplus_has_no_side_effects() {
+        let (result, commands) = delete_with_responses(
+            "* CAPABILITY IMAP4rev1\r\na2 OK capabilities\r\n",
+        );
+        assert!(matches!(result, Err(PortError::Remote { retryable: false, .. })));
+        assert!(!commands.contains("SELECT"));
+        assert!(!commands.contains("STORE"));
+        assert!(!commands.contains("EXPUNGE"));
+    }
+
+    #[test]
+    fn deletion_never_falls_back_to_mailbox_expunge() {
+        // UID 10 was already Deleted by another client. Only UID 20 is ours.
+        for completion in ["a5 OK deleted\r\n", "a5 NO refused\r\n", "a5 BAD unsupported\r\n", ""] {
+            let responses = format!(
+                "* CAPABILITY IMAP4rev1 UIDPLUS\r\na2 OK capabilities\r\n\
+                 * FLAGS (\\Seen \\Deleted)\r\n* 2 EXISTS\r\n\
+                 * OK [UIDVALIDITY 1] generation\r\na3 OK selected\r\n\
+                 * 2 FETCH (UID 20 FLAGS (\\Deleted))\r\na4 OK stored\r\n{completion}"
+            );
+            let (result, commands) = delete_with_responses(&responses);
+            assert_eq!(result.is_ok(), completion.starts_with("a5 OK"));
+            assert!(commands.contains("UID STORE 20 +FLAGS (\\Deleted)"));
+            assert!(commands.contains("UID EXPUNGE 20"));
+            assert!(!commands.lines().any(|line| line.ends_with(" EXPUNGE")));
+            if let Err(error) = result {
+                assert!(error.to_string().contains("已标记"));
+            }
+        }
+    }
 }
