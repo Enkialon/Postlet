@@ -5,6 +5,7 @@
 pub mod aggregate_scheduler;
 pub mod change_dispatcher;
 pub mod mail_sync_gate;
+pub mod mail_sync;
 pub mod mail_sync_scheduler;
 pub mod mail_watcher;
 

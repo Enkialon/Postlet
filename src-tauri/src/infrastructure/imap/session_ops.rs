@@ -3,6 +3,7 @@
 use super::client::{list_capabilities, ImapSession};
 use super::sync::{sync_folder, FolderSyncRequest, FolderSyncResult};
 use crate::infrastructure::error::InfraError;
+use crate::infrastructure::mail::operation::MailOperation;
 
 #[derive(Debug, Clone)]
 pub struct ImapSyncBatch {
@@ -14,7 +15,9 @@ pub fn sync_account_blocking(
     mut session: ImapSession,
     requests: &[FolderSyncRequest],
     page_limit: u32,
+    operation: &MailOperation,
 ) -> Result<ImapSyncBatch, InfraError> {
+    operation.checkpoint()?;
     let (idle_supported, _) = list_capabilities(&mut session)?;
 
     // 无勾选文件夹时不偷偷回落 INBOX；由上层 resolve_mail_folders 决定范围。
@@ -28,7 +31,8 @@ pub fn sync_account_blocking(
 
     let mut folders = Vec::new();
     for req in requests {
-        let result = sync_folder(&mut session, req, page_limit)?;
+        operation.checkpoint()?;
+        let result = sync_folder(&mut session, req, page_limit, operation)?;
         folders.push(result);
     }
     let _ = session.logout();

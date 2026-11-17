@@ -2,3 +2,5 @@
 
 pub mod credentials;
 pub mod cursor;
+
+pub mod operation;

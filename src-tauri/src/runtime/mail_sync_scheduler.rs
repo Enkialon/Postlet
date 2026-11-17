@@ -1,7 +1,7 @@
 //! Graph 账户定时同步与 mutation 推送（不含聚合 drain）。
 
 use crate::application::dto::TriggerMailSyncCommand;
-use crate::application::use_cases::{message_use_case, sync_use_case};
+use crate::application::use_cases::message_use_case;
 use crate::domain::value_objects::ReceiveProtocol;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
@@ -49,7 +49,7 @@ async fn tick_once(
         let gate2 = gate.clone();
         let account_id = account.id.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = sync_use_case::trigger_mail_sync(
+            let _ = crate::runtime::mail_sync::trigger_mail_sync(
                 &db2,
                 &paths2,
                 &changes2,

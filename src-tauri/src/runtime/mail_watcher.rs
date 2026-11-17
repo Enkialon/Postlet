@@ -7,6 +7,7 @@ use crate::infrastructure::imap::{
     IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login,
 };
 use crate::infrastructure::mail::credentials;
+use crate::infrastructure::mail::operation::MailOperation;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
 use crate::runtime::{ChangeDispatcher, MailSyncGate};
@@ -136,7 +137,7 @@ async fn run_cycle(
     let use_idle = transport.imap_idle_supported.unwrap_or(false);
 
     // 先完成一批并提交；有历史缺口时主动续跑，不能进入无限 IDLE 等新邮件。
-    if let Err(error) = sync_use_case::trigger_mail_sync(
+    if let Err(error) = crate::runtime::mail_sync::trigger_mail_sync(
         db,
         paths,
         changes,
@@ -163,14 +164,15 @@ async fn run_cycle(
 
     if use_idle {
         eprintln!("IMAP IDLE [{account_id}]: 正在建立 INBOX 监听连接");
-        let mut session = match session_login(&endpoint, &auth).await {
+        let operation = MailOperation::new(Duration::from_secs(150));
+        let mut session = match session_login(&endpoint, &auth, &operation).await {
             Ok(session) => session,
             Err(error) => {
                 eprintln!("IMAP IDLE [{account_id}]: 登录失败: {error}");
                 return false;
             }
         };
-        let idle_result = tokio::task::spawn_blocking(move || {
+        let idle_result = operation.run_blocking(move || {
             session
                 .select("INBOX")
                 .map_err(|e| crate::infrastructure::error::InfraError::Remote {
@@ -181,24 +183,20 @@ async fn run_cycle(
         })
         .await;
         match idle_result {
-            Ok(Ok(IdleOutcome::Changed)) => {
+            Ok(IdleOutcome::Changed) => {
                 eprintln!("IMAP IDLE [{account_id}]: 收到服务器变化通知，请求同步");
                 true
             }
-            Ok(Ok(IdleOutcome::TimedOut)) => {
+            Ok(IdleOutcome::TimedOut) => {
                 eprintln!("IMAP IDLE [{account_id}]: 等待超时，请求定时兜底同步");
                 true
             }
-            Ok(Ok(IdleOutcome::Disconnected)) => {
+            Ok(IdleOutcome::Disconnected) => {
                 eprintln!("IMAP IDLE [{account_id}]: 监听连接已断开");
                 false
             }
-            Ok(Err(error)) => {
-                eprintln!("IMAP IDLE [{account_id}]: 监听建立失败: {error}");
-                false
-            }
             Err(error) => {
-                eprintln!("IMAP IDLE [{account_id}]: 监听任务异常: {error}");
+                eprintln!("IMAP IDLE [{account_id}]: 监听失败: {error}");
                 false
             }
         }

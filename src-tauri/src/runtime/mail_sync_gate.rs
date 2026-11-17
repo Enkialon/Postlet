@@ -9,22 +9,33 @@ pub struct MailSyncGate {
     inflight: Arc<Mutex<HashSet<String>>>,
 }
 
+pub struct MailSyncPermit {
+    gate: MailSyncGate,
+    account_id: String,
+}
+
+impl Drop for MailSyncPermit {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.gate.inflight.lock() {
+            guard.remove(&self.account_id);
+        }
+    }
+}
+
 impl MailSyncGate {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 若该账户已在同步则返回 false；否则登记并返回 true。
-    pub fn try_begin(&self, account_id: &str) -> bool {
-        match self.inflight.lock() {
-            Ok(mut guard) => guard.insert(account_id.to_string()),
-            Err(_) => false,
+    /// Permit 归实际任务所有；取消等待者不会提前释放它。
+    pub fn try_acquire(&self, account_id: &str) -> Option<MailSyncPermit> {
+        let mut guard = self.inflight.lock().ok()?;
+        if !guard.insert(account_id.to_string()) {
+            return None;
         }
-    }
-
-    pub fn end(&self, account_id: &str) {
-        if let Ok(mut guard) = self.inflight.lock() {
-            guard.remove(account_id);
-        }
+        Some(MailSyncPermit {
+            gate: self.clone(),
+            account_id: account_id.to_string(),
+        })
     }
 }

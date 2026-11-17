@@ -253,7 +253,7 @@ pub async fn trigger_mail_sync(
     let changes = state.changes.clone();
     let gate = state.mail_sync_gate.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = sync_use_case::trigger_mail_sync(&db, &paths, &changes, &gate, cmd).await;
+        let _ = crate::runtime::mail_sync::trigger_mail_sync(&db, &paths, &changes, &gate, cmd).await;
     });
     Ok(())
 }
@@ -263,9 +263,10 @@ pub async fn refresh_mail_folders(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<Vec<MailFolderSyncState>, AppError> {
-    sync_use_case::refresh_mail_folders(
+    crate::runtime::mail_sync::refresh_mail_folders(
         &state.db,
         &state.paths,
+        &state.mail_sync_gate,
         &AccountId::new(account_id),
     )
     .await

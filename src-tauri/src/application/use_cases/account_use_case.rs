@@ -151,14 +151,10 @@ pub async fn clear_local_data(
     account_id: &AccountId,
 ) -> Result<(), AppError> {
     let gate: &MailSyncGate = &state.mail_sync_gate;
-    if !gate.try_begin(account_id.as_str()) {
-        return Err(AppError::conflict(
-            "邮件同步进行中，请稍后再清理本地数据".to_string(),
-        ));
-    }
-    let clear_result = clear_local_data_inner(state, account_id).await;
-    gate.end(account_id.as_str());
-    clear_result
+    let _permit = gate.try_acquire(account_id.as_str()).ok_or_else(|| {
+        AppError::conflict("邮件同步进行中，请稍后再清理本地数据")
+    })?;
+    clear_local_data_inner(state, account_id).await
 }
 
 async fn clear_local_data_inner(

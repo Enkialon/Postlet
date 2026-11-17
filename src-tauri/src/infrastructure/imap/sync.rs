@@ -3,6 +3,7 @@
 //! 按服务器 UID 集合与本地已下载集合的差集分批补齐；允许 UID 空洞，失败项留待下轮。
 
 use super::client::ImapSession;
+use crate::infrastructure::mail::operation::MailOperation;
 use super::parse::{decode_remote_key, parse_rfc822, remote_id};
 use crate::domain::mail::{RemoteFlags, RemoteMessageChange, RemoteMessage};
 use crate::infrastructure::error::InfraError;
@@ -40,7 +41,9 @@ pub fn sync_folder(
     session: &mut ImapSession,
     request: &FolderSyncRequest,
     page_limit: u32,
+    operation: &MailOperation,
 ) -> Result<FolderSyncResult, InfraError> {
+    operation.checkpoint()?;
     let folder = request.remote_binding.as_str();
     let stored_generation = request.stored_generation.as_deref();
     let known_messages = &request.known_messages;
@@ -65,7 +68,7 @@ pub fn sync_folder(
     };
     let remote_uids = search_uids(session, "ALL")?;
     let page = missing_imap_page(&remote_uids, &known, page_limit);
-    let fetched = fetch_uid_page(session, &request.folder_id, uidvalidity, &page)?;
+    let fetched = fetch_uid_page(session, &request.folder_id, uidvalidity, &page, operation)?;
     if !page.is_empty() && fetched.ok_uids.is_empty() {
         return Err(InfraError::Remote {
             message: format!(
@@ -103,6 +106,7 @@ pub fn sync_folder(
     present.sort_unstable();
     let mut observed = HashMap::new();
     for chunk in present.chunks(200) {
+        operation.checkpoint()?;
         let set = chunk.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
         let raw = session.run_command_and_read_response(format!("UID FETCH {set} (UID FLAGS)"))
             .map_err(|_| InfraError::Remote { message: "IMAP FLAGS FETCH 失败".into(), retryable: true })?;
@@ -146,6 +150,7 @@ fn fetch_uid_page(
     folder: &crate::domain::value_objects::FolderId,
     uidvalidity: u32,
     uid_list: &[u32],
+    operation: &MailOperation,
 ) -> Result<FetchPageResult, InfraError> {
     let mut changes = Vec::new();
     let mut ok_uids = HashSet::new();
@@ -154,6 +159,7 @@ fn fetch_uid_page(
     }
 
     for chunk in uid_list.chunks(FETCH_CHUNK) {
+        operation.checkpoint()?;
         let set = chunk
             .iter()
             .map(|u| u.to_string())
@@ -168,6 +174,7 @@ fn fetch_uid_page(
             })?;
 
         for item in fetches.iter() {
+            operation.checkpoint()?;
             let Some(uid) = item.uid else {
                 continue;
             };
@@ -187,6 +194,7 @@ fn fetch_uid_page(
         }
 
         for uid in chunk {
+            operation.checkpoint()?;
             if ok_uids.contains(uid) {
                 continue;
             }

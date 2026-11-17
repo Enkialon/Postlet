@@ -6,6 +6,7 @@ mod idle;
 mod parse;
 mod session_ops;
 mod sync;
+mod stream;
 
 pub use client::{
     discover_folder_tree, discover_folders, list_capabilities,

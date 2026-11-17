@@ -28,38 +28,12 @@ use crate::infrastructure::repository::{
     sessions,
 };
 use crate::application::use_cases::aggregate_worker_use_case;
-use crate::runtime::{ChangeDispatcher, MailSyncGate};
+use crate::runtime::ChangeDispatcher;
+use crate::infrastructure::mail::operation::MailOperation;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-
-const FOLDER_REFRESH_TIMEOUT: Duration = Duration::from_secs(90);
-const MAIL_SYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-struct MailSyncGateGuard<'a> {
-    gate: &'a MailSyncGate,
-    account_id: String,
-}
-
-impl<'a> MailSyncGateGuard<'a> {
-    fn begin(gate: &'a MailSyncGate, account_id: &str) -> Option<Self> {
-        if gate.try_begin(account_id) {
-            Some(Self {
-                gate,
-                account_id: account_id.to_string(),
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl Drop for MailSyncGateGuard<'_> {
-    fn drop(&mut self) {
-        self.gate.end(&self.account_id);
-    }
-}
 
 fn now_ms() -> TimestampMs {
     SystemTime::now()
@@ -95,48 +69,16 @@ fn merge_folder_progress(prev: &MailFolderSyncState, sync_cursor: Option<String>
 
 /// 请求同步指定账户邮件；按 `receive_protocol` 路由。
 ///
-/// 同一账户重入时直接 Ok（已在跑）；调用方可将本函数丢到后台，避免 IPC 卡死。
+/// Runtime 持有账号 permit 并提供取消/截止时间；本用例不释放或重建同步锁。
 pub async fn trigger_mail_sync(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
-    gate: &MailSyncGate,
+    operation: &MailOperation,
     cmd: TriggerMailSyncCommand,
 ) -> Result<(), AppError> {
-    let Some(_guard) = MailSyncGateGuard::begin(gate, cmd.account_id.as_str()) else {
-        return Ok(());
-    };
-    match tokio::time::timeout(
-        MAIL_SYNC_TIMEOUT,
-        trigger_mail_sync_locked(db, paths, changes, &cmd),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            if let Ok(mut c) = db.acquire().await {
-                let _ = accounts::update_mail_sync_meta(
-                    &mut c,
-                    &cmd.account_id,
-                    SyncStatus::Error,
-                    Some("邮件同步超时，请稍后重试"),
-                    None,
-                )
-                .await;
-            }
-            Err(AppError::from(crate::infrastructure::error::InfraError::Network {
-                message: "邮件同步超时，请稍后重试".into(),
-            }))
-        }
-    }
-}
-
-async fn trigger_mail_sync_locked(
-    db: &SqlitePool,
-    paths: &AppPaths,
-    changes: &ChangeDispatcher,
-    cmd: &TriggerMailSyncCommand,
-) -> Result<(), AppError> {
+    operation.checkpoint()?;
+    let cmd = &cmd;
     let mut conn = db.acquire().await?;
     let _account = accounts::get(&mut conn, &cmd.account_id)
         .await?
@@ -161,8 +103,8 @@ async fn trigger_mail_sync_locked(
     }
 
     let result = match transport.receive_protocol {
-        ReceiveProtocol::Graph => sync_graph_mail(db, paths, cmd).await,
-        ReceiveProtocol::Imap => sync_imap_mail(db, paths, cmd, &transport).await,
+        ReceiveProtocol::Graph => sync_graph_mail(db, paths, operation, cmd).await,
+        ReceiveProtocol::Imap => sync_imap_mail(db, paths, operation, cmd, &transport).await,
     };
 
     match result {
@@ -210,10 +152,11 @@ async fn trigger_mail_sync_locked(
 async fn sync_graph_mail(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &MailOperation,
     cmd: &TriggerMailSyncCommand,
 ) -> Result<ChangeSet, AppError> {
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, &cmd.account_id)
+    let token = operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, &cmd.account_id))
         .await
         .map_err(AppError::from)?;
 
@@ -223,6 +166,7 @@ async fn sync_graph_mail(
     let mut is_initial = false;
 
     for folder in folders {
+        operation.checkpoint()?;
         let prev = {
             let mut conn = db.acquire().await?;
             folder_states::get(&mut conn, &cmd.account_id, &folder)
@@ -235,7 +179,7 @@ async fn sync_graph_mail(
         }
         let resume = prev.page_cursor.as_deref().or(prev.sync_cursor.as_deref()).map(str::to_owned);
 
-        let page = graph::mail::delta_messages(&token, &folder, &prev.remote_binding, resume.as_deref())
+        let page = operation.wait(graph::mail::delta_messages(&token, &folder, &prev.remote_binding, resume.as_deref()))
             .await
             .map_err(AppError::from)?;
 
@@ -272,6 +216,7 @@ async fn sync_graph_mail(
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
+        operation.checkpoint()?;
         tx.commit().await?;
     }
 
@@ -299,6 +244,7 @@ pub async fn has_pending_imap_history(
 async fn sync_imap_mail(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &MailOperation,
     cmd: &TriggerMailSyncCommand,
     transport: &crate::domain::entities::AccountMailTransport,
 ) -> Result<ChangeSet, AppError> {
@@ -367,13 +313,11 @@ async fn sync_imap_mail(
         }
     }
 
-    let session = session_login(&endpoint, &auth).await.map_err(AppError::from)?;
-    let batch = tokio::task::spawn_blocking(move || {
-        sync_account_blocking(session, &requests, 200)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("IMAP 同步任务失败: {e}")))?
-    .map_err(AppError::from)?;
+    let session = session_login(&endpoint, &auth, operation).await.map_err(AppError::from)?;
+    let control = operation.clone();
+    let batch = operation.run_blocking(move || {
+        sync_account_blocking(session, &requests, 200, &control)
+    }).await.map_err(AppError::from)?;
 
     {
         let mut conn = db.acquire().await?;
@@ -388,6 +332,7 @@ async fn sync_imap_mail(
     let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
 
     for result in batch.folders {
+        operation.checkpoint()?;
         let mut tx = db.begin().await?;
         let current = folder_states::get(&mut tx, &cmd.account_id, &result.folder_id).await?
             .filter(|state| !state.is_retired && state.binding_revision == result.binding_revision)
@@ -430,6 +375,7 @@ async fn sync_imap_mail(
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
+        operation.checkpoint()?;
         tx.commit().await?;
     }
 
@@ -831,26 +777,10 @@ pub async fn get_contact_sync_progress(
 pub async fn refresh_mail_folders(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &MailOperation,
     account_id: &AccountId,
 ) -> Result<Vec<MailFolderSyncState>, AppError> {
-    match tokio::time::timeout(
-        FOLDER_REFRESH_TIMEOUT,
-        refresh_mail_folders_inner(db, paths, account_id),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(AppError::from(crate::infrastructure::error::InfraError::Network {
-            message: "拉取文件夹列表超时，请检查网络后重试".into(),
-        })),
-    }
-}
-
-async fn refresh_mail_folders_inner(
-    db: &SqlitePool,
-    paths: &AppPaths,
-    account_id: &AccountId,
-) -> Result<Vec<MailFolderSyncState>, AppError> {
+    operation.checkpoint()?;
     let mut conn = db.acquire().await?;
     let _account = accounts::get(&mut conn, account_id)
         .await?
@@ -864,10 +794,10 @@ async fn refresh_mail_folders_inner(
         ReceiveProtocol::Graph => {
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
             let token =
-                graph::auth::get_access_token(&paths.credentials_dir, &config, account_id)
+                operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, account_id))
                     .await
                     .map_err(AppError::from)?;
-            let remote = graph::mail::list_mail_folders(&token)
+            let remote = operation.wait(graph::mail::list_mail_folders(&token))
                 .await
                 .map_err(AppError::from)?;
             remote.into_iter().map(|folder| DiscoveredFolder {
@@ -906,15 +836,15 @@ async fn refresh_mail_folders_inner(
                 },
             };
             let endpoint = ImapEndpoint { host, port, tls };
-            let mut session = session_login(&endpoint, &auth).await.map_err(AppError::from)?;
-            let nodes = tokio::task::spawn_blocking(move || {
+            let mut session = session_login(&endpoint, &auth, operation).await.map_err(AppError::from)?;
+            let control = operation.clone();
+            let nodes = operation.run_blocking(move || {
+                control.checkpoint()?;
                 let tree = discover_folder_tree(&mut session)?;
                 let _ = session.logout();
                 Ok::<_, crate::infrastructure::error::InfraError>(tree)
             })
-            .await
-            .map_err(|e| AppError::internal(format!("IMAP 文件夹发现失败: {e}")))?
-            .map_err(AppError::from)?;
+            .await.map_err(AppError::from)?;
 
             nodes.into_iter().map(|node| {
                 let display_name = imap_folder_display_name(&node.name, node.parent_name.as_deref(), node.delimiter.as_deref());
@@ -923,10 +853,12 @@ async fn refresh_mail_folders_inner(
             }).collect()
         }
     };
+    operation.checkpoint()?;
     let mut tx = db.begin().await?;
     let retired = folder_states::reconcile_discovered(&mut tx, account_id, transport.receive_protocol, &discovered, now_ms()).await?;
     let mut changes = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
     for folder_id in retired { invalidate_folder_generation(&mut tx, account_id, &folder_id, &mut changes).await?; }
+    operation.checkpoint()?;
     tx.commit().await?;
 
     let mut conn = db.acquire().await?;

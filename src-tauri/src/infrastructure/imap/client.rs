@@ -6,7 +6,8 @@ use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{MailTlsMode, RemoteKey};
 use super::parse::decode_remote_key;
 use imap::Session;
-use std::net::TcpStream;
+use crate::infrastructure::mail::operation::MailOperation;
+use std::time::Duration;
 
 
 #[derive(Debug, Clone)]
@@ -22,7 +23,7 @@ pub enum ImapAuth {
     OAuth2 { username: String, access_token: String },
 }
 
-pub type ImapSession = Session<native_tls::TlsStream<TcpStream>>;
+pub type ImapSession = Session<super::stream::ImapStream>;
 
 pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, InfraError> {
     Ok(discover_folder_tree(session)?
@@ -109,18 +110,16 @@ pub async fn uid_set_seen_async(
     remote_key: &RemoteKey,
     is_read: bool,
 ) -> Result<(), InfraError> {
-    let mut session = super::connection::session_login(endpoint, auth).await?;
+    let operation = MailOperation::new(Duration::from_secs(180));
+    let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
     let folder = folder.to_string();
     let remote_key = remote_key.clone();
-    tokio::task::spawn_blocking(move || {
+    operation.run_blocking(move || {
         let out = uid_set_seen(&mut session, &folder, &remote_key, is_read);
         let _ = session.logout();
         out
     })
     .await
-    .map_err(|e| InfraError::Network {
-        message: format!("IMAP STORE 任务失败: {e}"),
-    })?
 }
 
 /// 仅清除指定 UID；没有 UIDPLUS 时不产生任何删除副作用。
@@ -166,18 +165,16 @@ pub async fn uid_delete_async(
     folder: &str,
     remote_key: &RemoteKey,
 ) -> Result<(), InfraError> {
-    let mut session = super::connection::session_login(endpoint, auth).await?;
+    let operation = MailOperation::new(Duration::from_secs(180));
+    let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
     let folder = folder.to_string();
     let remote_key = remote_key.clone();
-    tokio::task::spawn_blocking(move || {
+    operation.run_blocking(move || {
         let out = uid_delete(&mut session, &folder, &remote_key);
         let _ = session.logout();
         out
     })
     .await
-    .map_err(|e| InfraError::Network {
-        message: format!("IMAP 删除任务失败: {e}"),
-    })?
 }
 
 #[cfg(test)]

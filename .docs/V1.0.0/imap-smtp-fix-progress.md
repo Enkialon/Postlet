@@ -95,3 +95,13 @@
 - 密码原样传递，仅规范化用户名；认证响应拒绝与传输响应未确认分开，不回显可能包含秘密的认证错误原文。Plain 与通用 OAuth2 在 DNS 前拒绝。
 - 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 41 项通过，含系统钥匙串。新增首地址拒绝后的回退、密码首尾空格、TLS/问候停滞、STARTTLS 确认后握手停滞、取消后服务端观测连接关闭、连接前拒绝模式等 6 项测试。沙箱系统安全包拒绝 TLS 凭据创建，握手测试以原生环境结果为准；未连接真实邮箱。
 - 本次仅完成连接阶段，不能声称整项 I-15 已解决：已认证后的阻塞同步循环、整轮超时、调用方取消与 gate 实际持有时间仍需继续修复。
+
+## I-15：整轮取消与实际任务持锁已修复，Windows 已验证（追加）
+
+- MailOperation 提供单次任务的绝对截止时间、取消信号和连接关闭；有界 DNS/Graph 请求可取消，阻塞协议调用在关闭连接后等待线程实际退出，不丢弃 JoinHandle 后报告结束。
+- Runtime 独立任务持有账号 RAII permit；调用方 Future 被取消只发出取消信号，permit 留在实际任务中直到网络与应用收尾完成。同账号收信与目录刷新使用同一把锁，其他账号可独立运行；清理本地数据也改用 RAII permit，删除手工 begin/end。
+- 删除 application 中直接丢弃整轮 Future 的 timeout 和借用 gate guard；同步/目录刷新改为显式接收操作控制，批次间及数据库提交前检查取消。整体收信预算 10 分钟、目录刷新 90 秒，登录阶段仍与整体共用更早的截止时间且最多 60 秒。IDLE 与 mutation 的阻塞路径也使用有界操作。
+- 仅 shutdown 不足以保证 Windows 阻塞读取及时退出，因此底层 IO 每次最多等待 100 毫秒，遇到普通短超时继续读取并检查绝对期限/取消，不把短等待当作断线。TLS 握手、认证与已登录命令使用同一受控流，持续返回小片段也不能刷新任务期限。IDLE 的超时重置只移除其等待期限，不能清除底层有限等待或任务期限。
+- 锁定 imap 2.4 的 Client::secure 仅支持裸 TcpStream；为保留受控流，STARTTLS 前导复用已锁定 imap-proto 解析器，严格验证问候与对应 tag 的 OK、限制明文响应总量；TLS 完成后才交回 imap Client 登录，不缓存升级前能力、不重复等待问候。依据 [RFC 3501 §6.2.1](https://www.rfc-editor.org/rfc/rfc3501#section-6.2.1)。
+- 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 49 项通过（39 单元 + 10 集成），含真实系统钥匙串。覆盖调用方取消/总超时后线程收尾期间同账号仍被锁定、退出后允许重入、其他账号独立；已认证 IMAP SELECT 停滞时取消、底层有限等待、阶段绝对期限、IDLE 普通超时与重置后取消、STARTTLS 问候/拒绝/错误 tag/额外明文/长度上限，以及前一轮连接和密码测试。单元测试阶段约 2 秒，取消测试有显式耗时上限；未执行真实邮箱收发。
+- I-14 账号退出/配置变更的 watcher 管理、I-10 mutation 认领与顺序、A-03 变更版本/部分提交事件仍按各自问题继续处理，不以本项取消和持锁验证代替其验收。

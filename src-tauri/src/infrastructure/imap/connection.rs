@@ -1,33 +1,16 @@
 //! 有界连接：DNS、地址回退、TLS、问候与认证共用一个截止时间。
 
 use super::client::{ImapAuth, ImapEndpoint, ImapSession};
+use super::stream::{DeadlineTcp, ImapStream};
 use crate::domain::value_objects::MailTlsMode;
 use crate::infrastructure::error::InfraError;
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use crate::infrastructure::mail::operation::MailOperation;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 const ADDRESS_TIMEOUT: Duration = Duration::from_secs(3);
-
-#[derive(Default)]
-struct SocketState {
-    cancelled: bool,
-    socket: Option<TcpStream>,
-}
-
-/// Future 被取消时也关闭底层 socket，不能留下继续认证的阻塞任务。
-struct LoginGuard(Arc<Mutex<SocketState>>);
-
-impl Drop for LoginGuard {
-    fn drop(&mut self) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.cancelled = true;
-        if let Some(socket) = state.socket.take() {
-            let _ = socket.shutdown(Shutdown::Both);
-        }
-    }
-}
 
 fn network(message: impl Into<String>) -> InfraError {
     InfraError::Network {
@@ -45,28 +28,15 @@ fn remaining(deadline: Instant) -> Result<Duration, InfraError> {
 fn connect_tcp(
     addresses: &[SocketAddr],
     deadline: Instant,
-    state: &Mutex<SocketState>,
+    operation: &MailOperation,
 ) -> Result<TcpStream, InfraError> {
     for address in addresses {
-        if state.lock().unwrap_or_else(|e| e.into_inner()).cancelled {
-            return Err(network("IMAP 连接已取消"));
-        }
+        operation.checkpoint()?;
         let timeout = remaining(deadline)?.min(ADDRESS_TIMEOUT);
         let tcp = match TcpStream::connect_timeout(address, timeout) {
             Ok(tcp) => tcp,
             Err(_) => continue,
         };
-        let timeout = remaining(deadline)?;
-        tcp.set_read_timeout(Some(timeout))
-            .map_err(|_| network("无法设置 IMAP 读取超时"))?;
-        tcp.set_write_timeout(Some(timeout))
-            .map_err(|_| network("无法设置 IMAP 写入超时"))?;
-        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.cancelled {
-            let _ = tcp.shutdown(Shutdown::Both);
-            return Err(network("IMAP 连接已取消"));
-        }
-        guard.socket = Some(tcp.try_clone().map_err(|_| network("无法监控 IMAP 连接"))?);
         return Ok(tcp);
     }
     Err(network("IMAP 所有解析地址均连接失败"))
@@ -92,51 +62,108 @@ fn authenticate<T: std::io::Read + std::io::Write>(
     }
 }
 
+/// imap 2.4 的 Client::secure 仅接受 TcpStream；受控流在认证前按协议升级。
+/// 仍使用锁定的 imap-proto 解析响应，未获同 tag 的 OK 绝不进入 TLS/认证。
+fn request_starttls<T: std::io::Read + std::io::Write>(stream: T) -> Result<T, InfraError> {
+    use imap_proto::{Response, Status};
+    use std::io::{BufRead, Read};
+    let mut reader = std::io::BufReader::new(stream);
+    let mut remaining_bytes = 64 * 1024usize;
+    let mut read_line = |reader: &mut std::io::BufReader<T>| -> Result<Vec<u8>, InfraError> {
+        let mut line = Vec::new();
+        Read::take(reader, (remaining_bytes + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .map_err(|_| network("IMAP STARTTLS 响应读取失败"))?;
+        if line.len() > remaining_bytes || !line.ends_with(b"\r\n") {
+            return Err(network("IMAP STARTTLS 响应过长或不完整"));
+        }
+        remaining_bytes -= line.len();
+        Ok(line)
+    };
+    let greeting = read_line(&mut reader)?;
+    if !matches!(
+        imap_proto::parse_response(&greeting),
+        Ok((
+            [],
+            Response::Data {
+                status: Status::Ok,
+                ..
+            }
+        ))
+    ) {
+        return Err(network("IMAP STARTTLS 问候无效"));
+    }
+    reader
+        .get_mut()
+        .write_all(b"a1 STARTTLS\r\n")
+        .map_err(|_| network("IMAP STARTTLS 命令发送失败"))?;
+    reader
+        .get_mut()
+        .flush()
+        .map_err(|_| network("IMAP STARTTLS 命令发送失败"))?;
+    loop {
+        let line = read_line(&mut reader)?;
+        match imap_proto::parse_response(&line) {
+            Ok((
+                [],
+                Response::Done {
+                    tag,
+                    status: Status::Ok,
+                    ..
+                },
+            )) if tag.as_bytes() == b"a1" => break,
+            Ok(([], Response::Capabilities(_)))
+            | Ok((
+                [],
+                Response::Data {
+                    status: Status::Ok, ..
+                },
+            )) => continue,
+            _ => return Err(network("IMAP STARTTLS 升级未获确认")),
+        }
+    }
+    if !reader.buffer().is_empty() {
+        return Err(network("IMAP STARTTLS 后出现非预期明文数据"));
+    }
+    Ok(reader.into_inner())
+}
+
 fn login_resolved(
     endpoint: ImapEndpoint,
     auth: ImapAuth,
     addresses: Vec<SocketAddr>,
     deadline: Instant,
-    state: Arc<Mutex<SocketState>>,
+    operation: MailOperation,
 ) -> Result<ImapSession, InfraError> {
-    let tcp = connect_tcp(&addresses, deadline, &state)?;
+    let tcp = connect_tcp(&addresses, deadline, &operation)?;
+    let phase = Arc::new(Mutex::new(deadline));
+    let tcp = DeadlineTcp::new(tcp, &operation, phase.clone())?;
     let tls = native_tls::TlsConnector::builder()
         .build()
         .map_err(|_| network("IMAP TLS 初始化失败"))?;
-    let client = if endpoint.tls == MailTlsMode::StartTls {
-        // STARTTLS 完成前只交换问候和升级命令，绝不发送认证数据。
-        // secure 复用同一个已配置超时的 socket；升级后没有第二次问候。
-        let mut probe = imap::Client::new(tcp);
-        probe
-            .read_greeting()
-            .map_err(|_| network("IMAP 问候失败"))?;
-        probe
-            .secure(&endpoint.host, &tls)
-            .map_err(|error| network(format!("IMAP STARTTLS 升级失败: {error}")))?
+    let tcp = if endpoint.tls == MailTlsMode::StartTls {
+        request_starttls(tcp)?
     } else {
-        let stream = tls
-            .connect(&endpoint.host, tcp)
-            .map_err(|_| network("IMAP TLS 握手失败"))?;
-        let mut client = imap::Client::new(stream);
+        tcp
+    };
+    let stream = tls
+        .connect(&endpoint.host, tcp)
+        .map_err(|_| network("IMAP TLS 握手失败"))?;
+    let mut client = imap::Client::new(ImapStream(stream));
+    if endpoint.tls == MailTlsMode::Implicit {
         client
             .read_greeting()
             .map_err(|_| network("IMAP 问候失败"))?;
-        client
-    };
-    authenticate(client, &auth)
+    }
+    let session = authenticate(client, &auth)?;
+    *phase.lock().unwrap_or_else(|e| e.into_inner()) = operation.deadline();
+    Ok(session)
 }
 
 pub async fn session_login(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
-) -> Result<ImapSession, InfraError> {
-    session_login_with_timeout(endpoint, auth, LOGIN_TIMEOUT).await
-}
-
-async fn session_login_with_timeout(
-    endpoint: &ImapEndpoint,
-    auth: &ImapAuth,
-    budget: Duration,
+    operation: &MailOperation,
 ) -> Result<ImapSession, InfraError> {
     if matches!(auth, ImapAuth::OAuth2 { .. }) {
         return Err(InfraError::Auth {
@@ -149,38 +176,37 @@ async fn session_login_with_timeout(
             retryable: false,
         });
     }
-    let deadline = Instant::now() + budget;
-    let addresses = tokio::time::timeout(
-        budget,
-        tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port)),
-    )
-    .await
-    .map_err(|_| network("IMAP DNS 解析超时"))?
-    .map_err(|_| network("IMAP DNS 解析失败"))?
-    .collect::<Vec<_>>();
-    let guard = LoginGuard(Arc::new(Mutex::new(SocketState::default())));
+    let guard = operation.cancel_on_drop();
+    let deadline = operation.phase_deadline(LOGIN_TIMEOUT);
+    let host = endpoint.host.clone();
+    let port = endpoint.port;
+    let addresses = operation
+        .wait_until(deadline, async {
+            tokio::net::lookup_host((host.as_str(), port))
+                .await
+                .map(|addresses| addresses.collect::<Vec<_>>())
+                .map_err(|_| network("IMAP DNS 解析失败"))
+        })
+        .await?;
     let endpoint = endpoint.clone();
     let auth = auth.clone();
-    let state = guard.0.clone();
-    let mut worker = tokio::task::spawn_blocking(move || {
-        login_resolved(endpoint, auth, addresses, deadline, state)
-    });
-    let result = tokio::select! {
-        result = &mut worker => result.map_err(|_| network("IMAP 登录任务失败"))?,
-        _ = tokio::time::sleep(remaining(deadline).unwrap_or(Duration::ZERO)) => {
-            drop(guard); // 中断 TLS/问候/认证读取，再等待实际线程退出。
-            let _ = worker.await;
-            return Err(network("IMAP 连接或认证超时"));
-        }
-    };
-    // 成功返回时移除监控副本，Drop 不关闭交给调用方的会话。
-    guard
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .socket
-        .take();
+    let control = operation.clone();
+    let result = operation
+        .run_blocking_until(deadline, move || {
+            login_resolved(endpoint, auth, addresses, deadline, control)
+        })
+        .await;
+    guard.disarm();
     result
+}
+
+#[cfg(test)]
+async fn session_login_with_timeout(
+    endpoint: &ImapEndpoint,
+    auth: &ImapAuth,
+    budget: Duration,
+) -> Result<ImapSession, InfraError> {
+    session_login(endpoint, auth, &MailOperation::new(budget)).await
 }
 
 #[cfg(test)]
@@ -188,6 +214,58 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn starttls_requires_valid_greeting_and_matching_ok_without_extra_plaintext() {
+        struct Stream {
+            input: Cursor<Vec<u8>>,
+            output: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Read for Stream {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.input.read(bytes)
+            }
+        }
+        impl Write for Stream {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.output.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for (response, expected) in [
+            ("* OK hello\r\na1 OK upgrade\r\n", true),
+            (
+                "* OK hello\r\n* CAPABILITY IMAP4rev1 STARTTLS\r\na1 OK upgrade\r\n",
+                true,
+            ),
+            ("* BYE refused\r\n", false),
+            ("garbage\r\n", false),
+            ("* OK hello\r\na1 NO refused\r\n", false),
+            ("* OK hello\r\na2 OK wrong tag\r\n", false),
+            ("* OK hello\r\na1 OK upgrade\r\nextra plaintext\r\n", false),
+        ] {
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let stream = Stream {
+                input: Cursor::new(response.as_bytes().to_vec()),
+                output: output.clone(),
+            };
+            assert_eq!(request_starttls(stream).is_ok(), expected, "{response}");
+            let command = output.lock().unwrap().clone();
+            assert!(command.is_empty() || command == b"a1 STARTTLS\r\n");
+        }
+        assert!(request_starttls(Cursor::new(vec![b'x'; 65537])).is_err());
+    }
+
+    async fn session_login(
+        endpoint: &ImapEndpoint,
+        auth: &ImapAuth,
+    ) -> Result<ImapSession, InfraError> {
+        super::session_login(endpoint, auth, &MailOperation::new(LOGIN_TIMEOUT)).await
+    }
 
     #[tokio::test]
     async fn rejects_unsupported_modes_before_dns() {
@@ -269,15 +347,13 @@ mod tests {
         let connected = connect_tcp(
             &[unavailable, listener.local_addr().unwrap()],
             Instant::now() + Duration::from_secs(8),
-            &Mutex::new(SocketState::default()),
+            &MailOperation::new(Duration::from_secs(8)),
         )
         .unwrap();
         assert_eq!(
             connected.peer_addr().unwrap(),
             listener.local_addr().unwrap()
         );
-        assert!(connected.read_timeout().unwrap().is_some());
-        assert!(connected.write_timeout().unwrap().is_some());
     }
 
     #[tokio::test]
