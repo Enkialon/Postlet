@@ -7,7 +7,6 @@ use crate::infrastructure::imap::{
     IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login,
 };
 use crate::infrastructure::mail::credentials;
-use crate::infrastructure::mail::operation::MailOperation;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
 use crate::runtime::{ChangeDispatcher, MailSyncGate};
@@ -20,59 +19,26 @@ const BACKFILL_DELAY: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
 
-/// 为已登录且 receive=imap 的账号启动后台监视（进程级）。
-pub fn spawn_watchers(
-    db: SqlitePool,
-    paths: AppPaths,
-    changes: ChangeDispatcher,
-    gate: MailSyncGate,
-) {
-    tauri::async_runtime::spawn(async move {
-        let mut started = std::collections::HashSet::<String>::new();
-        loop {
-            if let Ok(mut conn) = db.acquire().await {
-                if let Ok(list) = accounts::list(&mut conn).await {
-                    for account in list {
-                        if started.contains(account.id.as_str()) {
-                            continue;
-                        }
-                        if let Ok(Some(t)) = mail_transports::get(&mut conn, &account.id).await {
-                            if t.receive_protocol == ReceiveProtocol::Imap {
-                                started.insert(account.id.as_str().to_string());
-                                let db2 = db.clone();
-                                let paths2 = paths.clone();
-                                let changes2 = changes.clone();
-                                let gate2 = gate.clone();
-                                let id = account.id.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    watch_one_account(db2, paths2, changes2, gate2, id).await;
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    });
-}
-
-async fn watch_one_account(
+pub(crate) async fn watch_one_account(
     db: SqlitePool,
     paths: AppPaths,
     changes: ChangeDispatcher,
     gate: MailSyncGate,
     account_id: AccountId,
+    control: super::mail_watchers::WatcherControl,
 ) {
     eprintln!("IMAP 监听 [{account_id}]: 后台任务已启动，请求首次同步");
-    loop {
-        let ok = run_cycle(&db, &paths, &changes, &gate, &account_id).await;
+    while !control.is_stopped() {
+        let ok = run_cycle(&db, &paths, &changes, &gate, &account_id, &control).await;
+        if control.is_stopped() {
+            break;
+        }
         if !ok {
             eprintln!(
                 "IMAP 监听 [{account_id}]: 本轮失败，{} 秒后重试",
                 RECONNECT_DELAY.as_secs()
             );
-            tokio::time::sleep(RECONNECT_DELAY).await;
+            control.sleep(RECONNECT_DELAY).await;
         }
     }
 }
@@ -83,12 +49,19 @@ async fn run_cycle(
     changes: &ChangeDispatcher,
     gate: &MailSyncGate,
     account_id: &AccountId,
+    control: &super::mail_watchers::WatcherControl,
 ) -> bool {
     let (transport, secret) = {
         let mut conn = match db.acquire().await {
             Ok(c) => c,
             Err(_) => return false,
         };
+        if !accounts::is_signed_in(&mut conn, account_id)
+            .await
+            .unwrap_or(false)
+        {
+            return false;
+        }
         let t = match mail_transports::get(&mut conn, account_id).await {
             Ok(Some(t)) => t,
             _ => return false,
@@ -137,7 +110,10 @@ async fn run_cycle(
     let use_idle = transport.imap_idle_supported.unwrap_or(false);
 
     // 先完成一批并提交；有历史缺口时主动续跑，不能进入无限 IDLE 等新邮件。
-    if let Err(error) = crate::runtime::mail_sync::trigger_mail_sync(
+    let Some(operation) = control.begin_operation(Duration::from_secs(10 * 60)) else {
+        return false;
+    };
+    if let Err(error) = crate::runtime::mail_sync::trigger_mail_sync_controlled(
         db,
         paths,
         changes,
@@ -146,16 +122,20 @@ async fn run_cycle(
             account_id: account_id.clone(),
             folder_ids: None,
         },
+        operation,
     )
     .await
     {
         eprintln!("IMAP 同步失败，稍后重试: {}", error.message);
         return false;
     }
+    if control.is_stopped() {
+        return false;
+    }
     match sync_use_case::has_pending_imap_history(db, account_id).await {
         Ok(true) => {
             eprintln!("IMAP 监听 [{account_id}]: 历史尚未补齐，2 秒后请求继续同步");
-            tokio::time::sleep(BACKFILL_DELAY).await;
+            control.sleep(BACKFILL_DELAY).await;
             return true;
         }
         Err(_) => return false,
@@ -164,7 +144,9 @@ async fn run_cycle(
 
     if use_idle {
         eprintln!("IMAP IDLE [{account_id}]: 正在建立 INBOX 监听连接");
-        let operation = MailOperation::new(Duration::from_secs(150));
+        let Some(operation) = control.begin_operation(Duration::from_secs(150)) else {
+            return false;
+        };
         let mut session = match session_login(&endpoint, &auth, &operation).await {
             Ok(session) => session,
             Err(error) => {
@@ -172,16 +154,17 @@ async fn run_cycle(
                 return false;
             }
         };
-        let idle_result = operation.run_blocking(move || {
-            session
-                .select("INBOX")
-                .map_err(|e| crate::infrastructure::error::InfraError::Remote {
-                    message: format!("SELECT INBOX 失败: {e}"),
-                    retryable: true,
+        let idle_result = operation
+            .run_blocking(move || {
+                session.select("INBOX").map_err(|e| {
+                    crate::infrastructure::error::InfraError::Remote {
+                        message: format!("SELECT INBOX 失败: {e}"),
+                        retryable: true,
+                    }
                 })?;
-            run_idle_until_cancel(&mut session, IDLE_TIMEOUT)
-        })
-        .await;
+                run_idle_until_cancel(&mut session, IDLE_TIMEOUT)
+            })
+            .await;
         match idle_result {
             Ok(IdleOutcome::Changed) => {
                 eprintln!("IMAP IDLE [{account_id}]: 收到服务器变化通知，请求同步");
@@ -205,7 +188,7 @@ async fn run_cycle(
             "IMAP 监听 [{account_id}]: IDLE 不可用或尚未探测，{} 秒后请求轮询同步",
             POLL_INTERVAL.as_secs()
         );
-        tokio::time::sleep(POLL_INTERVAL).await;
+        control.sleep(POLL_INTERVAL).await;
         true
     }
 }

@@ -57,6 +57,11 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraErro
         .map_err(Into::into)
 }
 
+pub async fn is_signed_in(conn: &mut SqliteConnection, account_id: &AccountId) -> Result<bool, InfraError> {
+    Ok(sqlx::query_scalar::<_, bool>("SELECT is_signed_in FROM accounts WHERE id = ?")
+        .bind(account_id.as_str()).fetch_optional(&mut *conn).await?.unwrap_or(false))
+}
+
 /// 全部账户行（含已退出）；别名冲突校验用。
 pub async fn list_all(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraError> {
     sqlx::query("SELECT * FROM accounts ORDER BY id")

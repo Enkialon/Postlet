@@ -12,7 +12,7 @@ use crate::application::dto::{
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
-    account_use_case, compose_use_case, contact_use_case, group_use_case, mail_account_use_case,
+    account_use_case, compose_use_case, contact_use_case, group_use_case,
     message_use_case, session_use_case, sync_use_case,
 };
 use crate::domain::entities::{
@@ -37,7 +37,9 @@ pub async fn get_account(
 
 #[tauri::command]
 pub async fn account_sign_in(state: State<'_, AppState>) -> Result<Account, AppError> {
-    account_use_case::sign_in(&state.db, &state.paths).await
+    let account = account_use_case::sign_in(&state.db, &state.paths).await?;
+    state.mail_watchers.changed(&account.id);
+    Ok(account)
 }
 
 #[tauri::command]
@@ -45,7 +47,7 @@ pub async fn account_sign_out(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<(), AppError> {
-    account_use_case::sign_out(&state.db, &state.paths, &AccountId::new(account_id)).await
+    crate::runtime::accounts::sign_out(&state, &AccountId::new(account_id)).await
 }
 
 #[tauri::command]
@@ -53,7 +55,7 @@ pub async fn account_clear_local_data(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<(), AppError> {
-    account_use_case::clear_local_data(&state, &AccountId::new(account_id)).await
+    crate::runtime::accounts::clear_local_data(&state, &AccountId::new(account_id)).await
 }
 
 #[tauri::command]
@@ -285,7 +287,7 @@ pub async fn upsert_imap_smtp_account(
     state: State<'_, AppState>,
     cmd: UpsertImapSmtpAccountCommand,
 ) -> Result<Account, AppError> {
-    mail_account_use_case::upsert_imap_smtp_account(&state.db, &state.paths, cmd).await
+    crate::runtime::accounts::upsert_imap_smtp_account(&state, cmd).await
 }
 
 #[tauri::command]

@@ -83,6 +83,9 @@ pub async fn trigger_mail_sync(
     let _account = accounts::get(&mut conn, &cmd.account_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
+    if !accounts::is_signed_in(&mut conn, &cmd.account_id).await? {
+        return Err(AppError::auth("账号已退出，已停止同步"));
+    }
     let transport = mail_transports::ensure_default(&mut conn, &cmd.account_id, now_ms())
         .await
         .map_err(AppError::from)?;
@@ -783,6 +786,9 @@ pub async fn refresh_mail_folders(
     let _account = accounts::get(&mut conn, account_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
+    if !accounts::is_signed_in(&mut conn, account_id).await? {
+        return Err(AppError::auth("账号已退出，已停止目录发现"));
+    }
     let transport = mail_transports::ensure_default(&mut conn, account_id, now_ms())
         .await
         .map_err(AppError::from)?;
@@ -912,6 +918,21 @@ mod location_tests {
     use super::*;
     use crate::domain::value_objects::{BodyContentType, Importance, RemoteKey};
     use crate::infrastructure::db;
+
+    #[tokio::test]
+    async fn signed_out_folder_refresh_stops_before_transport_creation_or_authentication() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,is_signed_in,created_at,updated_at) VALUES ('a','a@example.com',0,1,1)")
+            .execute(&db).await.unwrap();
+        let missing = std::env::temp_dir().join(format!("postlet-not-created-{}", Uuid::new_v4()));
+        let paths = AppPaths { config_dir: missing.clone(), local_data_dir: missing.clone(),
+            data_dir: missing.clone(), attachments_dir: missing.clone(), credentials_dir: missing.clone(), database_path: missing.join("db") };
+        let operation = MailOperation::new(std::time::Duration::from_secs(1));
+        let result = refresh_mail_folders(&db, &paths, &operation, &AccountId::new("a")).await;
+        assert_eq!(result.unwrap_err().code, crate::application::error::AppErrorCode::Auth);
+        assert!(!missing.exists());
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_mail_transport").fetch_one(&db).await.unwrap(), 0);
+    }
 
     async fn seed_folders(db: &SqlitePool) {
         for (id, binding) in [("inbox", "remote/INBOX"), ("archive", "remote/Archive")] {

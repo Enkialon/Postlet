@@ -15,7 +15,7 @@ use std::time::Duration;
 async fn run_owned<T, F, Fut>(
     gate: &MailSyncGate,
     account_id: &str,
-    budget: Duration,
+    operation: MailOperation,
     work: F,
 ) -> Result<Option<T>, AppError>
 where
@@ -23,10 +23,9 @@ where
     F: FnOnce(MailOperation) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, AppError>> + Send + 'static,
 {
-    let Some(permit) = gate.try_acquire(account_id) else {
+    let Some(permit) = gate.try_acquire_operation(account_id, Some(operation.clone())) else {
         return Ok(None);
     };
-    let operation = MailOperation::new(budget);
     let guard = operation.cancel_on_drop();
     let worker = tokio::spawn(async move {
         let _permit = permit;
@@ -46,18 +45,32 @@ pub async fn trigger_mail_sync(
     gate: &MailSyncGate,
     cmd: TriggerMailSyncCommand,
 ) -> Result<(), AppError> {
+    trigger_mail_sync_controlled(
+        db,
+        paths,
+        changes,
+        gate,
+        cmd,
+        MailOperation::new(Duration::from_secs(10 * 60)),
+    )
+    .await
+}
+
+pub(crate) async fn trigger_mail_sync_controlled(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    changes: &ChangeDispatcher,
+    gate: &MailSyncGate,
+    cmd: TriggerMailSyncCommand,
+    operation: MailOperation,
+) -> Result<(), AppError> {
     let account_id = cmd.account_id.to_string();
     let db = db.clone();
     let paths = paths.clone();
     let changes = changes.clone();
-    run_owned(
-        gate,
-        &account_id,
-        Duration::from_secs(10 * 60),
-        move |operation| async move {
-            sync_use_case::trigger_mail_sync(&db, &paths, &changes, &operation, cmd).await
-        },
-    )
+    run_owned(gate, &account_id, operation, move |operation| async move {
+        sync_use_case::trigger_mail_sync(&db, &paths, &changes, &operation, cmd).await
+    })
     .await?;
     Ok(())
 }
@@ -74,7 +87,7 @@ pub async fn refresh_mail_folders(
     run_owned(
         gate,
         account_id.as_str(),
-        Duration::from_secs(90),
+        MailOperation::new(Duration::from_secs(90)),
         move |operation| async move {
             sync_use_case::refresh_mail_folders(&db, &paths, &operation, &account).await
         },
@@ -111,7 +124,7 @@ mod tests {
             run_owned(
                 &gate2,
                 "a",
-                Duration::from_secs(5),
+                MailOperation::new(Duration::from_secs(5)),
                 move |operation| async move {
                     control_tx.send(operation.clone()).ok();
                     operation
@@ -151,7 +164,7 @@ mod tests {
             run_owned(
                 &gate2,
                 "a",
-                Duration::from_millis(100),
+                MailOperation::new(Duration::from_millis(100)),
                 move |operation| async move {
                     control_tx.send(operation.clone()).ok();
                     operation

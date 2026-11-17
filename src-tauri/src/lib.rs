@@ -26,6 +26,7 @@ pub struct AppState {
     pub changes: ChangeDispatcher,
     /// 账户级邮件同步互斥
     pub mail_sync_gate: MailSyncGate,
+    pub mail_watchers: runtime::mail_watchers::MailWatchers,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -51,7 +52,7 @@ pub fn run() {
                 application::use_cases::mail_account_use_case::recover_credentials(&db, &paths),
             ).map_err(|error| format!("恢复邮件凭据失败: {}", error.message))?;
             let mail_sync_gate = MailSyncGate::new();
-            runtime::mail_watcher::spawn_watchers(
+            let mail_watchers = runtime::mail_watchers::MailWatchers::spawn(
                 db.clone(),
                 paths.clone(),
                 changes.clone(),
@@ -70,6 +71,7 @@ pub fn run() {
                 compose_drafts: Mutex::new(compose_use_case::empty_draft_map()),
                 changes,
                 mail_sync_gate,
+                mail_watchers,
             });
             Ok(())
         })

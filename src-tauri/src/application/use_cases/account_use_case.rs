@@ -3,7 +3,7 @@ use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::auth as graph_auth;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::accounts;
-use crate::runtime::{ChangeDispatcher, MailSyncGate};
+use crate::runtime::ChangeDispatcher;
 use crate::AppState;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -145,19 +145,8 @@ pub async fn sign_out(
 /// 清理指定账号的本地聊天/同步数据；保留账号行、登录态与传输配置。
 ///
 /// 与 `sign_out` 相反侧重：不删凭据、不改 `is_signed_in`；删会话/邮件/联系人/群与同步游标。
-/// 邮件同步进行中时拒绝，避免与写入竞态。
+/// Runtime 先暂停并等待旧任务退出，避免与写入竞态。
 pub async fn clear_local_data(
-    state: &AppState,
-    account_id: &AccountId,
-) -> Result<(), AppError> {
-    let gate: &MailSyncGate = &state.mail_sync_gate;
-    let _permit = gate.try_acquire(account_id.as_str()).ok_or_else(|| {
-        AppError::conflict("邮件同步进行中，请稍后再清理本地数据")
-    })?;
-    clear_local_data_inner(state, account_id).await
-}
-
-async fn clear_local_data_inner(
     state: &AppState,
     account_id: &AccountId,
 ) -> Result<(), AppError> {

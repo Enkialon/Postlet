@@ -8,6 +8,8 @@ pub mod mail_sync_gate;
 pub mod mail_sync;
 pub mod mail_sync_scheduler;
 pub mod mail_watcher;
+pub mod mail_watchers;
+pub mod accounts;
 
 pub use change_dispatcher::ChangeDispatcher;
 pub use mail_sync_gate::MailSyncGate;

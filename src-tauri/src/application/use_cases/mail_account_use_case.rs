@@ -72,7 +72,7 @@ pub async fn upsert_imap_smtp_account(
     }
 }
 
-fn validate(cmd: &UpsertImapSmtpAccountCommand) -> Result<(), AppError> {
+pub(crate) fn validate(cmd: &UpsertImapSmtpAccountCommand) -> Result<(), AppError> {
     if cmd.auth_kind != MailAuthKind::Password {
         return Err(AppError::validation(
             "通用 IMAP/SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码",
