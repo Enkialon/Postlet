@@ -33,20 +33,6 @@ pub async fn get_by_email(
         .map_err(Into::into)
 }
 
-pub async fn get_by_home_account_id(
-    conn: &mut SqliteConnection,
-    home_account_id: &str,
-) -> Result<Option<Account>, InfraError> {
-    let row = sqlx::query("SELECT * FROM accounts WHERE home_account_id = ?")
-        .bind(home_account_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    row.as_ref()
-        .map(super::rows::account)
-        .transpose()
-        .map_err(Into::into)
-}
-
 pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraError> {
     sqlx::query("SELECT * FROM accounts WHERE is_signed_in = 1 ORDER BY id")
         .fetch_all(&mut *conn)
@@ -127,16 +113,14 @@ pub async fn upsert_identity(
     })?;
     sqlx::query(
         "INSERT INTO accounts (
-            id, email, display_name, aliases_json, tenant_id, home_account_id,
+            id, email, display_name, aliases_json,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
             mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
             aliases_json=excluded.aliases_json,
-            tenant_id=excluded.tenant_id,
-            home_account_id=excluded.home_account_id,
             is_signed_in=1,
             updated_at=excluded.updated_at",
     )
@@ -144,8 +128,6 @@ pub async fn upsert_identity(
     .bind(account.email.as_str())
     .bind(&account.display_name)
     .bind(&aliases_json)
-    .bind(&account.tenant_id)
-    .bind(&account.home_account_id)
     .bind(&account.contact_delta_link)
     .bind(account.mail_sync_triggered_at)
     .bind(account.contact_synced_at)
@@ -171,16 +153,14 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     })?;
     sqlx::query(
         "INSERT INTO accounts (
-            id, email, display_name, aliases_json, tenant_id, home_account_id,
+            id, email, display_name, aliases_json,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
             mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
             aliases_json=excluded.aliases_json,
-            tenant_id=excluded.tenant_id,
-            home_account_id=excluded.home_account_id,
             contact_delta_link=excluded.contact_delta_link,
             mail_sync_triggered_at=excluded.mail_sync_triggered_at,
             contact_synced_at=excluded.contact_synced_at,
@@ -194,8 +174,6 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     .bind(account.email.as_str())
     .bind(&account.display_name)
     .bind(&aliases_json)
-    .bind(&account.tenant_id)
-    .bind(&account.home_account_id)
     .bind(&account.contact_delta_link)
     .bind(account.mail_sync_triggered_at)
     .bind(account.contact_synced_at)

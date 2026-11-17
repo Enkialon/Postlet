@@ -18,14 +18,12 @@ pub struct ContactDeltaPage {
     pub next_link: Option<String>,
 }
 
-/// 远端账户身份（不含本地同步与显示配置）
+/// 远端账户身份（不含本地同步与显示配置；Graph provider 元数据只在 token 缓存）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAccount {
-    /// 与本地 AccountId 绑定后的标识（由 Auth 基础设施映射）
+    /// Graph `/me` 的 oid；不作为本地 Account 业务主键
     pub account_id: String,
     pub email: EmailAddress,
     pub display_name: String,
     pub aliases: Vec<EmailAddress>,
-    pub tenant_id: Option<String>,
-    pub home_account_id: Option<String>,
 }

@@ -28,8 +28,6 @@ export interface Account {
   display_name: string;
   /** self 额外身份；与 email 组成排除集合 */
   aliases: EmailAddress[];
-  tenant_id: string | null;
-  home_account_id: string | null;
   /** 联系人 Delta 游标 */
   contact_delta_link: string | null;
   /** 最近一次发起邮件同步的时间（非成功时刻） */

@@ -90,8 +90,6 @@ export interface UpsertAccountCommand {
   email: EmailAddress;
   display_name: string;
   aliases: EmailAddress[];
-  tenant_id: string | null;
-  home_account_id: string | null;
 }
 
 /** 更新账户显示配置 */

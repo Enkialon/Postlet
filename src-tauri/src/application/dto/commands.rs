@@ -11,8 +11,6 @@ pub struct UpsertAccountCommand {
     pub email: EmailAddress,
     pub display_name: String,
     pub aliases: Vec<EmailAddress>,
-    pub tenant_id: Option<String>,
-    pub home_account_id: Option<String>,
 }
 
 /// 更新账户显示配置

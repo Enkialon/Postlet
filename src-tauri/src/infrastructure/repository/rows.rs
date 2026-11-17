@@ -82,8 +82,6 @@ pub(super) fn account(row: &SqliteRow) -> Result<Account, sqlx::Error> {
             .into_iter()
             .map(EmailAddress::new_unchecked)
             .collect(),
-        tenant_id: row.try_get("tenant_id")?,
-        home_account_id: row.try_get("home_account_id")?,
         contact_delta_link: row.try_get("contact_delta_link")?,
         mail_sync_triggered_at: row.try_get("mail_sync_triggered_at")?,
         contact_synced_at: row.try_get("contact_synced_at")?,

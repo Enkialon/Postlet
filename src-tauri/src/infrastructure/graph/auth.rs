@@ -97,8 +97,6 @@ pub async fn sign_in(config: &AzureAuthConfig) -> Result<(RemoteAccount, TokenCa
 
     let now_ms = now_unix_ms();
     let home_account_id = home_account_id_from_client_info(token_response.client_info.as_deref());
-    let tenant_id = tenant_id_from_home_account(home_account_id.as_deref())
-        .or_else(|| Some(config.tenant.clone()).filter(|t| t != "common"));
 
     let scopes_vec = token_response
         .scope
@@ -116,12 +114,12 @@ pub async fn sign_in(config: &AzureAuthConfig) -> Result<(RemoteAccount, TokenCa
         refresh_token: token_response.refresh_token,
         expires_at_ms: now_ms + token_response.expires_in.saturating_mul(1000),
         scopes: scopes_vec,
-        home_account_id: home_account_id.clone(),
+        home_account_id,
         client_id: config.client_id.clone(),
         tenant: config.tenant.clone(),
     };
 
-    let remote = fetch_remote_account(&cache.access_token, home_account_id, tenant_id).await?;
+    let remote = fetch_remote_account(&cache.access_token).await?;
     Ok((remote, cache))
 }
 
@@ -274,11 +272,7 @@ async fn execute_token_request(
     })
 }
 
-async fn fetch_remote_account(
-    access_token: &str,
-    home_account_id: Option<String>,
-    tenant_id: Option<String>,
-) -> Result<RemoteAccount, InfraError> {
+async fn fetch_remote_account(access_token: &str) -> Result<RemoteAccount, InfraError> {
     let client = GraphClient::new(access_token);
     let response = client
         .me()
@@ -319,8 +313,6 @@ async fn fetch_remote_account(
         email,
         display_name,
         aliases: vec![],
-        tenant_id,
-        home_account_id,
     })
 }
 
@@ -347,13 +339,6 @@ fn home_account_id_from_client_info(client_info: Option<&str>) -> Option<String>
     let uid = value.get("uid")?.as_str()?;
     let utid = value.get("utid")?.as_str()?;
     Some(format!("{uid}.{utid}"))
-}
-
-fn tenant_id_from_home_account(home_account_id: Option<&str>) -> Option<String> {
-    home_account_id
-        .and_then(|id| id.split_once('.'))
-        .map(|(_, tid)| tid.to_owned())
-        .filter(|s| !s.is_empty())
 }
 
 fn now_unix_ms() -> i64 {

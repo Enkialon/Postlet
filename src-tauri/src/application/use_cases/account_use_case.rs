@@ -63,11 +63,6 @@ async fn find_graph_account(
     conn: &mut sqlx::SqliteConnection,
     remote: &RemoteAccount,
 ) -> Result<Option<Account>, AppError> {
-    if let Some(home) = remote.home_account_id.as_deref() {
-        if let Some(account) = accounts::get_by_home_account_id(conn, home).await? {
-            return Ok(Some(account));
-        }
-    }
     Ok(accounts::get_by_email(conn, &remote.email).await?)
 }
 
@@ -148,8 +143,6 @@ async fn persist_graph_sign_in(
             display_name: remote.display_name.clone(),
             // 别名仅手动维护，登录刷新不得冲掉
             aliases: existing.aliases,
-            tenant_id: remote.tenant_id.clone().or(existing.tenant_id),
-            home_account_id: remote.home_account_id.clone().or(existing.home_account_id),
             contact_delta_link: existing.contact_delta_link,
             mail_sync_triggered_at: existing.mail_sync_triggered_at,
             contact_synced_at: existing.contact_synced_at,
@@ -165,8 +158,6 @@ async fn persist_graph_sign_in(
             email: remote.email.clone(),
             display_name: remote.display_name.clone(),
             aliases: Vec::new(),
-            tenant_id: remote.tenant_id.clone(),
-            home_account_id: remote.home_account_id.clone(),
             contact_delta_link: None,
             mail_sync_triggered_at: None,
             contact_synced_at: None,
@@ -386,8 +377,6 @@ mod graph_sign_in_tests {
                 email: EmailAddress::parse("user@example.com").unwrap(),
                 display_name: "Graph User".into(),
                 aliases: vec![],
-                tenant_id: Some("tenant".into()),
-                home_account_id: Some("home.tenant".into()),
             },
             token_cache: TokenCache {
                 access_token: token.into(),
@@ -399,6 +388,54 @@ mod graph_sign_in_tests {
                 tenant: "tenant".into(),
             },
         }
+    }
+
+    #[tokio::test]
+    async fn graph_account_lookup_uses_normalized_email_not_provider_fields() {
+        let db = db::open_memory().await.unwrap();
+        let mut conn = db.acquire().await.unwrap();
+        let now = now_ms();
+        let existing = Account {
+            id: AccountId::new("acc-existing"),
+            email: EmailAddress::parse("user@example.com").unwrap(),
+            display_name: "Local".into(),
+            aliases: vec![],
+            contact_delta_link: None,
+            mail_sync_triggered_at: None,
+            contact_synced_at: None,
+            mail_sync_status: SyncStatus::Idle,
+            mail_sync_error: None,
+            include_in_all: true,
+            created_at: now,
+            updated_at: now,
+        };
+        accounts::upsert(&mut conn, &existing).await.unwrap();
+
+        let same_email = RemoteAccount {
+            account_id: "changed-oid".into(),
+            email: EmailAddress::parse("User@Example.com").unwrap(),
+            display_name: "Graph User".into(),
+            aliases: vec![],
+        };
+        let reused = find_graph_account(&mut conn, &same_email)
+            .await
+            .unwrap()
+            .expect("same email must reuse local account");
+        assert_eq!(reused.id, existing.id);
+
+        let different_email = RemoteAccount {
+            account_id: "provider-only".into(),
+            email: EmailAddress::parse("other@example.com").unwrap(),
+            display_name: "Other".into(),
+            aliases: vec![],
+        };
+        assert!(
+            find_graph_account(&mut conn, &different_email)
+                .await
+                .unwrap()
+                .is_none(),
+            "different emails must not merge by Graph oid / provider metadata"
+        );
     }
 
     fn paths(root: &std::path::Path) -> AppPaths {
@@ -493,7 +530,6 @@ mod graph_sign_in_tests {
             }
             assert!(complete_graph_sign_in(&db, &paths, pending("second"), None).await.is_err(), "预期账号不匹配时必须重试屏障");
             let mut metadata_changed = pending("second");
-            metadata_changed.remote.home_account_id = Some("changed-provider-metadata".into());
             metadata_changed.token_cache.home_account_id = Some("changed-provider-metadata".into());
             let renewed = complete_graph_sign_in(&db, &paths, metadata_changed, Some(&account.id)).await.unwrap();
             assert_eq!(renewed.id, account.id); assert_eq!(renewed.aliases[0].as_str(), "alias@example.com");

@@ -170,8 +170,6 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
             email: EmailAddress::parse("me@example.com").unwrap(),
             display_name: "测试用户".into(),
             aliases: vec![],
-            tenant_id: None,
-            home_account_id: None,
             contact_delta_link: None,
             mail_sync_triggered_at: Some(1_000),
             contact_synced_at: None,

@@ -64,8 +64,6 @@ async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_s
         email: EmailAddress::new_unchecked("user@example.com"),
         display_name: "User".into(),
         aliases: vec![],
-        tenant_id: None,
-        home_account_id: None,
         contact_delta_link: None,
         mail_sync_triggered_at: None,
         contact_synced_at: None,

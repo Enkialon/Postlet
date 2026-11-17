@@ -5,8 +5,6 @@ CREATE TABLE accounts (
     email           TEXT NOT NULL COLLATE NOCASE,
     display_name    TEXT NOT NULL DEFAULT '',
     aliases_json    TEXT NOT NULL DEFAULT '[]',
-    tenant_id       TEXT,
-    home_account_id TEXT,
     contact_delta_link TEXT,
     mail_sync_triggered_at INTEGER,
     contact_synced_at INTEGER,

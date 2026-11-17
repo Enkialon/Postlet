@@ -135,8 +135,6 @@ async fn persist_account(
                 cmd.display_name.clone()
             },
             aliases: Vec::new(),
-            tenant_id: None,
-            home_account_id: None,
             contact_delta_link: None,
             mail_sync_triggered_at: None,
             contact_synced_at: None,
