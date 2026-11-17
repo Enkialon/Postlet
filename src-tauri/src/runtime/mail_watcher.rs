@@ -4,7 +4,7 @@ use crate::application::dto::TriggerMailSyncCommand;
 use crate::application::use_cases::sync_use_case;
 use crate::domain::value_objects::{AccountId, MailTlsMode, ReceiveProtocol};
 use crate::infrastructure::imap::{
-    run_idle_until_cancel, session_login_blocking, IdleOutcome, ImapAuth, ImapEndpoint,
+    IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login_blocking,
 };
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
@@ -13,7 +13,9 @@ use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::time::Duration;
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+// 即使 INBOX 不变，也定期同步其他勾选夹及重新检查账号配置。
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const BACKFILL_DELAY: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
 
@@ -49,7 +51,7 @@ pub fn spawn_watchers(
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
     });
 }
@@ -61,9 +63,14 @@ async fn watch_one_account(
     gate: MailSyncGate,
     account_id: AccountId,
 ) {
+    eprintln!("IMAP 监听 [{account_id}]: 后台任务已启动，请求首次同步");
     loop {
         let ok = run_cycle(&db, &paths, &changes, &gate, &account_id).await;
         if !ok {
+            eprintln!(
+                "IMAP 监听 [{account_id}]: 本轮失败，{} 秒后重试",
+                RECONNECT_DELAY.as_secs()
+            );
             tokio::time::sleep(RECONNECT_DELAY).await;
         }
     }
@@ -85,6 +92,9 @@ async fn run_cycle(
             Ok(Some(t)) => t,
             _ => return false,
         };
+        if t.receive_protocol != ReceiveProtocol::Imap {
+            return false;
+        }
         let secret = match credentials::load(&paths.credentials_dir, account_id).await {
             Ok(Some(s)) => s,
             _ => return false,
@@ -125,7 +135,34 @@ async fn run_cycle(
     let endpoint = ImapEndpoint { host, port, tls };
     let use_idle = transport.imap_idle_supported.unwrap_or(false);
 
+    // 先完成一批并提交；有历史缺口时主动续跑，不能进入无限 IDLE 等新邮件。
+    if let Err(error) = sync_use_case::trigger_mail_sync(
+        db,
+        paths,
+        changes,
+        gate,
+        TriggerMailSyncCommand {
+            account_id: account_id.clone(),
+            folder_ids: None,
+        },
+    )
+    .await
+    {
+        eprintln!("IMAP 同步失败，稍后重试: {}", error.message);
+        return false;
+    }
+    match sync_use_case::has_pending_imap_history(db, account_id).await {
+        Ok(true) => {
+            eprintln!("IMAP 监听 [{account_id}]: 历史尚未补齐，2 秒后请求继续同步");
+            tokio::time::sleep(BACKFILL_DELAY).await;
+            return true;
+        }
+        Err(_) => return false,
+        Ok(false) => {}
+    }
+
     if use_idle {
+        eprintln!("IMAP IDLE [{account_id}]: 正在建立 INBOX 监听连接");
         let endpoint2 = endpoint.clone();
         let auth2 = auth.clone();
         let idle_result = tokio::task::spawn_blocking(move || {
@@ -140,35 +177,33 @@ async fn run_cycle(
         })
         .await;
         match idle_result {
-            Ok(Ok(IdleOutcome::Changed | IdleOutcome::TimedOut)) => {
-                let _ = sync_use_case::trigger_mail_sync(
-                    db,
-                    paths,
-                    changes,
-                    gate,
-                    TriggerMailSyncCommand {
-                        account_id: account_id.clone(),
-                        folder_ids: None,
-                    },
-                )
-                .await;
+            Ok(Ok(IdleOutcome::Changed)) => {
+                eprintln!("IMAP IDLE [{account_id}]: 收到服务器变化通知，请求同步");
                 true
             }
-            _ => false,
+            Ok(Ok(IdleOutcome::TimedOut)) => {
+                eprintln!("IMAP IDLE [{account_id}]: 等待超时，请求定时兜底同步");
+                true
+            }
+            Ok(Ok(IdleOutcome::Disconnected)) => {
+                eprintln!("IMAP IDLE [{account_id}]: 监听连接已断开");
+                false
+            }
+            Ok(Err(error)) => {
+                eprintln!("IMAP IDLE [{account_id}]: 监听建立失败: {error}");
+                false
+            }
+            Err(error) => {
+                eprintln!("IMAP IDLE [{account_id}]: 监听任务异常: {error}");
+                false
+            }
         }
     } else {
+        eprintln!(
+            "IMAP 监听 [{account_id}]: IDLE 不可用或尚未探测，{} 秒后请求轮询同步",
+            POLL_INTERVAL.as_secs()
+        );
         tokio::time::sleep(POLL_INTERVAL).await;
-        let _ = sync_use_case::trigger_mail_sync(
-            db,
-            paths,
-            changes,
-            gate,
-            TriggerMailSyncCommand {
-                account_id: account_id.clone(),
-                folder_ids: None,
-            },
-        )
-        .await;
         true
     }
 }
