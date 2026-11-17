@@ -11,14 +11,15 @@ export class TauriChangeEventsAdapter implements ChangeEventsPort {
   async subscribeMailChanged(
     handler: (event: MailChangedEvent) => void,
   ): Promise<() => void> {
-    let lastGeneration = 0;
+    const applied = new Map<string, number>();
     const unlisten: UnlistenFn = await listen<MailChangedEvent>(
       MAIL_CHANGED_EVENT,
       (ev) => {
         const payload = ev.payload;
-        if (!payload || typeof payload.generation !== 'number') return;
-        if (payload.generation <= lastGeneration) return;
-        lastGeneration = payload.generation;
+        if (!payload || typeof payload.account_version !== 'number') return;
+        const last = applied.get(payload.account_id) ?? 0;
+        if (payload.account_version <= last) return;
+        applied.set(payload.account_id, payload.account_version);
         handler(payload);
       },
     );

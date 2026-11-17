@@ -43,6 +43,32 @@ pub async fn list(conn: &mut SqliteConnection) -> Result<Vec<Account>, InfraErro
         .map_err(Into::into)
 }
 
+/// 事务内递增账号变更版本；返回递增后的值。写事务提交前调用。
+pub async fn bump_change_version(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+) -> Result<i64, InfraError> {
+    let version: i64 = sqlx::query_scalar(
+        "UPDATE accounts SET change_version = change_version + 1 WHERE id = ?
+         RETURNING change_version",
+    )
+    .bind(account_id.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(version)
+}
+
+/// 读取当前变更版本；账号不存在时返回 None。
+pub async fn change_version(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+) -> Result<Option<i64>, InfraError> {
+    Ok(sqlx::query_scalar::<_, i64>("SELECT change_version FROM accounts WHERE id = ?")
+        .bind(account_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await?)
+}
+
 pub async fn is_signed_in(conn: &mut SqliteConnection, account_id: &AccountId) -> Result<bool, InfraError> {
     Ok(sqlx::query_scalar::<_, bool>("SELECT is_signed_in FROM accounts WHERE id = ?")
         .bind(account_id.as_str()).fetch_optional(&mut *conn).await?.unwrap_or(false))

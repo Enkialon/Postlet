@@ -9,7 +9,8 @@ export type ChangeOrigin =
 /** UI 失效事件：不含邮件正文；收到后经 Port 重读本地库 */
 export interface MailChangedEvent {
   account_id: string;
-  generation: number;
+  /** 账号持久变更版本；前端按账号比对，跳号即重查 */
+  account_version: number;
   origin: ChangeOrigin;
   session_ids: string[];
   message_ids: string[];

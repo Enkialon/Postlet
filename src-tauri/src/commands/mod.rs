@@ -78,6 +78,14 @@ pub async fn update_account_aliases(
 }
 
 #[tauri::command]
+pub async fn get_account_change_version(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<i64, AppError> {
+    account_use_case::account_change_version(&state.db, &AccountId::new(account_id)).await
+}
+
+#[tauri::command]
 pub async fn list_contacts(
     state: State<'_, AppState>,
     query: ContactListQuery,

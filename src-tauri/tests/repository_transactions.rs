@@ -266,6 +266,57 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
 }
 
 #[tokio::test]
+async fn account_change_version_rolls_back_and_increases_monotonically() {
+    let db = database().await;
+    let account_id = seed_signed_in_mailbox(&db).await;
+
+    let initial = {
+        let mut conn = db.acquire().await.unwrap();
+        accounts::change_version(&mut conn, &account_id)
+            .await
+            .unwrap()
+            .expect("seeded account")
+    };
+
+    // 回滚不改变版本
+    {
+        let mut tx = db.begin().await.unwrap();
+        let bumped = accounts::bump_change_version(&mut tx, &account_id)
+            .await
+            .unwrap();
+        assert_eq!(bumped, initial + 1);
+        tx.rollback().await.unwrap();
+    }
+    {
+        let mut conn = db.acquire().await.unwrap();
+        assert_eq!(
+            accounts::change_version(&mut conn, &account_id).await.unwrap(),
+            Some(initial)
+        );
+    }
+
+    // 提交后单调递增
+    let first = {
+        let mut tx = db.begin().await.unwrap();
+        let v = accounts::bump_change_version(&mut tx, &account_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        v
+    };
+    let second = {
+        let mut tx = db.begin().await.unwrap();
+        let v = accounts::bump_change_version(&mut tx, &account_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        v
+    };
+    assert_eq!(first, initial + 1);
+    assert_eq!(second, first + 1);
+}
+
+#[tokio::test]
 async fn seeded_mailbox_supports_session_reads() {
     let db = database().await;
     let account_id = seed_signed_in_mailbox(&db).await;

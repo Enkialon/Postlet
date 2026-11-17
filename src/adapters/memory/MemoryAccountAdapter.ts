@@ -155,6 +155,11 @@ export class MemoryAccountAdapter implements AccountPort {
     return { ...account };
   }
 
+  async getChangeVersion(accountId: AccountId): Promise<number> {
+    const account = this.store.requireAccount(accountId);
+    return account.updated_at;
+  }
+
   async updateAliases(cmd: UpdateAccountAliasesCommand): Promise<Account> {
     const account = this.store.requireAccount(cmd.account_id);
     const primary = account.email.toLowerCase();

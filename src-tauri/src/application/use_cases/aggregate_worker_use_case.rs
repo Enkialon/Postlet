@@ -335,6 +335,7 @@ async fn apply_plan(
         sessions::recompute_projection(conn, account_id, &old_session_id)
             .await
             .map_err(AppError::from)?;
+        let account_version = Some(accounts::bump_change_version(conn, account_id).await?);
         return Ok(ChangeSet {
             account_id: account_id.clone(),
             session_ids: vec![old_session_id],
@@ -342,6 +343,7 @@ async fn apply_plan(
             new_incoming_ids: Vec::new(),
             account_cleared: false,
             pending_remote_flush: false,
+            account_version,
             origin: ChangeOrigin::Rebuild,
         });
     };
@@ -447,6 +449,7 @@ async fn apply_plan(
         session_ids.push(id);
     }
 
+    let account_version = Some(accounts::bump_change_version(conn, account_id).await?);
     Ok(ChangeSet {
         account_id: account_id.clone(),
         session_ids,
@@ -454,6 +457,7 @@ async fn apply_plan(
         new_incoming_ids: Vec::new(),
         account_cleared: false,
         pending_remote_flush: false,
+        account_version,
         origin: ChangeOrigin::Rebuild,
     })
 }
@@ -819,6 +823,7 @@ pub async fn relocate_self_keyed_private_sessions(
     {
         let mut tx = db.begin().await?;
         let now = now_ms();
+        let mut hidden_any = false;
         for sid in &stale_session_ids {
             let remaining = messages::list_ids_by_session(&mut tx, account_id, sid)
                 .await
@@ -827,6 +832,7 @@ pub async fn relocate_self_keyed_private_sessions(
                 sessions::set_hidden_at(&mut tx, account_id, sid, Some(now), now)
                     .await
                     .map_err(AppError::from)?;
+                hidden_any = true;
                 if let Some(acc) = changeset_acc.as_mut() {
                     acc.session_ids.push(sid.clone());
                 } else {
@@ -837,9 +843,16 @@ pub async fn relocate_self_keyed_private_sessions(
                         new_incoming_ids: Vec::new(),
                         account_cleared: false,
                         pending_remote_flush: false,
+                        account_version: None,
                         origin: ChangeOrigin::Rebuild,
                     });
                 }
+            }
+        }
+        if hidden_any {
+            let version = accounts::bump_change_version(&mut tx, account_id).await?;
+            if let Some(acc) = changeset_acc.as_mut() {
+                acc.account_version = Some(version);
             }
         }
         tx.commit().await?;

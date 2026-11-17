@@ -75,6 +75,8 @@ export function createTauriPorts(): AppPorts {
         invoke<Account>('update_display_settings', { cmd }),
       updateAliases: (cmd: UpdateAccountAliasesCommand) =>
         invoke<Account>('update_account_aliases', { cmd }),
+      getChangeVersion: (accountId: AccountId) =>
+        invoke<number>('get_account_change_version', { accountId }),
     },
     sync: {
       triggerMailSync: (cmd: TriggerMailSyncCommand) =>

@@ -1,8 +1,6 @@
 //! 事务提交后的 ChangeSet 分发：UI 失效事件 +（按需）系统通知
 
 use crate::application::dto::{ChangeOrigin, ChangeSet, MailChangedEvent};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 /// 事件名：前端 `listen('mail-changed', …)`（Tauri 禁止 `.`）
@@ -12,15 +10,11 @@ pub const MAIL_CHANGED_EVENT: &str = "mail-changed";
 #[derive(Clone)]
 pub struct ChangeDispatcher {
     app: AppHandle,
-    generation: Arc<AtomicU64>,
 }
 
 impl ChangeDispatcher {
     pub fn new(app: AppHandle) -> Self {
-        Self {
-            app,
-            generation: Arc::new(AtomicU64::new(0)),
-        }
+        Self { app }
     }
 
     /// commit 成功后调用；空变更直接返回。
@@ -29,8 +23,7 @@ impl ChangeDispatcher {
             return;
         }
 
-        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let event = MailChangedEvent::from_change_set(&changes, generation);
+        let event = MailChangedEvent::from_change_set(&changes);
         if let Err(e) = self.app.emit(MAIL_CHANGED_EVENT, &event) {
             // 前端未监听时不应拖垮写路径
             eprintln!("mail-changed emit 失败: {e}");

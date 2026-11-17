@@ -13,6 +13,8 @@ CREATE TABLE accounts (
     mail_sync_error TEXT,
     is_signed_in    INTEGER NOT NULL DEFAULT 1 CHECK(is_signed_in IN (0, 1)),
     include_in_all  INTEGER NOT NULL DEFAULT 1 CHECK(include_in_all IN (0, 1)),
+    -- 单调递增的账号变更版本：影响前端查询的事务内递增，供 UI 校验快照与补查
+    change_version  INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     UNIQUE (email)

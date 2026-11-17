@@ -6,7 +6,6 @@ import type {
 /** Memory：进程内可手动 publish，供测试 */
 export class MemoryChangeEventsAdapter implements ChangeEventsPort {
   private handlers = new Set<(event: MailChangedEvent) => void>();
-  private generation = 0;
 
   async subscribeMailChanged(
     handler: (event: MailChangedEvent) => void,
@@ -17,13 +16,8 @@ export class MemoryChangeEventsAdapter implements ChangeEventsPort {
     };
   }
 
-  /** 测试用：模拟一次本地变更 */
-  publish(partial: Omit<MailChangedEvent, 'generation'>): void {
-    this.generation += 1;
-    const event: MailChangedEvent = {
-      ...partial,
-      generation: this.generation,
-    };
+  /** 测试用：模拟一次本地变更（调用方给出账号版本） */
+  publish(event: MailChangedEvent): void {
     for (const h of this.handlers) {
       h(event);
     }

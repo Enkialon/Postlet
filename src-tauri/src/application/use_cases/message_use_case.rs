@@ -121,6 +121,11 @@ pub async fn mark_read(
     for sid in &session_ids {
         sessions::recompute_projection(&mut tx, &cmd.account_id, sid).await?;
     }
+    let account_version = if changed.is_empty() {
+        None
+    } else {
+        Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?)
+    };
     tx.commit().await?;
 
     Ok(ChangeSet {
@@ -130,6 +135,7 @@ pub async fn mark_read(
         new_incoming_ids: Vec::new(),
         account_cleared: false,
         pending_remote_flush: !changed.is_empty(),
+        account_version,
         origin: ChangeOrigin::UserAction,
     })
 }
@@ -147,6 +153,7 @@ pub async fn delete_messages(
             new_incoming_ids: Vec::new(),
             account_cleared: false,
             pending_remote_flush: false,
+            account_version: None,
             origin: ChangeOrigin::UserAction,
         });
     }
@@ -178,6 +185,11 @@ pub async fn delete_messages(
     for sid in &session_ids {
         sessions::recompute_projection(&mut tx, &cmd.account_id, sid).await?;
     }
+    let account_version = if changed.is_empty() {
+        None
+    } else {
+        Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?)
+    };
     tx.commit().await?;
 
     Ok(ChangeSet {
@@ -187,6 +199,7 @@ pub async fn delete_messages(
         new_incoming_ids: Vec::new(),
         account_cleared: false,
         pending_remote_flush: !changed.is_empty(),
+        account_version,
         origin: ChangeOrigin::UserAction,
     })
 }

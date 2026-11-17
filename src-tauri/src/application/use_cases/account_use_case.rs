@@ -236,12 +236,16 @@ pub async fn clear_local_data(
     accounts::clear_local_chat_data(&mut tx, account_id)
         .await
         .map_err(AppError::from)?;
+    let version = accounts::bump_change_version(&mut tx, account_id)
+        .await
+        .map_err(AppError::from)?;
     tx.commit().await?;
 
     compose_use_case::clear_drafts_for_account(db, paths, account_id).await?;
 
     let mut changeset = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
     changeset.account_cleared = true;
+    changeset.account_version = Some(version);
     Ok(changeset)
 }
 
@@ -252,6 +256,9 @@ pub async fn update_display_settings(
 ) -> Result<Account, AppError> {
     let mut tx = db.begin().await?;
     accounts::update_display_settings(&mut tx, &cmd.account_id, cmd.include_in_all)
+        .await
+        .map_err(AppError::from)?;
+    accounts::bump_change_version(&mut tx, &cmd.account_id)
         .await
         .map_err(AppError::from)?;
     let account = accounts::get(&mut tx, &cmd.account_id)
@@ -280,6 +287,11 @@ pub async fn update_aliases(
     accounts::update_aliases(&mut tx, &cmd.account_id, &aliases)
         .await
         .map_err(AppError::from)?;
+    if aliases_changed {
+        accounts::bump_change_version(&mut tx, &cmd.account_id)
+            .await
+            .map_err(AppError::from)?;
+    }
     let updated = accounts::get(&mut tx, &cmd.account_id)
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
@@ -293,6 +305,18 @@ pub async fn update_aliases(
         None
     };
     Ok((updated, changes))
+}
+
+/// 读取账号当前变更版本；前端据此校验快照新鲜度。
+pub async fn account_change_version(
+    db: &SqlitePool,
+    account_id: &AccountId,
+) -> Result<i64, AppError> {
+    let mut conn = db.acquire().await?;
+    accounts::change_version(&mut conn, account_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))
 }
 
 fn normalize_aliases(

@@ -23,4 +23,6 @@ export interface AccountPort {
   ): Promise<Account>;
   /** 手动维护别名（视为本账号；不做 Send-As） */
   updateAliases(cmd: UpdateAccountAliasesCommand): Promise<Account>;
+  /** 账号当前持久变更版本；用于校验前端快照新鲜度 */
+  getChangeVersion(accountId: AccountId): Promise<number>;
 }

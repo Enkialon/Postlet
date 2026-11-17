@@ -16,6 +16,9 @@ pub struct ChangeSet {
     /// 已入队待推远端的变更；runtime 据此立即冲刷（取值为本地信号，不参与前端渲染）
     #[serde(default)]
     pub pending_remote_flush: bool,
+    /// 该事务提交后账号的持久变更版本；未涉及账号写时为 None
+    #[serde(default)]
+    pub account_version: Option<i64>,
     pub origin: ChangeOrigin,
 }
 
@@ -42,6 +45,7 @@ impl ChangeSet {
             new_incoming_ids: Vec::new(),
             account_cleared: false,
             pending_remote_flush: false,
+            account_version: None,
             origin,
         }
     }
@@ -59,8 +63,8 @@ impl ChangeSet {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailChangedEvent {
     pub account_id: String,
-    /// 进程内单调；前端丢弃过期 generation
-    pub generation: u64,
+    /// 账号持久变更版本；前端按账号比对（缺失视为 0）
+    pub account_version: i64,
     pub origin: ChangeOrigin,
     pub session_ids: Vec<String>,
     pub message_ids: Vec<String>,
@@ -70,10 +74,10 @@ pub struct MailChangedEvent {
 }
 
 impl MailChangedEvent {
-    pub fn from_change_set(changes: &ChangeSet, generation: u64) -> Self {
+    pub fn from_change_set(changes: &ChangeSet) -> Self {
         Self {
             account_id: changes.account_id.as_str().to_owned(),
-            generation,
+            account_version: changes.account_version.unwrap_or(0),
             origin: changes.origin,
             session_ids: changes
                 .session_ids

@@ -225,6 +225,10 @@ async fn sync_graph_mail(
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
+        if !changeset.is_empty() {
+            changeset.account_version =
+                Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?);
+        }
         operation.checkpoint()?;
         tx.commit().await?;
     }
@@ -368,6 +372,10 @@ async fn sync_imap_mail(
         folder_states::upsert(&mut tx, &state)
             .await
             .map_err(AppError::from)?;
+        if !changeset.is_empty() {
+            changeset.account_version =
+                Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?);
+        }
         operation.checkpoint()?;
         tx.commit().await?;
     }

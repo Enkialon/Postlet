@@ -34,6 +34,9 @@ const showNewActivityHint = computed(
 );
 
 let watchBound = false;
+/** 各账号已应用到界面的持久变更版本；事件与焦点校验据此避免过期数据覆盖 */
+const appliedVersions = new Map<string, number>();
+let mailChangedBound = false;
 
 function syncListItemsFromDisplay(): void {
   listState.items = itemsFromDisplayOrder(sessionByKey, displayOrder.value);
@@ -370,8 +373,53 @@ export function useConversations() {
     applyCanonicalOrderNow();
   }
 
+  /** 版本落后则以 query 结果为准重查；事件只是提示。 */
+  async function reconcileAccountVersions(): Promise<void> {
+    const current = nav.listAccountId.value;
+    let accountIds: string[];
+    if (current) {
+      accountIds = [current];
+    } else {
+      try {
+        accountIds = (await ports.account.listAccounts()).map((a) => a.id);
+      } catch {
+        return;
+      }
+    }
+    let changed = false;
+    for (const id of accountIds) {
+      try {
+        const version = await ports.account.getChangeVersion(id);
+        if (version > (appliedVersions.get(id) ?? 0)) {
+          appliedVersions.set(id, version);
+          changed = true;
+        }
+      } catch {
+        // 账号可能刚被移除；忽略单个失败
+      }
+    }
+    if (changed) void loadInitial();
+  }
+
+  function handleProjectFocus(): void {
+    void reconcileAccountVersions();
+  }
+
+  async function bindMailChanged(): Promise<void> {
+    if (mailChangedBound) return;
+    mailChangedBound = true;
+    await ports.changeEvents.subscribeMailChanged((event) => {
+      appliedVersions.set(event.account_id, event.account_version);
+      const current = nav.listAccountId.value;
+      if (!current || current === event.account_id) void loadInitial();
+    });
+    window.addEventListener('focus', handleProjectFocus);
+    void reconcileAccountVersions();
+  }
+
   if (!watchBound) {
     watchBound = true;
+    void bindMailChanged();
     watch(
       () => [
         nav.accountFilter.value,

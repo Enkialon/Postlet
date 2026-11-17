@@ -8,6 +8,7 @@ commands.allow = [
   "account_sign_out",
   "account_clear_local_data",
   "update_display_settings",
+  "get_account_change_version",
   "update_account_aliases",
   "list_contacts",
   "get_contact",

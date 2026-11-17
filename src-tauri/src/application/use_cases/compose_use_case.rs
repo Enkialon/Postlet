@@ -238,6 +238,7 @@ pub async fn save_draft_with_refs(
         &refs_from_draft_attachments(&draft.attachments),
     )
     .await?;
+    accounts::bump_change_version(&mut tx, &draft.account_id).await?;
     tx.commit().await?;
 
     attachment_use_case::recycle_unreferenced(db, paths, &draft.account_id, Some(&_lock)).await?;
@@ -269,6 +270,7 @@ pub async fn clear_draft(
     )?;
     let mut tx = db.begin().await?;
     attachments::delete_draft(&mut tx, account_id, session_id).await?;
+    accounts::bump_change_version(&mut tx, account_id).await?;
     tx.commit().await?;
     attachment_use_case::recycle_unreferenced(db, paths, account_id, Some(&_lock)).await?;
     Ok(())
@@ -289,6 +291,7 @@ pub async fn clear_drafts_for_account(
     attachments::delete_drafts_for_account(&mut tx, account_id).await?;
     // message_attachments 随 messages 删除；此处清内容行
     attachments::delete_contents_for_account(&mut tx, account_id).await?;
+    accounts::bump_change_version(&mut tx, account_id).await?;
     tx.commit().await?;
     attachment_use_case::purge_account_files(&paths.attachments_dir, account_id)?;
     Ok(())
@@ -429,6 +432,7 @@ pub async fn send(
     )
     .await?;
     attachments::delete_draft(&mut tx, &cmd.account_id, &cmd.session_id).await?;
+    accounts::bump_change_version(&mut tx, &cmd.account_id).await?;
     tx.commit().await?;
 
     if let Ok(lock) = attachment_store::lock_account(&paths.attachments_dir, &cmd.account_id) {
