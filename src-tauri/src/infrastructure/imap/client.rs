@@ -6,11 +6,8 @@ use crate::infrastructure::error::InfraError;
 use crate::domain::value_objects::{MailTlsMode, RemoteKey};
 use super::parse::decode_remote_key;
 use imap::Session;
-use native_tls::TlsConnector;
 use std::net::TcpStream;
-use std::time::Duration;
 
-const IMAP_IO_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct ImapEndpoint {
@@ -26,92 +23,6 @@ pub enum ImapAuth {
 }
 
 pub type ImapSession = Session<native_tls::TlsStream<TcpStream>>;
-
-fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, InfraError> {
-    use std::net::ToSocketAddrs;
-    let addr = (endpoint.host.as_str(), endpoint.port)
-        .to_socket_addrs()
-        .map_err(|e| InfraError::Network {
-            message: format!("IMAP 解析主机失败: {e}"),
-        })?
-        .next()
-        .ok_or_else(|| InfraError::Network {
-            message: format!("IMAP 主机无可用地址: {}", endpoint.host),
-        })?;
-    let tcp = TcpStream::connect_timeout(&addr, IMAP_IO_TIMEOUT).map_err(|e| {
-        InfraError::Network {
-            message: format!("IMAP 连接超时或失败: {e}"),
-        }
-    })?;
-    let _ = tcp.set_read_timeout(Some(IMAP_IO_TIMEOUT));
-    let _ = tcp.set_write_timeout(Some(IMAP_IO_TIMEOUT));
-    Ok(tcp)
-}
-
-/// 阻塞登录。
-pub fn session_login_blocking(
-    endpoint: &ImapEndpoint,
-    auth: &ImapAuth,
-) -> Result<ImapSession, InfraError> {
-    if matches!(auth, ImapAuth::OAuth2 { .. }) {
-        return Err(InfraError::Auth {
-            message: "通用 IMAP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
-        });
-    }
-    let tls = TlsConnector::builder()
-        .build()
-        .map_err(|e| InfraError::Network {
-            message: format!("TLS 构建失败: {e}"),
-        })?;
-
-    let client = match endpoint.tls {
-        MailTlsMode::Implicit => {
-            let tcp = connect_tcp(endpoint)?;
-            let tls_stream = tls.connect(&endpoint.host, tcp).map_err(|e| InfraError::Network {
-                message: format!("IMAP TLS 握手失败: {e}"),
-            })?;
-            imap::Client::new(tls_stream)
-        }
-        MailTlsMode::StartTls => imap::connect_starttls(
-            (endpoint.host.as_str(), endpoint.port),
-            &endpoint.host,
-            &tls,
-        )
-        .map_err(|e| InfraError::Network {
-            message: format!("IMAP STARTTLS 连接失败: {e}"),
-        })?,
-        MailTlsMode::Plain => {
-            return Err(InfraError::Remote {
-                message: "明文 IMAP 已禁用，请使用 TLS 或 STARTTLS".into(),
-                retryable: false,
-            });
-        }
-    };
-
-    match auth {
-        ImapAuth::Password { username, password } => {
-            let username = username.trim();
-            let password = password.trim();
-            client.login(username, password).map_err(|(e, _)| InfraError::Auth {
-                message: format!("IMAP 密码登录失败: {e}"),
-            })
-        }
-        ImapAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
-    }
-}
-
-pub async fn session_login(
-    endpoint: &ImapEndpoint,
-    auth: &ImapAuth,
-) -> Result<ImapSession, InfraError> {
-    let endpoint = endpoint.clone();
-    let auth = auth.clone();
-    tokio::task::spawn_blocking(move || session_login_blocking(&endpoint, &auth))
-        .await
-        .map_err(|e| InfraError::Network {
-            message: format!("IMAP 登录任务失败: {e}"),
-        })?
-}
 
 pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, InfraError> {
     Ok(discover_folder_tree(session)?
@@ -198,12 +109,10 @@ pub async fn uid_set_seen_async(
     remote_key: &RemoteKey,
     is_read: bool,
 ) -> Result<(), InfraError> {
-    let endpoint = endpoint.clone();
-    let auth = auth.clone();
+    let mut session = super::connection::session_login(endpoint, auth).await?;
     let folder = folder.to_string();
     let remote_key = remote_key.clone();
     tokio::task::spawn_blocking(move || {
-        let mut session = session_login_blocking(&endpoint, &auth)?;
         let out = uid_set_seen(&mut session, &folder, &remote_key, is_read);
         let _ = session.logout();
         out
@@ -257,12 +166,10 @@ pub async fn uid_delete_async(
     folder: &str,
     remote_key: &RemoteKey,
 ) -> Result<(), InfraError> {
-    let endpoint = endpoint.clone();
-    let auth = auth.clone();
+    let mut session = super::connection::session_login(endpoint, auth).await?;
     let folder = folder.to_string();
     let remote_key = remote_key.clone();
     tokio::task::spawn_blocking(move || {
-        let mut session = session_login_blocking(&endpoint, &auth)?;
         let out = uid_delete(&mut session, &folder, &remote_key);
         let _ = session.logout();
         out
@@ -278,16 +185,6 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn unsupported_oauth_is_rejected_before_connecting() {
-        let error = session_login_blocking(
-            &ImapEndpoint { host: "must-not-resolve.invalid".into(), port: 993, tls: MailTlsMode::Implicit },
-            &ImapAuth::OAuth2 { username: "user".into(), access_token: "token".into() },
-        ).err().unwrap();
-        assert!(matches!(error, InfraError::Auth { .. }));
-        assert!(error.to_string().contains("不支持 OAuth2"));
-    }
 
     struct ScriptedStream {
         responses: Cursor<Vec<u8>>,

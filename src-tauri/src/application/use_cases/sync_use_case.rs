@@ -17,7 +17,7 @@ use crate::domain::value_objects::{
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
 use crate::infrastructure::imap::{
-    discover_folder_tree, session_login_blocking, sync_account_blocking, FolderSyncRequest,
+    discover_folder_tree, session_login, sync_account_blocking, FolderSyncRequest,
     ImapAuth, ImapEndpoint,
 };
 use crate::infrastructure::mail::credentials;
@@ -367,10 +367,9 @@ async fn sync_imap_mail(
         }
     }
 
-    let endpoint2 = endpoint.clone();
-    let auth2 = auth.clone();
+    let session = session_login(&endpoint, &auth).await.map_err(AppError::from)?;
     let batch = tokio::task::spawn_blocking(move || {
-        sync_account_blocking(&endpoint2, &auth2, &requests, 200)
+        sync_account_blocking(session, &requests, 200)
     })
     .await
     .map_err(|e| AppError::internal(format!("IMAP 同步任务失败: {e}")))?
@@ -907,8 +906,8 @@ async fn refresh_mail_folders_inner(
                 },
             };
             let endpoint = ImapEndpoint { host, port, tls };
+            let mut session = session_login(&endpoint, &auth).await.map_err(AppError::from)?;
             let nodes = tokio::task::spawn_blocking(move || {
-                let mut session = session_login_blocking(&endpoint, &auth)?;
                 let tree = discover_folder_tree(&mut session)?;
                 let _ = session.logout();
                 Ok::<_, crate::infrastructure::error::InfraError>(tree)

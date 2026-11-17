@@ -2,12 +2,13 @@
 
 依据 `imap-smtp-architecture-review.md` 的 2026-11-17 工作区版本实施。原问题文档及规则已有未提交修改，本记录单独维护修复证据。仅完成对应验收后标为解决；止损不代表完整问题解决。
 
-## I-01：已解决
+## I-01：整夹误清理已修复；默认移入 Trash 语义待完成
 
 - 删除前要求 UIDPLUS；能力缺失时不 SELECT、不 STORE、不产生删除副作用。
 - 仅对目标 UID STORE / UID EXPUNGE；任何错误均不回退整夹 EXPUNGE。
 - STORE 应答不确定及 UID EXPUNGE 失败明确报告目标可能/已经标记 Deleted，由现有 mutation last_error 保留。
 - 验证：`cargo test --manifest-path src-tauri/Cargo.toml --lib infrastructure::imap::client::tests -- --nocapture`，2 项通过。模拟不支持 UIDPLUS、UID EXPUNGE 成功、NO、BAD、断线，核对命令范围。未连接真实邮箱。
+- 上述仅覆盖安全永久删除原语；默认删除仍需随特殊文件夹映射与可恢复移动任务实现，不能将其视为默认删除语义已完整验收。
 
 ## I-16：已修复，Windows 已验证
 
@@ -85,3 +86,12 @@
 - Graph 目录发现使用完整 BFS；缺失绑定/子目录数量或中途失败不提交退役，根及子目录都显式包括隐藏目录，避免不同枚举范围误判删除。依据 [List mailFolders](https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders) 与 [List childFolders](https://learn.microsoft.com/en-us/graph/api/mailfolder-list-childfolders)；邮件内容 Delta 保留，未增加 folder Delta 状态双轨。
 - 验证：`cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 36 项通过，含真实 Windows 钥匙串；前端构建通过。新增同名重建/父子本地 ID、退役不可复活、绑定/位置修订拒绝旧任务、位置不可替换、首次绑定、同账号 Folder 外键、端点变更原子回滚/密码替换保留身份，以及不把未知子目录数量视为 0 的测试。
 - 尚需 I-10/A-03/I-14 处理网络请求串行、认领恢复、旧 FLAGS 晚到、前端失败展示、账号任务取消及提交版本；协议真实收发和 Tauri 安装包安全验收仍不以以上模型测试替代。
+
+## I-15：连接预算、地址回退与原样密码已修复；整轮任务取消待完成
+
+- 统一使用异步有界 DNS，TCP 顺序尝试全部解析地址，每个地址最多 3 秒；DNS、连接、TLS/STARTTLS、问候和认证共用 60 秒绝对截止时间。读写超时设置失败直接报错。
+- STARTTLS 在同一个已设置超时的 socket 上调用锁定 imap 库的 Client::secure；先读取明文问候、确认升级、完成 TLS，再登录，不重复等待问候。隐式 TLS 显式读取加密问候。
+- 截止时关闭底层 socket 并等待登录线程退出；调用方取消登录 Future 时也关闭 socket，不能在后台继续认证。移除旧的同步 DNS/登录入口，目录发现、同步、mutation、IDLE 均接入统一登录。
+- 密码原样传递，仅规范化用户名；认证响应拒绝与传输响应未确认分开，不回显可能包含秘密的认证错误原文。Plain 与通用 OAuth2 在 DNS 前拒绝。
+- 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 41 项通过，含系统钥匙串。新增首地址拒绝后的回退、密码首尾空格、TLS/问候停滞、STARTTLS 确认后握手停滞、取消后服务端观测连接关闭、连接前拒绝模式等 6 项测试。沙箱系统安全包拒绝 TLS 凭据创建，握手测试以原生环境结果为准；未连接真实邮箱。
+- 本次仅完成连接阶段，不能声称整项 I-15 已解决：已认证后的阻塞同步循环、整轮超时、调用方取消与 gate 实际持有时间仍需继续修复。

@@ -4,7 +4,7 @@ use crate::application::dto::TriggerMailSyncCommand;
 use crate::application::use_cases::sync_use_case;
 use crate::domain::value_objects::{AccountId, MailTlsMode, ReceiveProtocol};
 use crate::infrastructure::imap::{
-    IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login_blocking,
+    IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login,
 };
 use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
@@ -163,10 +163,14 @@ async fn run_cycle(
 
     if use_idle {
         eprintln!("IMAP IDLE [{account_id}]: 正在建立 INBOX 监听连接");
-        let endpoint2 = endpoint.clone();
-        let auth2 = auth.clone();
+        let mut session = match session_login(&endpoint, &auth).await {
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("IMAP IDLE [{account_id}]: 登录失败: {error}");
+                return false;
+            }
+        };
         let idle_result = tokio::task::spawn_blocking(move || {
-            let mut session = session_login_blocking(&endpoint2, &auth2)?;
             session
                 .select("INBOX")
                 .map_err(|e| crate::infrastructure::error::InfraError::Remote {

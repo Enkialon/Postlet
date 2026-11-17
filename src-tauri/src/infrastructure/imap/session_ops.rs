@@ -1,6 +1,6 @@
-//! 在单次 spawn_blocking 中完成登录 + 多文件夹同步。
+//! 在已认证的连接中完成多文件夹同步。
 
-use super::client::{list_capabilities, session_login_blocking, ImapAuth, ImapEndpoint};
+use super::client::{list_capabilities, ImapSession};
 use super::sync::{sync_folder, FolderSyncRequest, FolderSyncResult};
 use crate::infrastructure::error::InfraError;
 
@@ -11,12 +11,10 @@ pub struct ImapSyncBatch {
 }
 
 pub fn sync_account_blocking(
-    endpoint: &ImapEndpoint,
-    auth: &ImapAuth,
+    mut session: ImapSession,
     requests: &[FolderSyncRequest],
     page_limit: u32,
 ) -> Result<ImapSyncBatch, InfraError> {
-    let mut session = session_login_blocking(endpoint, auth)?;
     let (idle_supported, _) = list_capabilities(&mut session)?;
 
     // 无勾选文件夹时不偷偷回落 INBOX；由上层 resolve_mail_folders 决定范围。
