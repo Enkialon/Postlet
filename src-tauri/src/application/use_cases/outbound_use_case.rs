@@ -37,6 +37,9 @@ pub async fn flush_pending_message(
     if bundle.message.sync_status != MessageSyncStatus::PendingLocal {
         return Ok(());
     }
+    if bundle.message.has_attachments {
+        return Err(AppError::validation("附件内容不可用，已阻止不完整发送"));
+    }
     let account = accounts::get(&mut conn, account_id)
         .await
         .map_err(AppError::from)?

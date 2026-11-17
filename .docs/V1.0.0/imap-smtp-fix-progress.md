@@ -33,3 +33,9 @@
 - 主窗口配置开发/生产 CSP，未增加任何远程 capability。旧邮件渲染依赖与全局样式已移除。
 - 验证：Edge + Playwright 8 项通过，分别使用实际配置中的开发/生产 CSP，捕获解析/渲染/授权时图片与 CSS/字体/iframe 等请求；覆盖危险 URL、畸形 HTML、CID/本地资源拒绝、授权撤销和跨邮件重置、链接 Port、新窗口及绕过清洗直接注入脚本后的独立 sandbox/CSP 防护。`pnpm build` 和 `cargo check --manifest-path src-tauri/Cargo.toml --offline` 通过。
 - 尚未在 Tauri 安装包内验证 WebView2/其他平台的真实 IPC 拒绝与 capabilities 执行，浏览器父页面模拟的高权限入口不能代替该验收，因此不将整项标为完全解决。HTML 附件预览当前不存在，未来实现必须复用同等隔离。
+
+## I-07：已止损，完整附件生命周期尚未实现
+
+- Compose 入口在数据库/草稿修改前拒绝带附件发送，现有 UI 错误路径保留用户草稿；outbound 对已有附件标记再次拒绝，不能静默去掉附件后发往 Graph/SMTP。
+- 后续仍需统一受管理内容、导入 Port、持久引用、重启恢复、回收及两种发送协议接线；不能将明确拒绝发送等同于附件功能完成。
+- 验证：Rust 编译及现有测试回归；未执行真实附件收发，完整生命周期仍未实现。

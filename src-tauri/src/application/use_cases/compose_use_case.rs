@@ -172,6 +172,9 @@ pub async fn send(
     state: &AppState,
     cmd: SendComposedMailCommand,
 ) -> Result<MessageWithRecipients, AppError> {
+    if !cmd.attachments.is_empty() {
+        return Err(AppError::validation("附件内容存储尚未接通，无法发送含附件的邮件；草稿已保留"));
+    }
     let db: &SqlitePool = &state.db;
     let mut tx = db.begin().await?;
 
