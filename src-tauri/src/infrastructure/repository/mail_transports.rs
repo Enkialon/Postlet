@@ -158,16 +158,12 @@ pub async fn record_imap_idle_support(
     Ok(result.rows_affected() == 1)
 }
 
-/// 确保账号有协议行；缺失则写入 Graph 默认。
-pub async fn ensure_default(
+/// 运行中的账号必须已有显式协议配置；读取不能创建或猜测协议。
+pub async fn require(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
-    now: i64,
 ) -> Result<AccountMailTransport, InfraError> {
-    if let Some(existing) = get(conn, account_id).await? {
-        return Ok(existing);
-    }
-    let transport = AccountMailTransport::graph_default(account_id.clone(), now);
-    upsert(conn, &transport).await?;
-    Ok(transport)
+    get(conn, account_id).await?.ok_or_else(|| InfraError::Conflict {
+        message: "账号邮件协议配置缺失，请重新配置账号".into(),
+    })
 }

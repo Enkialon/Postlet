@@ -127,3 +127,12 @@
 
 - 端到端代码复核发现 AddAccountDialog 仍在提交前 trim 密码；此前协议层原样传递测试没有覆盖此 UI 路径。删除该转换及按品牌解释的注释，表单将密码原样交给已有 Port/Adapter。
 - 验证：`pnpm build` 通过（含 vue-tsc）；全局检索未再发现密码 trim 路径。未执行真实账号表单登录，不将构建通过等同于已完成邮箱端到端认证。
+
+## A-05：运行时缺配置不再默认 Graph，认证模型仍待拆分
+
+- 删除仓储 ensure_default；运行时读取改用只读 require，缺失时返回明确配置错误，不插入协议行。收信、目录发现、联系人同步、正文补取、mutation 和外发均使用该入口；Graph 配置构造只留在明确的 Graph 登录创建流程。
+- 移除初始 schema 的 receive_protocol/send_protocol/auth_kind 默认值，直接省略协议字段的 INSERT 也失败。按 V1 直接修订初始库，未提供旧开发库升级兼容或触碰现有本地数据库。
+- 后台邮件同步在配置读取失败时记录账号同步错误，前端可通过现有进度查询观察；其他同步阶段不会把缺行悄悄视为 Graph 账号。
+- 增加已登录但缺配置的目录发现测试，验证先返回配置错误、不进入认证、不创建文件或协议行；验证后台同步缺配置的错误可查询，以及 SQL 省略协议字段被拒绝。
+- 验证：原生 Windows `cargo test --manifest-path src-tauri/Cargo.toml --offline --lib --tests -- --include-ignored` 58 项通过（48 单元 + 10 集成），含 TLS 和系统钥匙串；全局检索无 ensure_default 调用或定义。
+- ReceiveConfig/SendConfig、独立认证引用和 Graph 登录切换/凭据原子提交仍需继续实现；本轮不将 A-05 标为完整解决。

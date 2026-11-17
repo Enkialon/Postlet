@@ -23,7 +23,7 @@ fn imap_cursor_roundtrip() {
 }
 
 #[tokio::test]
-async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
+async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_smtp() {
     let db = db::open_memory().await.unwrap();
     let mut conn = db.acquire().await.unwrap();
     let now = 1_700_000_000_000_i64;
@@ -44,9 +44,13 @@ async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
         updated_at: now,
     };
     accounts::upsert(&mut conn, &account).await.unwrap();
-    let t = mail_transports::ensure_default(&mut conn, &account.id, now)
-        .await
-        .unwrap();
+    assert!(mail_transports::require(&mut conn, &account.id).await.is_err());
+    assert!(mail_transports::get(&mut conn, &account.id).await.unwrap().is_none());
+    assert!(sqlx::query("INSERT INTO account_mail_transport(account_id,updated_at) VALUES (?,?)")
+        .bind(account.id.as_str()).bind(now).execute(&mut *conn).await.is_err());
+    let graph = AccountMailTransport::graph_default(account.id.clone(), now);
+    mail_transports::upsert(&mut conn, &graph).await.unwrap();
+    let t = mail_transports::require(&mut conn, &account.id).await.unwrap();
     assert_eq!(t.receive_protocol, ReceiveProtocol::Graph);
     assert_eq!(t.send_protocol, SendProtocol::Graph);
 

@@ -44,7 +44,7 @@ pub async fn flush_pending_message(
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
-    let transport = mail_transports::ensure_default(&mut conn, account_id, now_ms())
+    let transport = mail_transports::require(&mut conn, account_id)
         .await
         .map_err(AppError::from)?;
     drop(conn);

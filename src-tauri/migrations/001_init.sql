@@ -24,11 +24,11 @@ CREATE INDEX idx_accounts_email ON accounts(email);
 
 CREATE TABLE account_mail_transport (
     account_id          TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    receive_protocol    TEXT NOT NULL DEFAULT 'graph'
+    receive_protocol    TEXT NOT NULL
         CHECK(receive_protocol IN ('graph', 'imap')),
-    send_protocol       TEXT NOT NULL DEFAULT 'graph'
+    send_protocol       TEXT NOT NULL
         CHECK(send_protocol IN ('graph', 'smtp')),
-    auth_kind           TEXT NOT NULL DEFAULT 'oauth2'
+    auth_kind           TEXT NOT NULL
         CHECK(auth_kind IN ('password', 'oauth2')),
     credential_ref      TEXT,
     imap_host           TEXT,

@@ -77,7 +77,7 @@ pub async fn ensure_message_body(
 
     let transport = {
         let mut conn = db.acquire().await?;
-        mail_transports::ensure_default(&mut conn, account_id, now_ms())
+        mail_transports::require(&mut conn, account_id)
             .await
             .map_err(AppError::from)?
     };
@@ -230,7 +230,7 @@ pub async fn flush_due_mutations(
 
     let transport = {
         let mut conn = db.acquire().await?;
-        mail_transports::ensure_default(&mut conn, account_id, now_ms())
+        mail_transports::require(&mut conn, account_id)
             .await
             .map_err(AppError::from)?
     };

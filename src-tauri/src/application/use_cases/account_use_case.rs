@@ -101,13 +101,12 @@ pub async fn sign_in(db: &SqlitePool, paths: &AppPaths) -> Result<Account, AppEr
     };
 
     accounts::upsert_identity(&mut tx, &account).await?;
-    crate::infrastructure::repository::mail_transports::ensure_default(
-        &mut tx,
-        &account.id,
-        now,
-    )
-    .await
-    .map_err(AppError::from)?;
+    // 只有明确的 Graph 登录可创建 Graph 协议行；已有配置不由普通读取补写。
+    if crate::infrastructure::repository::mail_transports::get(&mut tx, &account.id).await?.is_none() {
+        crate::infrastructure::repository::mail_transports::upsert(
+            &mut tx, &crate::domain::entities::AccountMailTransport::graph_default(account.id.clone(), now),
+        ).await?;
+    }
     let saved = accounts::get(&mut tx, &account.id)
         .await?
         .ok_or_else(|| AppError::internal("登录后读取账户失败"))?;

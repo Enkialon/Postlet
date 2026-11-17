@@ -67,6 +67,21 @@ fn merge_folder_progress(prev: &MailFolderSyncState, sync_cursor: Option<String>
     state
 }
 
+async fn load_mail_sync_transport(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+) -> Result<crate::domain::entities::AccountMailTransport, AppError> {
+    match mail_transports::require(conn, account_id).await {
+        Ok(transport) => Ok(transport),
+        Err(error) => {
+            // 同步 IPC 在后台执行；入口失败也必须可由账号状态查询观察。
+            accounts::update_mail_sync_meta(conn, account_id, SyncStatus::Error,
+                Some(&error.to_string()), None).await?;
+            Err(error.into())
+        }
+    }
+}
+
 /// 请求同步指定账户邮件；按 `receive_protocol` 路由。
 ///
 /// Runtime 持有账号 permit 并提供取消/截止时间；本用例不释放或重建同步锁。
@@ -86,9 +101,7 @@ pub async fn trigger_mail_sync(
     if !accounts::is_signed_in(&mut conn, &cmd.account_id).await? {
         return Err(AppError::auth("账号已退出，已停止同步"));
     }
-    let transport = mail_transports::ensure_default(&mut conn, &cmd.account_id, now_ms())
-        .await
-        .map_err(AppError::from)?;
+    let transport = load_mail_sync_transport(&mut conn, &cmd.account_id).await?;
     drop(conn);
 
     // 账户级只记「发起」时刻；各文件夹成功时间写在 mail_folder_sync_state.synced_at
@@ -643,7 +656,7 @@ pub async fn trigger_contact_sync(
 ) -> Result<(), AppError> {
     let transport = {
         let mut conn = db.acquire().await?;
-        mail_transports::ensure_default(&mut conn, &cmd.account_id, now_ms())
+        mail_transports::require(&mut conn, &cmd.account_id)
             .await
             .map_err(AppError::from)?
     };
@@ -789,7 +802,7 @@ pub async fn refresh_mail_folders(
     if !accounts::is_signed_in(&mut conn, account_id).await? {
         return Err(AppError::auth("账号已退出，已停止目录发现"));
     }
-    let transport = mail_transports::ensure_default(&mut conn, account_id, now_ms())
+    let transport = mail_transports::require(&mut conn, account_id)
         .await
         .map_err(AppError::from)?;
     drop(conn);
@@ -920,7 +933,7 @@ mod location_tests {
     use crate::infrastructure::db;
 
     #[tokio::test]
-    async fn signed_out_folder_refresh_stops_before_transport_creation_or_authentication() {
+    async fn inactive_or_unconfigured_folder_refresh_stops_before_transport_creation_or_authentication() {
         let db = db::open_memory().await.unwrap();
         sqlx::query("INSERT INTO accounts(id,email,is_signed_in,created_at,updated_at) VALUES ('a','a@example.com',0,1,1)")
             .execute(&db).await.unwrap();
@@ -930,8 +943,24 @@ mod location_tests {
         let operation = MailOperation::new(std::time::Duration::from_secs(1));
         let result = refresh_mail_folders(&db, &paths, &operation, &AccountId::new("a")).await;
         assert_eq!(result.unwrap_err().code, crate::application::error::AppErrorCode::Auth);
+        sqlx::query("UPDATE accounts SET is_signed_in=1 WHERE id='a'").execute(&db).await.unwrap();
+        let result = refresh_mail_folders(&db, &paths, &operation, &AccountId::new("a")).await;
+        assert_eq!(result.unwrap_err().code, crate::application::error::AppErrorCode::Conflict);
         assert!(!missing.exists());
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_mail_transport").fetch_one(&db).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn missing_transport_is_a_visible_sync_error_and_never_creates_graph_configuration() {
+        let db = db::open_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)").execute(&db).await.unwrap();
+        let mut conn = db.acquire().await.unwrap();
+        let error = load_mail_sync_transport(&mut conn, &AccountId::new("a")).await.unwrap_err();
+        assert_eq!(error.code, crate::application::error::AppErrorCode::Conflict);
+        let account = accounts::get(&mut conn, &AccountId::new("a")).await.unwrap().unwrap();
+        assert_eq!(account.mail_sync_status, SyncStatus::Error);
+        assert!(account.mail_sync_error.unwrap().contains("协议配置缺失"));
+        assert!(mail_transports::get(&mut conn, &AccountId::new("a")).await.unwrap().is_none());
     }
 
     async fn seed_folders(db: &SqlitePool) {
