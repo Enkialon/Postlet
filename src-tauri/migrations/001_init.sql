@@ -30,6 +30,7 @@ CREATE TABLE account_mail_transport (
         CHECK(send_protocol IN ('graph', 'smtp')),
     auth_kind           TEXT NOT NULL DEFAULT 'oauth2'
         CHECK(auth_kind IN ('password', 'oauth2')),
+    credential_ref      TEXT,
     imap_host           TEXT,
     imap_port           INTEGER,
     imap_tls            TEXT

@@ -1,10 +1,11 @@
 //! 通用邮箱凭证；系统钥匙串保护密钥，磁盘仅保存密文。
 
 use crate::application::error::PortError;
-use crate::domain::value_objects::AccountId;
+use crate::domain::entities::AccountMailTransport;
+use crate::domain::value_objects::MailAuthKind;
+use crate::infrastructure::secret_store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use crate::infrastructure::secret_store;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MailSecret {
@@ -23,19 +24,50 @@ pub struct MailSecret {
 
 pub async fn save(
     credentials_dir: &Path,
-    account_id: &AccountId,
+    credential_ref: &str,
     secret: &MailSecret,
 ) -> Result<(), PortError> {
-    secret_store::save(credentials_dir, "mail", account_id.as_str(), secret)
+    secret_store::save(credentials_dir, "mail", credential_ref, secret)
 }
 
 pub async fn load(
     credentials_dir: &Path,
-    account_id: &AccountId,
+    transport: &AccountMailTransport,
 ) -> Result<Option<MailSecret>, PortError> {
-    secret_store::load(credentials_dir, "mail", account_id.as_str())
+    if transport.auth_kind != MailAuthKind::Password {
+        return Err(PortError::Auth {
+            message: "通用 IMAP/SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
+        });
+    }
+    let reference = transport
+        .credential_ref
+        .as_deref()
+        .ok_or_else(|| PortError::Auth {
+            message: "账号缺少凭据引用，请重新登录".into(),
+        })?;
+    secret_store::load(credentials_dir, "mail", reference)
 }
 
-pub async fn delete(credentials_dir: &Path, account_id: &AccountId) -> Result<(), PortError> {
-    secret_store::delete(credentials_dir, "mail", account_id.as_str())
+pub async fn delete(credentials_dir: &Path, credential_ref: &str) -> Result<(), PortError> {
+    secret_store::delete(credentials_dir, "mail", credential_ref)
+}
+
+/// 配置切换与启动回收共用跨进程锁；忙时明确返回，避免回收正在暂存的凭据。
+pub fn lock(credentials_dir: &Path) -> Result<std::fs::File, PortError> {
+    std::fs::create_dir_all(credentials_dir).map_err(|_| PortError::Storage {
+        message: "创建凭据目录失败".into(),
+    })?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(credentials_dir.join("mail-config.lock"))
+        .map_err(|_| PortError::Storage {
+            message: "打开凭据配置锁失败".into(),
+        })?;
+    file.try_lock().map_err(|_| PortError::Conflict {
+        message: "账号配置正在更新，请稍后重试".into(),
+    })?;
+    Ok(file)
 }

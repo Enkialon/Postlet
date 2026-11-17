@@ -55,6 +55,7 @@ async fn mail_transport_defaults_to_graph_and_can_switch_to_imap_smtp() {
         receive_protocol: ReceiveProtocol::Imap,
         send_protocol: SendProtocol::Smtp,
         auth_kind: MailAuthKind::Password,
+        credential_ref: Some("test-credential".into()),
         imap_host: Some("imap.example.com".into()),
         imap_port: Some(993),
         imap_tls: Some(MailTlsMode::Implicit),

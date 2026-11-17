@@ -131,8 +131,11 @@ pub async fn sign_out(
         .await?
         .ok_or_else(|| AppError::not_found(format!("账户不存在: {account_id}")))?;
     graph_auth::sign_out(&paths.credentials_dir, account_id).await?;
-    crate::infrastructure::mail::credentials::delete(&paths.credentials_dir, account_id)
-        .await?;
+    let _credential_lock = crate::infrastructure::mail::credentials::lock(&paths.credentials_dir)?;
+    if let Some(reference) = crate::infrastructure::repository::mail_transports::get(&mut conn, account_id)
+        .await?.and_then(|transport| transport.credential_ref) {
+        crate::infrastructure::mail::credentials::delete(&paths.credentials_dir, &reference).await?;
+    }
     accounts::set_signed_in(&mut conn, account_id, false)
         .await
         .map_err(AppError::from)?;

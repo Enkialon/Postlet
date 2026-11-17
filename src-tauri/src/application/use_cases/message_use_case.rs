@@ -348,7 +348,7 @@ async fn push_imap_read(
         .username
         .clone()
         .unwrap_or_else(|| account.email.as_str().to_string());
-    let secret = credentials::load(&paths.credentials_dir, account_id)
+    let secret = credentials::load(&paths.credentials_dir, &transport)
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
@@ -460,7 +460,7 @@ async fn push_imap_delete(
         .username
         .clone()
         .unwrap_or_else(|| account.email.as_str().to_string());
-    let secret = credentials::load(&paths.credentials_dir, account_id)
+    let secret = credentials::load(&paths.credentials_dir, &transport)
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;

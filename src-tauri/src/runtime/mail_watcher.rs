@@ -95,7 +95,7 @@ async fn run_cycle(
         if t.receive_protocol != ReceiveProtocol::Imap {
             return false;
         }
-        let secret = match credentials::load(&paths.credentials_dir, account_id).await {
+        let secret = match credentials::load(&paths.credentials_dir, &t).await {
             Ok(Some(s)) => s,
             _ => return false,
         };

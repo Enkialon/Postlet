@@ -46,6 +46,9 @@ pub fn run() {
                 }
             });
             let changes = ChangeDispatcher::new(app.handle().clone());
+            tauri::async_runtime::block_on(
+                application::use_cases::mail_account_use_case::recover_credentials(&db, &paths),
+            ).map_err(|error| format!("恢复邮件凭据失败: {}", error.message))?;
             let mail_sync_gate = MailSyncGate::new();
             runtime::mail_watcher::spawn_watchers(
                 db.clone(),

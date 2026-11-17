@@ -131,7 +131,7 @@ async fn send_via_smtp(
         .username
         .clone()
         .unwrap_or_else(|| account.email.as_str().to_string());
-    let secret = credentials::load(&paths.credentials_dir, &account.id)
+    let secret = credentials::load(&paths.credentials_dir, &transport)
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::auth("缺少 SMTP 凭证"))?;

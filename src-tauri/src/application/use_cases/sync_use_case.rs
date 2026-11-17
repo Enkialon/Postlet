@@ -351,7 +351,7 @@ async fn sync_imap_mail(
         .username
         .clone()
         .ok_or_else(|| AppError::validation("IMAP 账号缺少 username"))?;
-    let secret = credentials::load(&paths.credentials_dir, &cmd.account_id)
+    let secret = credentials::load(&paths.credentials_dir, &transport)
         .await
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
@@ -1082,7 +1082,7 @@ async fn refresh_mail_folders_inner(
                 .username
                 .clone()
                 .ok_or_else(|| AppError::validation("IMAP 账号缺少 username"))?;
-            let secret = credentials::load(&paths.credentials_dir, account_id)
+            let secret = credentials::load(&paths.credentials_dir, &transport)
                 .await
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;

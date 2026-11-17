@@ -11,6 +11,8 @@ pub struct AccountMailTransport {
     pub receive_protocol: ReceiveProtocol,
     pub send_protocol: SendProtocol,
     pub auth_kind: MailAuthKind,
+    /// 指向独立写入的受保护凭据；Graph 使用自己的 token 存储。
+    pub credential_ref: Option<String>,
     pub imap_host: Option<String>,
     pub imap_port: Option<u16>,
     pub imap_tls: Option<MailTlsMode>,
@@ -32,6 +34,7 @@ impl AccountMailTransport {
             receive_protocol: ReceiveProtocol::Graph,
             send_protocol: SendProtocol::Graph,
             auth_kind: MailAuthKind::OAuth2,
+            credential_ref: None,
             imap_host: None,
             imap_port: None,
             imap_tls: None,

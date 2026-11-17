@@ -3,7 +3,7 @@
 use crate::application::error::PortError;
 use crate::domain::value_objects::MailTlsMode;
 use lettre::message::{header, Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::{Credentials, Mechanism};
+use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::time::Duration;
@@ -65,6 +65,11 @@ pub async fn send_message(
     auth: &SmtpAuth,
     mail: &SmtpOutgoing,
 ) -> Result<SmtpSendResult, PortError> {
+    if matches!(auth, SmtpAuth::OAuth2 { .. }) {
+        return Err(PortError::Auth {
+            message: "通用 SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
+        });
+    }
     let mut builder = Message::builder()
         .from(parse_mailbox(&mail.from, &mail.from_name)?)
         .subject(mail.subject.clone());
@@ -115,14 +120,7 @@ pub async fn send_message(
             .credentials(Credentials::new(username.clone(), password.clone()))
             .timeout(Some(Duration::from_secs(60)))
             .build(),
-        SmtpAuth::OAuth2 {
-            username,
-            access_token,
-        } => builder
-            .credentials(Credentials::new(username.clone(), access_token.clone()))
-            .authentication(vec![Mechanism::Xoauth2])
-            .timeout(Some(Duration::from_secs(60)))
-            .build(),
+        SmtpAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
     };
 
     transport
@@ -180,4 +178,25 @@ fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, P
         message: format!("构造带附件邮件失败: {e}"),
         retryable: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unsupported_oauth_is_rejected_before_building_or_connecting() {
+        let mail = SmtpOutgoing {
+            from: String::new(), from_name: String::new(), to: vec![], cc: vec![], bcc: vec![],
+            subject: String::new(), text_body: None, html_body: None,
+            in_reply_to: None, references: None, attachments: vec![],
+        };
+        let error = send_message(
+            &SmtpEndpoint { host: "must-not-resolve.invalid".into(), port: 587, tls: MailTlsMode::StartTls },
+            &SmtpAuth::OAuth2 { username: "user".into(), access_token: "token".into() },
+            &mail,
+        ).await.unwrap_err();
+        assert!(matches!(error, PortError::Auth { .. }));
+        assert!(error.to_string().contains("不支持 OAuth2"));
+    }
 }

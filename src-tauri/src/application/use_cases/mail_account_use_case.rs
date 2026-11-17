@@ -4,7 +4,7 @@ use crate::application::dto::UpsertImapSmtpAccountCommand;
 use crate::application::error::AppError;
 use crate::domain::entities::{Account, AccountMailTransport};
 use crate::domain::value_objects::{
-    AccountId, EmailAddress, MailAuthKind, ReceiveProtocol, SendProtocol, SyncStatus,
+    AccountId, EmailAddress, MailAuthKind, MailTlsMode, ReceiveProtocol, SendProtocol, SyncStatus,
 };
 use crate::infrastructure::mail::credentials::{self, MailSecret};
 use crate::infrastructure::paths::AppPaths;
@@ -26,14 +26,110 @@ pub async fn upsert_imap_smtp_account(
     paths: &AppPaths,
     cmd: UpsertImapSmtpAccountCommand,
 ) -> Result<Account, AppError> {
-    let email = EmailAddress::parse(cmd.email.as_str())
-        .ok_or_else(|| AppError::validation("邮箱地址无效"))?;
+    validate(&cmd)?;
+    let _lock = credentials::lock(&paths.credentials_dir)?;
+    let credential_ref = Uuid::new_v4().to_string();
+    let secret = MailSecret {
+        username: cmd
+            .username
+            .clone()
+            .unwrap_or_else(|| cmd.email.trim().to_string()),
+        password: cmd.password.clone(),
+        access_token: None,
+        refresh_token: None,
+        expires_at_ms: None,
+    };
+    credentials::save(&paths.credentials_dir, &credential_ref, &secret).await?;
+    let result = persist_account(db, cmd, &credential_ref).await;
+    match result {
+        Ok((account, old_ref)) => {
+            if let Some(old_ref) = old_ref {
+                credentials::delete(&paths.credentials_dir, &old_ref)
+                    .await
+                    .map_err(|_| {
+                        AppError::internal("账号配置已保存，但旧凭据回收失败；重启时会再次清理")
+                    })?;
+            }
+            Ok(account)
+        }
+        Err(error) => {
+            // commit 返回错误时先确认引用，不能误删可能已经提交的凭据。
+            let referenced = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM account_mail_transport WHERE credential_ref = ?",
+            )
+            .bind(&credential_ref)
+            .fetch_one(db)
+            .await;
+            if matches!(referenced, Ok(0)) {
+                credentials::delete(&paths.credentials_dir, &credential_ref)
+                    .await
+                    .map_err(|_| {
+                        AppError::internal("账号配置未完成，新凭据清理失败；重启时会再次清理")
+                    })?;
+            }
+            Err(error)
+        }
+    }
+}
+
+fn validate(cmd: &UpsertImapSmtpAccountCommand) -> Result<(), AppError> {
+    if cmd.auth_kind != MailAuthKind::Password {
+        return Err(AppError::validation(
+            "通用 IMAP/SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码",
+        ));
+    }
+    if EmailAddress::parse(&cmd.email).is_none() {
+        return Err(AppError::validation("邮箱地址无效"));
+    }
+    if cmd.password.as_ref().is_none_or(|value| value.is_empty()) {
+        return Err(AppError::validation("密码认证须提供非空 password"));
+    }
+    for (host, port, tls) in [
+        (&cmd.imap_host, cmd.imap_port, cmd.imap_tls),
+        (&cmd.smtp_host, cmd.smtp_port, cmd.smtp_tls),
+    ] {
+        if host.trim() != host
+            || host.is_empty()
+            || url::Host::parse(host).is_err()
+            || host.contains(['/', '@', '?', '#'])
+            || port == 0
+        {
+            return Err(AppError::validation("邮件服务器主机或端口无效"));
+        }
+        if tls == MailTlsMode::Plain {
+            return Err(AppError::validation("邮件服务器必须使用 TLS 或 STARTTLS"));
+        }
+    }
+    if cmd
+        .username
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty() || value.chars().any(char::is_control))
+    {
+        return Err(AppError::validation("登录用户名无效"));
+    }
+    Ok(())
+}
+
+async fn persist_account(
+    db: &SqlitePool,
+    cmd: UpsertImapSmtpAccountCommand,
+    credential_ref: &str,
+) -> Result<(Account, Option<String>), AppError> {
+    let email =
+        EmailAddress::parse(&cmd.email).ok_or_else(|| AppError::validation("邮箱地址无效"))?;
     let now = now_ms();
     let mut tx = db.begin().await?;
 
     let existing = accounts::get_by_email(&mut tx, &email)
         .await
         .map_err(AppError::from)?;
+    let old_ref = if let Some(account) = &existing {
+        mail_transports::get(&mut tx, &account.id)
+            .await?
+            .and_then(|transport| transport.credential_ref)
+    } else {
+        None
+    };
     let account = if let Some(mut acc) = existing {
         acc.display_name = if cmd.display_name.trim().is_empty() {
             email.as_str().to_string()
@@ -80,6 +176,7 @@ pub async fn upsert_imap_smtp_account(
         receive_protocol: ReceiveProtocol::Imap,
         send_protocol: SendProtocol::Smtp,
         auth_kind: cmd.auth_kind,
+        credential_ref: Some(credential_ref.into()),
         imap_host: Some(cmd.imap_host),
         imap_port: Some(cmd.imap_port),
         imap_tls: Some(cmd.imap_tls),
@@ -95,35 +192,22 @@ pub async fn upsert_imap_smtp_account(
         .map_err(AppError::from)?;
     tx.commit().await?;
 
-    let secret = match cmd.auth_kind {
-        MailAuthKind::Password => MailSecret {
-            username: transport.username.clone().unwrap_or_default(),
-            password: Some(
-                cmd.password
-                    .ok_or_else(|| AppError::validation("密码认证须提供 password"))?,
-            ),
-            access_token: None,
-            refresh_token: None,
-            expires_at_ms: None,
-        },
-        MailAuthKind::OAuth2 => MailSecret {
-            username: transport.username.clone().unwrap_or_default(),
-            password: None,
-            access_token: Some(
-                cmd.access_token
-                    .ok_or_else(|| AppError::validation("OAuth2 须提供 access_token"))?,
-            ),
-            refresh_token: cmd.refresh_token,
-            expires_at_ms: cmd.expires_at_ms,
-        },
-    };
-    credentials::save(&paths.credentials_dir, &account.id, &secret)
-        .await
-        .map_err(AppError::from)?;
+    Ok((account, old_ref))
+}
 
-    let mut conn = db.acquire().await?;
-    accounts::get(&mut conn, &account.id)
-        .await
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::internal("写入后读取账户失败"))
+/// 启动恢复：仅删除没有配置引用的暂存/旧通用凭据；与配置切换互斥。
+pub async fn recover_credentials(db: &SqlitePool, paths: &AppPaths) -> Result<(), AppError> {
+    let _lock = credentials::lock(&paths.credentials_dir)?;
+    let references = sqlx::query_scalar::<_, String>(
+        "SELECT credential_ref FROM account_mail_transport WHERE credential_ref IS NOT NULL",
+    )
+    .fetch_all(db)
+    .await?;
+    for reference in crate::infrastructure::secret_store::list_ids(&paths.credentials_dir, "mail")?
+    {
+        if !references.contains(&reference) {
+            credentials::delete(&paths.credentials_dir, &reference).await?;
+        }
+    }
+    Ok(())
 }

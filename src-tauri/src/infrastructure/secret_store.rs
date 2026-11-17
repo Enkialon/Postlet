@@ -144,6 +144,34 @@ pub fn delete(dir: &Path, kind: &str, id: &str) -> Result<(), PortError> {
     }
 }
 
+pub fn list_ids(dir: &Path, kind: &str) -> Result<Vec<String>, PortError> {
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|_| failure("读取凭据目录失败"))? {
+        let entry = entry.map_err(|_| failure("读取凭据目录项失败"))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(encoded) = name
+            .strip_prefix(&format!("{kind}-"))
+            .and_then(|s| s.strip_suffix(".secret"))
+        else {
+            continue;
+        };
+        if encoded.len() % 2 != 0 {
+            return Err(failure("凭据文件名无效"));
+        }
+        let bytes = encoded
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).map_err(|_| failure("凭据文件名无效"))?;
+                u8::from_str_radix(pair, 16).map_err(|_| failure("凭据文件名无效"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.push(String::from_utf8(bytes).map_err(|_| failure("凭据文件名无效"))?);
+    }
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,22 +26,6 @@ pub enum ImapAuth {
 
 pub type ImapSession = Session<native_tls::TlsStream<TcpStream>>;
 
-struct Xoauth2 {
-    user: String,
-    access_token: String,
-}
-
-impl imap::Authenticator for Xoauth2 {
-    type Response = String;
-    fn process(&self, _challenge: &[u8]) -> Self::Response {
-        let raw = format!(
-            "user={}\x01auth=Bearer {}\x01\x01",
-            self.user, self.access_token
-        );
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw)
-    }
-}
-
 fn connect_tcp(endpoint: &ImapEndpoint) -> Result<TcpStream, PortError> {
     use std::net::ToSocketAddrs;
     let addr = (endpoint.host.as_str(), endpoint.port)
@@ -68,6 +52,11 @@ pub fn session_login_blocking(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
 ) -> Result<ImapSession, PortError> {
+    if matches!(auth, ImapAuth::OAuth2 { .. }) {
+        return Err(PortError::Auth {
+            message: "通用 IMAP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
+        });
+    }
     let tls = TlsConnector::builder()
         .build()
         .map_err(|e| PortError::Network {
@@ -106,20 +95,7 @@ pub fn session_login_blocking(
                 message: format!("IMAP 密码登录失败: {e}"),
             })
         }
-        ImapAuth::OAuth2 {
-            username,
-            access_token,
-        } => {
-            let xoauth = Xoauth2 {
-                user: username.trim().to_string(),
-                access_token: access_token.clone(),
-            };
-            client
-                .authenticate("XOAUTH2", &xoauth)
-                .map_err(|(e, _)| PortError::Auth {
-                    message: format!("IMAP XOAUTH2 失败: {e}"),
-                })
-        }
+        ImapAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
     }
 }
 
@@ -297,6 +273,16 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn unsupported_oauth_is_rejected_before_connecting() {
+        let error = session_login_blocking(
+            &ImapEndpoint { host: "must-not-resolve.invalid".into(), port: 993, tls: MailTlsMode::Implicit },
+            &ImapAuth::OAuth2 { username: "user".into(), access_token: "token".into() },
+        ).err().unwrap();
+        assert!(matches!(error, PortError::Auth { .. }));
+        assert!(error.to_string().contains("不支持 OAuth2"));
+    }
 
     struct ScriptedStream {
         responses: Cursor<Vec<u8>>,

@@ -49,6 +49,7 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<AccountMailTransport, PortEr
         auth_kind: MailAuthKind::parse(&auth).ok_or_else(|| PortError::Storage {
             message: format!("无效 auth_kind: {auth}"),
         })?,
+        credential_ref: row.try_get("credential_ref")?,
         imap_host: row.try_get("imap_host").ok(),
         imap_port: row
             .try_get::<Option<i64>, _>("imap_port")
@@ -94,12 +95,13 @@ pub async fn upsert(
         "INSERT INTO account_mail_transport (
             account_id, receive_protocol, send_protocol, auth_kind,
             imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls,
-            username, imap_idle_supported, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            username, imap_idle_supported, updated_at, credential_ref
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
             receive_protocol=excluded.receive_protocol,
             send_protocol=excluded.send_protocol,
             auth_kind=excluded.auth_kind,
+            credential_ref=excluded.credential_ref,
             imap_host=excluded.imap_host,
             imap_port=excluded.imap_port,
             imap_tls=excluded.imap_tls,
@@ -123,6 +125,7 @@ pub async fn upsert(
     .bind(&transport.username)
     .bind(transport.imap_idle_supported.map(|v| if v { 1_i64 } else { 0 }))
     .bind(transport.updated_at)
+    .bind(&transport.credential_ref)
     .execute(&mut *conn)
     .await?;
     Ok(())
