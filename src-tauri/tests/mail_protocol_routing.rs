@@ -18,7 +18,8 @@ fn imap_cursor_roundtrip() {
     let uid = encode_last_uid(42);
     let c = parse_cursor(Some(&uv), Some(&uid)).unwrap();
     assert_eq!(c.uidvalidity, 9);
-    assert_eq!(c.last_uid, 42);
+    assert_eq!(c.high_uid, 42);
+    assert_eq!(c.low_uid, 0);
 }
 
 #[tokio::test]

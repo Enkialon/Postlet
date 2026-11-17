@@ -21,7 +21,7 @@ use crate::infrastructure::imap::{
     ImapAuth, ImapEndpoint,
 };
 use crate::infrastructure::mail::credentials;
-use crate::infrastructure::mail::cursor::{encode_last_uid, encode_uidvalidity};
+use crate::infrastructure::mail::cursor::{encode_uid_cursor, encode_uidvalidity, parse_cursor};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
     accounts, contacts, folder_states, jobs, locate_pending, mail_transports, messages, mutations,
@@ -318,6 +318,19 @@ async fn sync_graph_mail(
     Ok(changeset)
 }
 
+/// 已提交的文件夹进度决定是否继续补拉，不依赖 IDLE 新邮件事件。
+pub async fn has_pending_imap_history(
+    db: &SqlitePool,
+    account_id: &AccountId,
+) -> Result<bool, AppError> {
+    let mut conn = db.acquire().await?;
+    let folders = folder_states::list_sync_enabled(&mut conn, account_id).await?;
+    Ok(folders.iter().any(|folder| {
+        parse_cursor(folder.delta_link.as_deref(), folder.next_link.as_deref())
+            .is_none_or(|cursor| cursor.low_uid != 1)
+    }))
+}
+
 async fn sync_imap_mail(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -455,6 +468,9 @@ async fn sync_imap_mail(
                     .map_err(AppError::from)?
             {
                 let mut msg = existing.message;
+                if msg.sync_status == MessageSyncStatus::DeletedRemote {
+                    continue;
+                }
                 msg.sync_status = MessageSyncStatus::DeletedRemote;
                 msg.local_updated_at = now_ms();
                 messages::upsert_with_recipients(
@@ -479,7 +495,7 @@ async fn sync_imap_mail(
             folder_id,
             prev.as_ref(),
             Some(encode_uidvalidity(result.uidvalidity)),
-            Some(encode_last_uid(result.last_uid)),
+            Some(encode_uid_cursor(result.last_uid, result.low_uid)),
         );
         folder_states::upsert(&mut tx, &state)
             .await
@@ -501,9 +517,10 @@ async fn load_known_uids(
     folder: &str,
 ) -> Result<Vec<(u32, bool)>, AppError> {
     let prefix = format!("imap:{folder}:");
+    // 本地软删也是已经下载过的 UID，不能因其仍存在远端而无限补抓。
     let rows = sqlx::query_as::<_, (String, i64)>(
         "SELECT graph_id, is_read FROM messages
-         WHERE account_id = ? AND folder_id = ? AND graph_id LIKE ? AND sync_status != 'deleted_remote'",
+         WHERE account_id = ? AND folder_id = ? AND graph_id LIKE ? AND body_content IS NOT NULL",
     )
     .bind(account_id.as_str())
     .bind(folder)
