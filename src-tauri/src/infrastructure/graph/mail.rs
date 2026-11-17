@@ -81,12 +81,37 @@ async fn ensure_success(
     if status.is_success() {
         return Ok(response);
     }
-    let retryable = status.as_u16() == 429 || status.is_server_error();
     let body = response.text().await.unwrap_or_default();
-    Err(InfraError::Remote {
-        message: format!("{context} 失败 ({status}): {body}"),
-        retryable,
-    })
+    Err(classify_graph_status(status, context, &body))
+}
+
+/// Graph 结果分类：401/403 视为认证问题，4xx/429 暂时，其余不可自动重试。
+fn classify_graph_status(
+    status: reqwest::StatusCode,
+    context: &str,
+    body: &str,
+) -> InfraError {
+    match status.as_u16() {
+        401 | 403 => InfraError::Auth {
+            message: format!("{context} 鉴权被拒 ({status}): {body}"),
+        },
+        429 => InfraError::Remote {
+            message: format!("{context} 限流 ({status}): {body}"),
+            retryable: true,
+        },
+        400..=499 => InfraError::Remote {
+            message: format!("{context} 被拒绝 ({status}): {body}"),
+            retryable: false,
+        },
+        500..=599 => InfraError::Remote {
+            message: format!("{context} 服务端错误 ({status}): {body}"),
+            retryable: true,
+        },
+        _ => InfraError::Remote {
+            message: format!("{context} 失败 ({status}): {body}"),
+            retryable: false,
+        },
+    }
 }
 
 /// 文件夹消息 Delta 一页；`delta_or_next_link` 为绝对 URL 时直接续页。

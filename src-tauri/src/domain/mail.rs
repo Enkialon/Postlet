@@ -74,3 +74,53 @@ pub enum RemoteMessageChange {
     /// 文件夹移出 / 删除信号；须结合当前位置判定
     Remove { remote_key: RemoteKey },
 }
+
+/// 发送所处阶段；用于区分「尚未被接受」与「可能已被接受」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendStage {
+    /// 连接 / TLS 握手
+    Connect,
+    /// 认证
+    Auth,
+    /// MAIL FROM / RCPT TO
+    Envelope,
+    /// DATA 已开始发送，最终应答未确认
+    Data,
+}
+
+/// 一次发送尝试的业务结论（协议中立，Graph 与 SMTP 共用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendOutcome {
+    /// 服务器已明确接受
+    Accepted,
+    /// 认证被拒；需用户修正配置
+    AuthRejected,
+    /// 永久拒绝（5xx / 内容或地址不可接受）；不应自动重试
+    Permanent,
+    /// 暂时拒绝（4xx / 连接失败且可证明尚未提交内容）；可退避重试
+    Transient,
+    /// 结果不确定（DATA 已发出但未拿到最终应答、进程中断等）；只能标记待确认
+    Uncertain,
+}
+
+impl SendOutcome {
+    /// 是否允许自动重试（仅当有证据表明未被接受）
+    pub fn retryable(self) -> bool {
+        matches!(self, Self::Transient)
+    }
+}
+
+/// 发送结果：结论 + 发生阶段
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendResult {
+    pub outcome: SendOutcome,
+    pub stage: SendStage,
+}
+
+impl SendResult {
+    pub fn new(outcome: SendOutcome, stage: SendStage) -> Self {
+        Self { outcome, stage }
+    }
+}

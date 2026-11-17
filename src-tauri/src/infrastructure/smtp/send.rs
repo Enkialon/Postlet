@@ -1,7 +1,8 @@
 //! SMTP 发送实现（lettre）
 
-use crate::infrastructure::error::InfraError;
+use crate::domain::mail::{SendOutcome, SendResult, SendStage};
 use crate::domain::value_objects::MailTlsMode;
+use crate::infrastructure::error::InfraError;
 use lettre::message::{header, Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
@@ -43,10 +44,8 @@ pub struct SmtpOutgoing {
     pub attachments: Vec<SmtpAttachment>,
 }
 
-#[derive(Debug, Clone)]
-pub struct SmtpSendResult {
-    pub accepted: bool,
-}
+/// 发送结论：阶段 + 业务语义（禁止统一 retryable=true）
+pub type SmtpSendResult = SendResult;
 
 fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, InfraError> {
     let parsed = if name.trim().is_empty() {
@@ -68,6 +67,13 @@ pub async fn send_message(
     if matches!(auth, SmtpAuth::OAuth2 { .. }) {
         return Err(InfraError::Auth {
             message: "通用 SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
+        });
+    }
+    // Plain 在建立任何连接前拒绝：不允许明文认证或明文投递
+    if endpoint.tls == MailTlsMode::Plain {
+        return Err(InfraError::Remote {
+            message: "SMTP 明文连接已禁用，请使用隐式 TLS 或 STARTTLS".into(),
+            retryable: false,
         });
     }
     let mut builder = Message::builder()
@@ -108,11 +114,7 @@ pub async fn send_message(
             })?
             .port(endpoint.port)
             .tls(Tls::Required(tls_params)),
-        MailTlsMode::Plain => {
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&endpoint.host)
-                .port(endpoint.port)
-                .tls(Tls::None)
-        }
+        MailTlsMode::Plain => unreachable!("明文在连接前已被拒绝"),
     };
 
     let transport = match auth {
@@ -123,15 +125,12 @@ pub async fn send_message(
         SmtpAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
     };
 
-    transport
-        .send(message)
-        .await
-        .map_err(|e| InfraError::Remote {
-            message: format!("SMTP 发送失败: {e}"),
-            retryable: true,
-        })?;
-
-    Ok(SmtpSendResult { accepted: true })
+    // 发送阶段无法从 lettre 错误精确还原；有 SMTP 状态码时按码分类，
+    // 无状态码的 IO/超时错误保守视为结果不确定，不猜测「服务器未接受」。
+    match transport.send(message).await {
+        Ok(_) => Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data)),
+        Err(err) => Err(classify_smtp_error(&err)),
+    }
 }
 
 fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, InfraError> {
@@ -180,6 +179,71 @@ fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, I
     })
 }
 
+/// 将 lettre 错误映射为「不可自动重试 / 可重试 / 结果不确定」。
+///
+/// 与锁定版本 lettre 0.11.23 的 `smtp::Error` API 对应：
+/// `status()` 给出 4xx/5xx；`is_tls` / `is_connection` 类错误可证明未提交内容；
+/// 其余（无状态码的 IO/网络中断）保守判为「结果不确定」。
+fn classify_smtp_error(err: &lettre::transport::smtp::Error) -> InfraError {
+    let detail = err.to_string();
+
+    if let Some(code) = err.status() {
+        let code: u16 = code
+            .to_string()
+            .split_whitespace()
+            .next()
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        return match code {
+            // 认证类拒绝：530/534/535 等
+            530..=539 => InfraError::Auth {
+                message: format!("SMTP 认证被拒绝 ({code}): {detail}"),
+            },
+            // 4xx：暂时拒绝，可退避重试
+            400..=499 => InfraError::Remote {
+                message: format!("SMTP 暂时拒绝 ({code}): {detail}"),
+                retryable: true,
+            },
+            // 5xx：永久拒绝
+            _ => InfraError::Remote {
+                message: format!("SMTP 永久拒绝 ({code}): {detail}"),
+                retryable: false,
+            },
+        };
+    }
+
+    if err.is_tls() {
+        // TLS 不可用：重试无意义，且绝不能降级为明文
+        return InfraError::Remote {
+            message: format!("SMTP 无法建立受保护连接: {detail}"),
+            retryable: false,
+        };
+    }
+    if err.is_transport_shutdown() {
+        return InfraError::Network {
+            message: format!("SMTP 连接中断: {detail}"),
+        };
+    }
+    if err.is_timeout() {
+        // 超时可能发生在 DATA 之后，不能断言未被接受
+        return InfraError::Remote {
+            message: format!("SMTP 结果不确定（超时）: {detail}"),
+            retryable: false,
+        };
+    }
+    if err.is_client() {
+        return InfraError::Remote {
+            message: format!("SMTP 客户端拒绝发送: {detail}"),
+            retryable: false,
+        };
+    }
+
+    InfraError::Remote {
+        message: format!("SMTP 结果不确定: {detail}"),
+        retryable: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +262,50 @@ mod tests {
         ).await.unwrap_err();
         assert!(matches!(error, InfraError::Auth { .. }));
         assert!(error.to_string().contains("不支持 OAuth2"));
+    }
+
+    /// 明文路径必须在建立连接前拒绝：用不可解析主机证明零网络访问。
+    #[tokio::test]
+    async fn plain_tls_is_rejected_before_any_connection() {
+        let mail = SmtpOutgoing {
+            from: "me@example.com".into(),
+            from_name: "我".into(),
+            to: vec!["to@example.com".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "s".into(),
+            text_body: Some("t".into()),
+            html_body: None,
+            in_reply_to: None,
+            references: None,
+            attachments: vec![],
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            send_message(
+                &SmtpEndpoint {
+                    host: "plain-must-not-connect.invalid".into(),
+                    port: 25,
+                    tls: MailTlsMode::Plain,
+                },
+                &SmtpAuth::Password {
+                    username: "u".into(),
+                    password: "p".into(),
+                },
+                &mail,
+            ),
+        )
+        .await
+        .expect("明文拒绝必须立即返回，不得尝试连接")
+        .unwrap_err();
+        assert!(matches!(error_kind(&result), Some(false)), "明文拒绝不可重试");
+        assert!(result.to_string().contains("明文连接已禁用"));
+    }
+
+    fn error_kind(err: &InfraError) -> Option<bool> {
+        match err {
+            InfraError::Remote { retryable, .. } => Some(*retryable),
+            _ => None,
+        }
     }
 }
