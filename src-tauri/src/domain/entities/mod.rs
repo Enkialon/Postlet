@@ -13,7 +13,7 @@ pub use account::Account;
 pub use aggregate_job::SessionAggregateJob;
 pub use contact::Contact;
 pub use group::{Group, GroupParticipant};
-pub use mail_transport::AccountMailTransport;
+pub use mail_transport::{AccountMailTransport, ReceiveConfig, SendConfig, MailEndpoint, PasswordAuthConfig, GraphAuthConfig, PasswordMailConfig};
 pub use message::{Message, MessageRecipient, MessageWithRecipients};
 pub use session::Session;
 pub use sync_state::MailFolderSyncState;

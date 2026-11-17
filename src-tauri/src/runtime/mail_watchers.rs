@@ -91,14 +91,7 @@ impl Drop for WatchTask {
 }
 
 fn same_receive_config(a: &AccountMailTransport, b: &AccountMailTransport) -> bool {
-    a.account_id == b.account_id
-        && a.receive_protocol == b.receive_protocol
-        && a.auth_kind == b.auth_kind
-        && a.credential_ref == b.credential_ref
-        && a.imap_host == b.imap_host
-        && a.imap_port == b.imap_port
-        && a.imap_tls == b.imap_tls
-        && a.username == b.username
+    a.account_id == b.account_id && a.receive == b.receive
 }
 
 async fn reconcile(
@@ -109,7 +102,7 @@ async fn reconcile(
 ) {
     let desired: HashMap<_, _> = configs
         .into_iter()
-        .filter(|config| config.receive_protocol == ReceiveProtocol::Imap)
+        .filter(|config| config.receive.protocol() == ReceiveProtocol::Imap)
         .map(|config| (config.account_id.to_string(), config))
         .collect();
     let obsolete: Vec<_> = tasks
@@ -299,19 +292,88 @@ async fn active_configs(db: &SqlitePool) -> Result<Vec<AccountMailTransport>, Ap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::value_objects::{MailAuthKind, MailTlsMode};
+    use crate::domain::entities::{
+        MailEndpoint, PasswordAuthConfig, PasswordMailConfig, ReceiveConfig, SendConfig,
+    };
+    use crate::domain::value_objects::{CredentialRef, MailTlsMode};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn password_mail(
+        host: &str,
+        port: u16,
+        tls: MailTlsMode,
+        username: &str,
+        reference: &str,
+    ) -> PasswordMailConfig {
+        PasswordMailConfig {
+            endpoint: MailEndpoint::new(host.into(), port, tls).unwrap(),
+            auth: PasswordAuthConfig::new(
+                username.into(),
+                CredentialRef::new(reference).unwrap(),
+            )
+            .unwrap(),
+        }
+    }
+
     fn config() -> AccountMailTransport {
-        let mut config = AccountMailTransport::graph_default(AccountId::new("a"), "graph-reference".into(), 1);
-        config.receive_protocol = ReceiveProtocol::Imap;
-        config.auth_kind = MailAuthKind::Password;
-        config.credential_ref = Some("reference-one".into());
-        config.imap_host = Some("imap.example.com".into());
-        config.imap_port = Some(993);
-        config.imap_tls = Some(MailTlsMode::Implicit);
-        config.username = Some("user".into());
-        config
+        let reference = "reference-one";
+        AccountMailTransport {
+            account_id: AccountId::new("a"),
+            receive: ReceiveConfig::Imap(password_mail(
+                "imap.example.com",
+                993,
+                MailTlsMode::Implicit,
+                "user",
+                reference,
+            )),
+            send: SendConfig::Smtp(password_mail(
+                "smtp.example.com",
+                587,
+                MailTlsMode::StartTls,
+                "user",
+                reference,
+            )),
+            imap_idle_supported: None,
+            updated_at: 1,
+        }
+    }
+
+    fn with_receive_reference(transport: &AccountMailTransport, reference: &str) -> AccountMailTransport {
+        let ReceiveConfig::Imap(config) = &transport.receive else {
+            panic!("expected imap receive config");
+        };
+        AccountMailTransport {
+            account_id: transport.account_id.clone(),
+            receive: ReceiveConfig::Imap(password_mail(
+                config.endpoint.host(),
+                config.endpoint.port(),
+                config.endpoint.tls(),
+                config.auth.username(),
+                reference,
+            )),
+            send: transport.send.clone(),
+            imap_idle_supported: transport.imap_idle_supported,
+            updated_at: transport.updated_at,
+        }
+    }
+
+    fn with_smtp_host(transport: &AccountMailTransport, host: &str) -> AccountMailTransport {
+        let SendConfig::Smtp(config) = &transport.send else {
+            panic!("expected smtp send config");
+        };
+        AccountMailTransport {
+            account_id: transport.account_id.clone(),
+            receive: transport.receive.clone(),
+            send: SendConfig::Smtp(password_mail(
+                host,
+                config.endpoint.port(),
+                config.endpoint.tls(),
+                config.auth.username(),
+                config.auth.credential_ref().as_str(),
+            )),
+            imap_idle_supported: transport.imap_idle_supported,
+            updated_at: transport.updated_at,
+        }
     }
 
     #[tokio::test]
@@ -335,19 +397,20 @@ mod tests {
         let original = config();
         reconcile(&mut tasks, vec![original.clone()], &paused, factory).await;
         for index in 0..10 {
-            let mut observation = original.clone();
+            let mut observation = with_smtp_host(&original, "new-smtp.example.com");
             observation.imap_idle_supported = Some(true);
             observation.updated_at = index;
-            observation.smtp_host = Some("new-smtp.example.com".into());
             reconcile(&mut tasks, vec![observation], &paused, factory).await;
         }
         assert_eq!(starts.load(Ordering::SeqCst), 1);
-        let mut rotated = original.clone();
-        rotated.credential_ref = Some("reference-two".into());
+        let rotated = with_receive_reference(&original, "reference-two");
         reconcile(&mut tasks, vec![rotated.clone()], &paused, factory).await;
         assert_eq!(starts.load(Ordering::SeqCst), 2);
-        let mut graph = rotated.clone();
-        graph.receive_protocol = ReceiveProtocol::Graph;
+        let graph = AccountMailTransport::graph(
+            rotated.account_id.clone(),
+            CredentialRef::new("graph-reference").unwrap(),
+            rotated.updated_at,
+        );
         reconcile(&mut tasks, vec![graph], &paused, factory).await;
         assert!(tasks.is_empty());
         assert_eq!(active.load(Ordering::SeqCst), 0);
@@ -381,8 +444,7 @@ mod tests {
         reconcile(&mut tasks, vec![original.clone()], &paused, factory).await;
         let old_control = tasks["a"].control.clone();
         let operation = old_control.begin_operation(Duration::from_secs(5)).unwrap();
-        let mut changed = original;
-        changed.credential_ref = Some("new-reference".into());
+        let changed = with_receive_reference(&original, "new-reference");
         {
             let replacement = reconcile(&mut tasks, vec![changed], &paused, factory);
             tokio::pin!(replacement);

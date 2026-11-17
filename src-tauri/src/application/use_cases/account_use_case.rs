@@ -1,7 +1,7 @@
 //! 账户用例
 use crate::AppState;
 use crate::domain::entities::AccountMailTransport;
-use crate::domain::value_objects::ReceiveProtocol;
+use crate::domain::value_objects::{AccountId, CredentialRef, EmailAddress, ReceiveProtocol, SyncStatus, TimestampMs};
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::auth as graph_auth;
 use crate::infrastructure::graph::{TokenCache, models::RemoteAccount};
@@ -19,7 +19,6 @@ use crate::application::error::AppError;
 use crate::application::use_cases::aggregate_worker_use_case;
 use crate::application::use_cases::compose_use_case;
 use crate::domain::entities::Account;
-use crate::domain::value_objects::{AccountId, EmailAddress, SyncStatus, TimestampMs};
 
 /// 列出当前已登录的 Outlook 账户，供启动恢复和账户切换使用。
 ///
@@ -89,7 +88,7 @@ pub(crate) async fn complete_graph_sign_in(
     expected_account: Option<&AccountId>,
 ) -> Result<Account, AppError> {
     let _lock = credentials::lock(&paths.credentials_dir)?;
-    let reference = Uuid::new_v4().to_string();
+    let reference = CredentialRef::new(Uuid::new_v4().to_string())?;
     // 新引用可读之前不改变登录态、协议、游标或旧凭据。
     graph_auth::save_token_cache(&paths.credentials_dir, &reference, &pending.token_cache).await?;
     match persist_graph_sign_in(db, &pending.remote, expected_account, &reference).await {
@@ -105,17 +104,15 @@ pub(crate) async fn complete_graph_sign_in(
         }
         Err(error) => {
             // COMMIT 应答失败不代表未提交；先确认没有引用，才删除暂存令牌。
-            let count = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM account_mail_transport WHERE credential_ref = ?",
-            )
-            .bind(&reference)
-            .fetch_one(db)
-            .await;
-            if matches!(count, Ok(0)) {
+            let referenced = match db.acquire().await {
+                Ok(mut conn) => mail_transports::is_credential_referenced(&mut conn, &reference).await,
+                Err(error) => Err(error.into()),
+            };
+            if matches!(referenced, Ok(false)) {
                 crate::infrastructure::secret_store::delete(
                     &paths.credentials_dir,
                     "graph",
-                    &reference,
+                    reference.as_str(),
                 )
                 .map_err(|_| {
                     AppError::internal("Graph 登录未完成，暂存令牌清理失败；重启时会再次清理")
@@ -130,7 +127,7 @@ async fn persist_graph_sign_in(
     db: &SqlitePool,
     remote: &RemoteAccount,
     expected_account: Option<&AccountId>,
-    reference: &str,
+    reference: &CredentialRef,
 ) -> Result<(Account, Option<AccountMailTransport>), AppError> {
     let now = now_ms();
     let mut tx = db.begin().await?;
@@ -184,7 +181,7 @@ async fn persist_graph_sign_in(
     accounts::upsert_identity(&mut tx, &account).await?;
     if previous
         .as_ref()
-        .is_some_and(|transport| transport.receive_protocol != ReceiveProtocol::Graph)
+        .is_some_and(|transport| transport.receive.protocol() != ReceiveProtocol::Graph)
     {
         crate::application::use_cases::mail_account_use_case::retire_mail_identity(
             &mut tx,
@@ -196,7 +193,7 @@ async fn persist_graph_sign_in(
     }
     mail_transports::upsert(
         &mut tx,
-        &AccountMailTransport::graph_default(account.id.clone(), reference.to_owned(), now),
+        &AccountMailTransport::graph(account.id.clone(), reference.clone(), now),
     )
     .await?;
     let saved = accounts::get(&mut tx, &account.id)
@@ -374,9 +371,12 @@ fn now_ms() -> TimestampMs {
 #[cfg(test)]
 mod graph_sign_in_tests {
     use super::*;
-    use crate::application::dto::UpsertImapSmtpAccountCommand;
+    use crate::application::dto::{
+        ImapAuthenticationInput, SmtpAuthenticationInput, UpsertImapSmtpAccountCommand,
+    };
     use crate::application::use_cases::mail_account_use_case;
-    use crate::domain::value_objects::{MailAuthKind, MailTlsMode, SendProtocol};
+    use crate::domain::entities::{GraphAuthConfig, ReceiveConfig};
+    use crate::domain::value_objects::{MailTlsMode, SendProtocol};
     use crate::infrastructure::{db, secret_store};
 
     fn pending(token: &str) -> PendingGraphSignIn {
@@ -418,6 +418,13 @@ mod graph_sign_in_tests {
             .unwrap()
     }
 
+    fn graph_auth_of(transport: &AccountMailTransport) -> &GraphAuthConfig {
+        match &transport.receive {
+            ReceiveConfig::Graph(auth) => auth,
+            ReceiveConfig::Imap(_) => panic!("expected graph receive config"),
+        }
+    }
+
     #[tokio::test]
     #[ignore = "writes an isolated temporary OS keyring entry"]
     async fn native_graph_sign_in_stages_tokens_and_switches_protocol_atomically() {
@@ -440,13 +447,29 @@ mod graph_sign_in_tests {
             assert!(secret_store::list_ids(&paths.credentials_dir, "graph").unwrap().is_empty());
             let account = complete_graph_sign_in(&db, &paths, pending("first"), None).await.unwrap();
             let original = current(&db, &account.id).await;
-            let original_ref = original.credential_ref.clone().unwrap();
-            assert_eq!(original.receive_protocol, ReceiveProtocol::Graph); assert_eq!(original.send_protocol, SendProtocol::Graph);
-            assert_ne!(original_ref, account.id.as_str());
+            let original_ref = original.receive.credential_ref().clone();
+            assert_eq!(original.receive.protocol(), ReceiveProtocol::Graph);
+            assert_eq!(original.send.protocol(), SendProtocol::Graph);
+            assert_ne!(original_ref.as_str(), account.id.as_str());
             let auth = crate::infrastructure::config::AzureAuthConfig { client_id: "test-client".into(), client_secret: None,
                 redirect_uri: "http://localhost/".into(), tenant: "tenant".into() };
-            assert_eq!(graph_auth::get_access_token(&paths.credentials_dir, &auth, &original_ref).await.unwrap(), "first");
-            assert!(graph_auth::get_access_token(&paths.credentials_dir, &auth, account.id.as_str()).await.is_err());
+            assert_eq!(
+                graph_auth::get_access_token(&paths.credentials_dir, &auth, graph_auth_of(&original))
+                    .await
+                    .unwrap(),
+                "first"
+            );
+            assert!(
+                graph_auth::get_access_token(
+                    &paths.credentials_dir,
+                    &auth,
+                    &GraphAuthConfig {
+                        credential_ref: CredentialRef::new(account.id.as_str()).unwrap(),
+                    }
+                )
+                .await
+                .is_err()
+            );
 
             sqlx::query("UPDATE accounts SET aliases_json='[\"alias@example.com\"]',is_signed_in=0 WHERE id=?").bind(account.id.as_str()).execute(&db).await.unwrap();
             sqlx::query("INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,display_name,sync_cursor,updated_at) VALUES (?,'graph-inbox','graph','remote-inbox','Inbox','keep-cursor',1)")
@@ -461,9 +484,12 @@ mod graph_sign_in_tests {
                 }
                 assert!(complete_graph_sign_in(&db, &paths, pending("second"), Some(&account.id)).await.is_err());
                 sqlx::query("DROP TRIGGER fail_graph").execute(&db).await.unwrap();
-                assert_eq!(current(&db, &account.id).await.credential_ref, Some(original_ref.clone()));
+                assert_eq!(current(&db, &account.id).await.receive.credential_ref(), &original_ref);
                 assert!(!accounts::is_signed_in(&mut *db.acquire().await.unwrap(), &account.id).await.unwrap());
-                assert_eq!(secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(), vec![original_ref.clone()]);
+                assert_eq!(
+                    secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(),
+                    vec![original_ref.as_str().to_string()]
+                );
             }
             assert!(complete_graph_sign_in(&db, &paths, pending("second"), None).await.is_err(), "预期账号不匹配时必须重试屏障");
             let mut metadata_changed = pending("second");
@@ -472,18 +498,32 @@ mod graph_sign_in_tests {
             let renewed = complete_graph_sign_in(&db, &paths, metadata_changed, Some(&account.id)).await.unwrap();
             assert_eq!(renewed.id, account.id); assert_eq!(renewed.aliases[0].as_str(), "alias@example.com");
             let renewed_transport = current(&db, &account.id).await;
-            let renewed_ref = renewed_transport.credential_ref.clone().unwrap();
+            let renewed_ref = renewed_transport.receive.credential_ref().clone();
             assert_ne!(renewed_ref, original_ref);
-            assert_eq!(secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(), vec![renewed_ref.clone()]);
+            assert_eq!(
+                secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(),
+                vec![renewed_ref.as_str().to_string()]
+            );
             let folder = sqlx::query_as::<_, (bool, String)>("SELECT is_retired,sync_cursor FROM mail_folder_sync_state WHERE account_id=? AND folder_id='graph-inbox'")
                 .bind(account.id.as_str()).fetch_one(&db).await.unwrap();
             assert_eq!(folder, (false, "keep-cursor".into()));
 
             // Graph -> IMAP -> Graph 复用本地账号，清理正确命名空间并退役旧收信位置。
-            let cmd = UpsertImapSmtpAccountCommand { email: "user@example.com".into(), display_name: "Mail".into(), auth_kind: MailAuthKind::Password,
-                imap_host: "imap.example.com".into(), imap_port: 993, imap_tls: MailTlsMode::Implicit,
-                smtp_host: "smtp.example.com".into(), smtp_port: 587, smtp_tls: MailTlsMode::StartTls,
-                username: Some("mail-user".into()), password: Some(" password ".into()), access_token: None, refresh_token: None, expires_at_ms: None };
+            let cmd = UpsertImapSmtpAccountCommand {
+                email: "user@example.com".into(),
+                display_name: "Mail".into(),
+                imap_host: "imap.example.com".into(),
+                imap_port: 993,
+                imap_tls: MailTlsMode::Implicit,
+                smtp_host: "smtp.example.com".into(),
+                smtp_port: 587,
+                smtp_tls: MailTlsMode::StartTls,
+                imap_auth: ImapAuthenticationInput::Password {
+                    username: "mail-user".into(),
+                    password: " password ".into(),
+                },
+                smtp_auth: SmtpAuthenticationInput::Shared,
+            };
             let generic = mail_account_use_case::upsert_imap_smtp_account(&db, &paths, cmd).await.unwrap();
             assert_eq!(generic.id, account.id); assert!(secret_store::list_ids(&paths.credentials_dir, "graph").unwrap().is_empty());
             sqlx::query("INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,display_name,updated_at) VALUES (?,'imap-inbox','imap','INBOX','Inbox',1)")
@@ -499,7 +539,10 @@ mod graph_sign_in_tests {
             sqlx::query("DROP TRIGGER fail_switch").execute(&db).await.unwrap();
             assert_eq!(current(&db, &account.id).await, generic_transport);
             assert!(!sqlx::query_scalar::<_, bool>("SELECT is_retired FROM mail_folder_sync_state WHERE folder_id='imap-inbox'").fetch_one(&db).await.unwrap());
-            assert!(credentials::load(&paths.credentials_dir, &generic_transport).await.unwrap().is_some());
+            let ReceiveConfig::Imap(generic_imap) = &generic_transport.receive else {
+                panic!("expected imap receive config");
+            };
+            assert!(credentials::load(&paths.credentials_dir, &generic_imap.auth).await.unwrap().is_some());
             let switched = complete_graph_sign_in(&db, &paths, pending("third"), Some(&account.id)).await.unwrap();
             assert_eq!(switched.id, account.id);
             assert!(secret_store::list_ids(&paths.credentials_dir, "mail").unwrap().is_empty());
@@ -512,10 +555,19 @@ mod graph_sign_in_tests {
             secret_store::save(&paths.credentials_dir, "graph", "orphan-graph", &pending("orphan").token_cache).unwrap();
             secret_store::save(&paths.credentials_dir, "mail", "orphan-mail", &"unused").unwrap();
             mail_account_use_case::recover_credentials(&db, &paths).await.unwrap();
-            let final_ref = current(&db, &account.id).await.credential_ref.unwrap();
-            assert_eq!(secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(), vec![final_ref.clone()]);
+            let final_transport = current(&db, &account.id).await;
+            let final_ref = final_transport.receive.credential_ref().clone();
+            assert_eq!(
+                secret_store::list_ids(&paths.credentials_dir, "graph").unwrap(),
+                vec![final_ref.as_str().to_string()]
+            );
             assert!(secret_store::list_ids(&paths.credentials_dir, "mail").unwrap().is_empty());
-            assert_eq!(graph_auth::get_access_token(&paths.credentials_dir, &auth, &final_ref).await.unwrap(), "third");
+            assert_eq!(
+                graph_auth::get_access_token(&paths.credentials_dir, &auth, graph_auth_of(&final_transport))
+                    .await
+                    .unwrap(),
+                "third"
+            );
             // 退出清理失败可见；重试按配置引用清理，不能按 AccountId 猜文件。
             let file = std::fs::read_dir(&paths.credentials_dir).unwrap().map(|entry| entry.unwrap().path())
                 .find(|path| path.extension().is_some_and(|extension| extension == "secret")).unwrap();

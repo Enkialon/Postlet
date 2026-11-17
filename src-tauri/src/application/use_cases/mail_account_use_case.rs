@@ -1,11 +1,9 @@
 //! 通用邮箱账号：配置 IMAP/SMTP 协议并保存凭证（与 Graph OAuth 登录并列）。
 
-use crate::application::dto::UpsertImapSmtpAccountCommand;
+use crate::application::dto::{UpsertImapSmtpAccountCommand, ImapAuthenticationInput, SmtpAuthenticationInput};
 use crate::application::error::AppError;
-use crate::domain::entities::{Account, AccountMailTransport};
-use crate::domain::value_objects::{
-    AccountId, EmailAddress, MailAuthKind, MailTlsMode, ReceiveProtocol, SendProtocol, SyncStatus,
-};
+use crate::domain::entities::{Account, AccountMailTransport, ReceiveConfig, SendConfig, MailEndpoint, PasswordAuthConfig, PasswordMailConfig};
+use crate::domain::value_objects::{AccountId, EmailAddress, CredentialRef, SyncStatus};
 use crate::infrastructure::mail::credentials::{self, MailSecret};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
@@ -28,19 +26,31 @@ pub async fn upsert_imap_smtp_account(
 ) -> Result<Account, AppError> {
     validate(&cmd)?;
     let _lock = credentials::lock(&paths.credentials_dir)?;
-    let credential_ref = Uuid::new_v4().to_string();
-    let secret = MailSecret {
-        username: cmd
-            .username
-            .clone()
-            .unwrap_or_else(|| cmd.email.trim().to_string()),
-        password: cmd.password.clone(),
-        access_token: None,
-        refresh_token: None,
-        expires_at_ms: None,
+    let receive_ref = CredentialRef::new(Uuid::new_v4().to_string())?;
+    let send_ref = match cmd.smtp_auth { SmtpAuthenticationInput::Shared => receive_ref.clone(), _ => CredentialRef::new(Uuid::new_v4().to_string())? };
+    let ImapAuthenticationInput::Password { username, password } = &cmd.imap_auth;
+    let receive = ReceiveConfig::Imap(PasswordMailConfig {
+        endpoint: MailEndpoint::new(cmd.imap_host.clone(), cmd.imap_port, cmd.imap_tls)?,
+        auth: PasswordAuthConfig::new(username.clone(), receive_ref.clone())?,
+    });
+    let (send_username, send_password) = match &cmd.smtp_auth {
+        SmtpAuthenticationInput::Shared => (username, password),
+        SmtpAuthenticationInput::Password { username, password } => (username, password),
     };
-    credentials::save(&paths.credentials_dir, &credential_ref, &secret).await?;
-    let result = persist_account(db, cmd, &credential_ref).await;
+    let send = SendConfig::Smtp(PasswordMailConfig {
+        endpoint: MailEndpoint::new(cmd.smtp_host.clone(), cmd.smtp_port, cmd.smtp_tls)?,
+        auth: PasswordAuthConfig::new(send_username.clone(), send_ref.clone())?,
+    });
+    let staged = async {
+        credentials::save(&paths.credentials_dir, &receive_ref, &MailSecret { password: password.clone() }).await?;
+        if send_ref != receive_ref { credentials::save(&paths.credentials_dir, &send_ref, &MailSecret { password: send_password.clone() }).await?; }
+        Ok::<_, crate::infrastructure::error::InfraError>(())
+    }.await;
+    if let Err(error) = staged {
+        for reference in [&receive_ref, &send_ref] { credentials::delete(&paths.credentials_dir, reference).await?; }
+        return Err(error.into());
+    }
+    let result = persist_account(db, cmd, receive, send).await;
     match result {
         Ok((account, previous)) => {
             if let Some(previous) = previous {
@@ -53,19 +63,14 @@ pub async fn upsert_imap_smtp_account(
             Ok(account)
         }
         Err(error) => {
-            // commit 返回错误时先确认引用，不能误删可能已经提交的凭据。
-            let referenced = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM account_mail_transport WHERE credential_ref = ?",
-            )
-            .bind(&credential_ref)
-            .fetch_one(db)
-            .await;
-            if matches!(referenced, Ok(0)) {
-                credentials::delete(&paths.credentials_dir, &credential_ref)
-                    .await
-                    .map_err(|_| {
-                        AppError::internal("账号配置未完成，新凭据清理失败；重启时会再次清理")
-                    })?;
+            // 不确定的 COMMIT 先核对两侧引用，不能误删已提交的凭据。
+            for reference in [&receive_ref, &send_ref] {
+                let referenced = match db.acquire().await {
+                    Ok(mut conn) => mail_transports::is_credential_referenced(&mut conn, reference).await,
+                    Err(error) => Err(error.into()),
+                };
+                if matches!(referenced, Ok(false)) { credentials::delete(&paths.credentials_dir, reference).await
+                    .map_err(|_| AppError::internal("账号配置未完成，新凭据清理失败；重启时会再次清理"))?; }
             }
             Err(error)
         }
@@ -73,39 +78,16 @@ pub async fn upsert_imap_smtp_account(
 }
 
 pub(crate) fn validate(cmd: &UpsertImapSmtpAccountCommand) -> Result<(), AppError> {
-    if cmd.auth_kind != MailAuthKind::Password {
-        return Err(AppError::validation(
-            "通用 IMAP/SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码",
-        ));
+    if EmailAddress::parse(&cmd.email).is_none() { return Err(AppError::validation("邮箱地址无效")); }
+    for (host, port, tls) in [(&cmd.imap_host, cmd.imap_port, cmd.imap_tls), (&cmd.smtp_host, cmd.smtp_port, cmd.smtp_tls)] {
+        MailEndpoint::new(host.clone(), port, tls).map_err(|error| AppError::validation(error.to_string()))?;
     }
-    if EmailAddress::parse(&cmd.email).is_none() {
-        return Err(AppError::validation("邮箱地址无效"));
-    }
-    if cmd.password.as_ref().is_none_or(|value| value.is_empty()) {
-        return Err(AppError::validation("密码认证须提供非空 password"));
-    }
-    for (host, port, tls) in [
-        (&cmd.imap_host, cmd.imap_port, cmd.imap_tls),
-        (&cmd.smtp_host, cmd.smtp_port, cmd.smtp_tls),
-    ] {
-        if host.trim() != host
-            || host.is_empty()
-            || url::Host::parse(host).is_err()
-            || host.contains(['/', '@', '?', '#'])
-            || port == 0
-        {
-            return Err(AppError::validation("邮件服务器主机或端口无效"));
-        }
-        if tls == MailTlsMode::Plain {
-            return Err(AppError::validation("邮件服务器必须使用 TLS 或 STARTTLS"));
-        }
-    }
-    if cmd
-        .username
-        .as_ref()
-        .is_some_and(|value| value.trim().is_empty() || value.chars().any(char::is_control))
-    {
-        return Err(AppError::validation("登录用户名无效"));
+    let ImapAuthenticationInput::Password { username, password } = &cmd.imap_auth;
+    let mut inputs = vec![(username, password)];
+    if let SmtpAuthenticationInput::Password { username, password } = &cmd.smtp_auth { inputs.push((username,password)); }
+    for (username,password) in inputs {
+        PasswordAuthConfig::validate_username(username).map_err(|error| AppError::validation(error.to_string()))?;
+        if password.is_empty() { return Err(AppError::validation("密码或邮箱授权码不能为空")); }
     }
     Ok(())
 }
@@ -113,7 +95,8 @@ pub(crate) fn validate(cmd: &UpsertImapSmtpAccountCommand) -> Result<(), AppErro
 async fn persist_account(
     db: &SqlitePool,
     cmd: UpsertImapSmtpAccountCommand,
-    credential_ref: &str,
+    receive: ReceiveConfig,
+    send: SendConfig,
 ) -> Result<(Account, Option<AccountMailTransport>), AppError> {
     let email =
         EmailAddress::parse(&cmd.email).ok_or_else(|| AppError::validation("邮箱地址无效"))?;
@@ -169,36 +152,9 @@ async fn persist_account(
         account
     };
 
-    let transport = AccountMailTransport {
-        account_id: account.id.clone(),
-        receive_protocol: ReceiveProtocol::Imap,
-        send_protocol: SendProtocol::Smtp,
-        auth_kind: cmd.auth_kind,
-        credential_ref: Some(credential_ref.into()),
-        imap_host: Some(cmd.imap_host),
-        imap_port: Some(cmd.imap_port),
-        imap_tls: Some(cmd.imap_tls),
-        smtp_host: Some(cmd.smtp_host),
-        smtp_port: Some(cmd.smtp_port),
-        smtp_tls: Some(cmd.smtp_tls),
-        username: Some(cmd.username.unwrap_or_else(|| email.as_str().to_string())),
-        imap_idle_supported: None,
-        updated_at: now,
-    };
-    if previous_transport.as_ref().is_some_and(|old| {
-        old.receive_protocol != transport.receive_protocol
-            || old.imap_host != transport.imap_host
-            || old.imap_port != transport.imap_port
-            || old.imap_tls != transport.imap_tls
-            || old.username != transport.username
-    }) {
-        retire_mail_identity(
-            &mut tx,
-            &account.id,
-            now,
-            "收信身份或端点已改变，旧操作已停止",
-        )
-        .await?;
+    let transport = AccountMailTransport { account_id: account.id.clone(), receive, send, imap_idle_supported: None, updated_at: now };
+    if previous_transport.as_ref().is_some_and(|old| !old.receive.same_mailbox(&transport.receive)) {
+        retire_mail_identity(&mut tx, &account.id, now, "收信身份或端点已改变，旧操作已停止").await?;
     }
     mail_transports::upsert(&mut tx, &transport)
         .await
@@ -258,20 +214,12 @@ pub(crate) async fn retire_mail_identity(
 /// 启动恢复：仅删除没有配置引用的暂存/旧凭据；与配置切换互斥。
 pub async fn recover_credentials(db: &SqlitePool, paths: &AppPaths) -> Result<(), AppError> {
     let _lock = credentials::lock(&paths.credentials_dir)?;
-    for (kind, auth_kind) in [("mail", "password"), ("graph", "oauth2")] {
+    for (kind, receive_protocol, send_protocol) in [("mail", "imap", "smtp"), ("graph", "graph", "graph")] {
         let references = sqlx::query_scalar::<_, String>(
-            "SELECT credential_ref FROM account_mail_transport WHERE credential_ref IS NOT NULL AND auth_kind = ?",
-        ).bind(auth_kind).fetch_all(db).await?;
-        for reference in
-            crate::infrastructure::secret_store::list_ids(&paths.credentials_dir, kind)?
-        {
-            if !references.contains(&reference) {
-                crate::infrastructure::secret_store::delete(
-                    &paths.credentials_dir,
-                    kind,
-                    &reference,
-                )?;
-            }
+            "SELECT receive_credential_ref FROM account_mail_transport WHERE receive_protocol = ? UNION SELECT send_credential_ref FROM account_mail_transport WHERE send_protocol = ?",
+        ).bind(receive_protocol).bind(send_protocol).fetch_all(db).await?;
+        for reference in crate::infrastructure::secret_store::list_ids(&paths.credentials_dir, kind)? {
+            if !references.contains(&reference) { crate::infrastructure::secret_store::delete(&paths.credentials_dir, kind, &reference)?; }
         }
     }
     Ok(())

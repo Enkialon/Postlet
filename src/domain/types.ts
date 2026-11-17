@@ -35,7 +35,5 @@ export type PageDirection = 'older' | 'newer';
 export type ReceiveProtocol = 'graph' | 'imap';
 /** 发信协议 */
 export type SendProtocol = 'graph' | 'smtp';
-/** 邮箱认证方式 */
-export type MailAuthKind = 'password' | 'oauth2';
-/** TLS 模式 */
+/** TLS 模式（明文仅兼容历史；通用账号入口不提供） */
 export type MailTlsMode = 'implicit' | 'starttls' | 'plain';

@@ -1,67 +1,42 @@
 //! 通用邮箱凭证；系统钥匙串保护密钥，磁盘仅保存密文。
 
-use crate::domain::entities::AccountMailTransport;
-use crate::domain::value_objects::MailAuthKind;
+use crate::domain::entities::{AccountMailTransport, PasswordAuthConfig, ReceiveConfig, SendConfig};
+use crate::domain::value_objects::CredentialRef;
 use crate::infrastructure::error::InfraError;
 use crate::infrastructure::secret_store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct MailSecret {
-    pub username: String,
-    /// 密码或应用专用授权码
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-    /// OAuth2 access token（IMAP/SMTP XOAUTH2）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at_ms: Option<i64>,
+pub struct MailSecret { pub password: String }
+
+pub async fn save(credentials_dir: &Path, reference: &CredentialRef, secret: &MailSecret) -> Result<(), InfraError> {
+    secret_store::save(credentials_dir, "mail", reference.as_str(), secret)
 }
 
-pub async fn save(
-    credentials_dir: &Path,
-    credential_ref: &str,
-    secret: &MailSecret,
-) -> Result<(), InfraError> {
-    secret_store::save(credentials_dir, "mail", credential_ref, secret)
+pub async fn load(credentials_dir: &Path, auth: &PasswordAuthConfig) -> Result<Option<MailSecret>, InfraError> {
+    secret_store::load(credentials_dir, "mail", auth.credential_ref().as_str())
 }
 
-pub async fn load(
-    credentials_dir: &Path,
-    transport: &AccountMailTransport,
-) -> Result<Option<MailSecret>, InfraError> {
-    if transport.auth_kind != MailAuthKind::Password {
-        return Err(InfraError::Auth {
-            message: "通用 IMAP/SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
-        });
-    }
-    let reference = transport
-        .credential_ref
-        .as_deref()
-        .ok_or_else(|| InfraError::Auth {
-            message: "账号缺少凭据引用，请重新登录".into(),
-        })?;
-    secret_store::load(credentials_dir, "mail", reference)
+pub async fn delete(credentials_dir: &Path, reference: &CredentialRef) -> Result<(), InfraError> {
+    secret_store::delete(credentials_dir, "mail", reference.as_str())
 }
 
-pub async fn delete(credentials_dir: &Path, credential_ref: &str) -> Result<(), InfraError> {
-    secret_store::delete(credentials_dir, "mail", credential_ref)
-}
-
-pub async fn delete_for_transport(
-    credentials_dir: &Path,
-    transport: &AccountMailTransport,
-) -> Result<(), InfraError> {
-    if let Some(reference) = &transport.credential_ref {
-        let kind = match transport.auth_kind {
-            MailAuthKind::Password => "mail",
-            MailAuthKind::OAuth2 => "graph",
+pub async fn delete_for_transport(credentials_dir: &Path, transport: &AccountMailTransport) -> Result<(), InfraError> {
+    let receive_ref = transport.receive.credential_ref();
+    let send_ref = transport.send.credential_ref();
+    let receive_kind = match &transport.receive {
+        ReceiveConfig::Graph(_) => "graph",
+        ReceiveConfig::Imap(_) => "mail",
+    };
+    secret_store::delete(credentials_dir, receive_kind, receive_ref.as_str())?;
+    // 共用引用只删一次，避免误把同一秘密当成两侧独立文件。
+    if send_ref != receive_ref {
+        let send_kind = match &transport.send {
+            SendConfig::Graph(_) => "graph",
+            SendConfig::Smtp(_) => "mail",
         };
-        secret_store::delete(credentials_dir, kind, reference)?;
+        secret_store::delete(credentials_dir, send_kind, send_ref.as_str())?;
     }
     Ok(())
 }

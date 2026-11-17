@@ -76,5 +76,5 @@ async fn account_is_active_for_graph_sync(
     let Ok(Some(t)) = mail_transports::get(&mut conn, account_id).await else {
         return false;
     };
-    t.receive_protocol == ReceiveProtocol::Graph
+    t.receive.protocol() == ReceiveProtocol::Graph
 }

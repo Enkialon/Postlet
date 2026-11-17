@@ -3,6 +3,8 @@
 mod email;
 mod enums;
 mod ids;
+mod credential_ref;
+pub use credential_ref::CredentialRef;
 
 pub use email::{EmailAddress, SelfAddressSet};
 pub use enums::{

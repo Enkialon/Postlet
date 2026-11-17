@@ -1,7 +1,7 @@
 //! 写入命令与列表查询命令
 
 use crate::domain::value_objects::{
-    AccountId, EmailAddress, GroupId, MailAuthKind, MailTlsMode, MessageId, SessionId,
+    AccountId, EmailAddress, GroupId, MailTlsMode, MessageId, SessionId,
 };
 
 /// 登录后落库 / 刷新账户资料
@@ -31,23 +31,28 @@ pub struct UpdateAccountAliasesCommand {
     pub aliases: Vec<String>,
 }
 
-/// 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌）
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImapAuthenticationInput { Password { username: String, password: String } }
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SmtpAuthenticationInput { Shared, Password { username: String, password: String } }
+
+/// 通用账号只接受密码；认证字段不包含 OAuth token 半支持分支。
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpsertImapSmtpAccountCommand {
     pub email: String,
     pub display_name: String,
-    pub auth_kind: MailAuthKind,
     pub imap_host: String,
     pub imap_port: u16,
     pub imap_tls: MailTlsMode,
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_tls: MailTlsMode,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
-    pub expires_at_ms: Option<i64>,
+    pub imap_auth: ImapAuthenticationInput,
+    pub smtp_auth: SmtpAuthenticationInput,
 }
 
 /// 批量标记已读 / 未读

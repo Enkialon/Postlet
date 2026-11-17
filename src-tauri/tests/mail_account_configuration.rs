@@ -1,6 +1,9 @@
-use postlet_lib::application::dto::UpsertImapSmtpAccountCommand;
+use postlet_lib::application::dto::{
+    ImapAuthenticationInput, SmtpAuthenticationInput, UpsertImapSmtpAccountCommand,
+};
 use postlet_lib::application::use_cases::{account_use_case, mail_account_use_case};
-use postlet_lib::domain::value_objects::{MailAuthKind, MailTlsMode};
+use postlet_lib::domain::entities::ReceiveConfig;
+use postlet_lib::domain::value_objects::{CredentialRef, MailTlsMode};
 use postlet_lib::infrastructure::{
     db, mail::credentials, paths::AppPaths, repository::mail_transports, secret_store,
 };
@@ -9,18 +12,17 @@ fn command() -> UpsertImapSmtpAccountCommand {
     UpsertImapSmtpAccountCommand {
         email: "user@example.com".into(),
         display_name: "User".into(),
-        auth_kind: MailAuthKind::Password,
         imap_host: "imap.example.com".into(),
         imap_port: 993,
         imap_tls: MailTlsMode::Implicit,
         smtp_host: "smtp.example.com".into(),
         smtp_port: 587,
         smtp_tls: MailTlsMode::StartTls,
-        username: None,
-        password: Some(" password with spaces ".into()),
-        access_token: None,
-        refresh_token: None,
-        expires_at_ms: None,
+        imap_auth: ImapAuthenticationInput::Password {
+            username: "user@example.com".into(),
+            password: " password with spaces ".into(),
+        },
+        smtp_auth: SmtpAuthenticationInput::Shared,
     }
 }
 
@@ -35,21 +37,40 @@ fn paths(root: &std::path::Path) -> AppPaths {
     }
 }
 
+fn receive_auth(
+    transport: &postlet_lib::domain::entities::AccountMailTransport,
+) -> &postlet_lib::domain::entities::PasswordAuthConfig {
+    match &transport.receive {
+        ReceiveConfig::Imap(config) => &config.auth,
+        ReceiveConfig::Graph(_) => panic!("expected imap receive config"),
+    }
+}
+
 #[tokio::test]
 async fn invalid_configuration_has_no_database_or_filesystem_side_effects() {
     let db = db::open_memory().await.unwrap();
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path());
     let mut cases = Vec::new();
+
+    // 通用 IMAP/SMTP 不接受 OAuth2；反序列化阶段拒绝。
+    let oauth = serde_json::json!({
+        "email": "user@example.com",
+        "display_name": "User",
+        "imap_host": "imap.example.com",
+        "imap_port": 993,
+        "imap_tls": "implicit",
+        "smtp_host": "smtp.example.com",
+        "smtp_port": 587,
+        "smtp_tls": "starttls",
+        "imap_auth": { "kind": "oauth2", "access_token": "token" },
+        "smtp_auth": { "kind": "shared" }
+    });
+    assert!(serde_json::from_value::<UpsertImapSmtpAccountCommand>(oauth).is_err());
+
     let mut cmd = command();
-    cmd.auth_kind = MailAuthKind::OAuth2;
-    cmd.access_token = Some("token".into());
-    cases.push(cmd);
-    let mut cmd = command();
-    cmd.password = None;
-    cases.push(cmd);
-    let mut cmd = command();
-    cmd.password = Some(String::new());
+    let ImapAuthenticationInput::Password { password, .. } = &mut cmd.imap_auth;
+    *password = String::new();
     cases.push(cmd);
     let mut cmd = command();
     cmd.imap_host = "https://example.com".into();
@@ -64,7 +85,8 @@ async fn invalid_configuration_has_no_database_or_filesystem_side_effects() {
     cmd.imap_tls = MailTlsMode::Plain;
     cases.push(cmd);
     let mut cmd = command();
-    cmd.username = Some("\r\n".into());
+    let ImapAuthenticationInput::Password { username, .. } = &mut cmd.imap_auth;
+    *username = "\r\n".into();
     cases.push(cmd);
     for cmd in cases {
         assert!(
@@ -98,12 +120,12 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
             .await
             .unwrap()
             .unwrap();
-        let secret = credentials::load(&paths.credentials_dir, &original)
+        let secret = credentials::load(&paths.credentials_dir, receive_auth(&original))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(secret.password.as_deref(), Some(" password with spaces "));
-        let original_ref = original.credential_ref.as_deref().unwrap();
+        assert_eq!(secret.password, " password with spaces ");
+        let original_ref = original.receive.credential_ref().as_str().to_string();
 
         // 保存新秘密失败时数据库尚未改变。
         let mut broken_paths = paths.clone();
@@ -130,7 +152,7 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
             .unwrap();
         assert_eq!(
             secret_store::list_ids(&paths.credentials_dir, "mail").unwrap(),
-            vec![original_ref]
+            vec![original_ref.clone()]
         );
         let current = mail_transports::get(&mut *db.acquire().await.unwrap(), &account.id)
             .await
@@ -153,10 +175,10 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
             .unwrap();
         assert_eq!(
             secret_store::list_ids(&paths.credentials_dir, "mail").unwrap(),
-            vec![original_ref]
+            vec![original_ref.clone()]
         );
         assert_eq!(
-            credentials::load(&paths.credentials_dir, &original)
+            credentials::load(&paths.credentials_dir, receive_auth(&original))
                 .await
                 .unwrap()
                 .unwrap()
@@ -165,9 +187,13 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
         );
 
         // 模拟暂存后崩溃及切换后旧文件残留，恢复只清理无引用文件。
-        credentials::save(&paths.credentials_dir, "orphan", &secret)
-            .await
-            .unwrap();
+        credentials::save(
+            &paths.credentials_dir,
+            &CredentialRef::new("orphan").unwrap(),
+            &secret,
+        )
+        .await
+        .unwrap();
         mail_account_use_case::recover_credentials(&db, &paths)
             .await
             .unwrap();
@@ -184,13 +210,16 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(current.credential_ref, original.credential_ref);
+        assert_ne!(
+            current.receive.credential_ref(),
+            original.receive.credential_ref()
+        );
         assert_eq!(
             secret_store::list_ids(&paths.credentials_dir, "mail").unwrap(),
-            vec![current.credential_ref.clone().unwrap()]
+            vec![current.receive.credential_ref().as_str().to_string()]
         );
         assert!(
-            credentials::load(&paths.credentials_dir, &original)
+            credentials::load(&paths.credentials_dir, receive_auth(&original))
                 .await
                 .unwrap()
                 .is_none()
@@ -252,7 +281,7 @@ async fn native_credentials_survive_failed_updates_and_recover_orphans() {
         std::fs::remove_dir(&file).unwrap();
         credentials::save(
             &paths.credentials_dir,
-            current.credential_ref.as_deref().unwrap(),
+            current.receive.credential_ref(),
             &secret,
         )
         .await

@@ -25,6 +25,16 @@ pub enum ImapAuth {
 
 pub type ImapSession = Session<super::stream::ImapStream>;
 
+pub async fn load_connection(
+    credentials_dir: &std::path::Path,
+    config: &crate::domain::entities::PasswordMailConfig,
+) -> Result<(ImapEndpoint, ImapAuth), InfraError> {
+    let secret = crate::infrastructure::mail::credentials::load(credentials_dir, &config.auth).await?
+        .ok_or_else(|| InfraError::Auth { message: "缺少 IMAP 密码或邮箱授权码".into() })?;
+    Ok((ImapEndpoint { host: config.endpoint.host().to_owned(), port: config.endpoint.port(), tls: config.endpoint.tls() },
+        ImapAuth::Password { username: config.auth.username().to_owned(), password: secret.password }))
+}
+
 pub fn discover_folders(session: &mut ImapSession) -> Result<Vec<String>, InfraError> {
     Ok(discover_folder_tree(session)?
         .into_iter()

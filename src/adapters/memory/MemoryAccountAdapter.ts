@@ -53,10 +53,17 @@ export class MemoryAccountAdapter implements AccountPort {
     if (!email.includes('@')) {
       throw { code: 'validation', message: '邮箱地址无效', retryable: false };
     }
-    if (cmd.auth_kind === 'password' && !cmd.password) {
+    if (!cmd.imap_auth.password) {
       throw {
         code: 'validation',
         message: '密码认证须提供 password',
+        retryable: false,
+      };
+    }
+    if (cmd.smtp_auth.kind === 'password' && !cmd.smtp_auth.password) {
+      throw {
+        code: 'validation',
+        message: 'SMTP 单独登录须提供密码',
         retryable: false,
       };
     }

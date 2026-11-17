@@ -28,23 +28,6 @@ const DEFAULT_SCOPES: &[&str] = &[
     "Contacts.Read",
 ];
 
-pub fn credential_reference(
-    transport: &crate::domain::entities::AccountMailTransport,
-) -> Result<&str, InfraError> {
-    if transport.auth_kind != crate::domain::value_objects::MailAuthKind::OAuth2 {
-        return Err(InfraError::Auth {
-            message: "Graph 需要 OAuth 凭据".into(),
-        });
-    }
-    transport
-        .credential_ref
-        .as_deref()
-        .filter(|reference| !reference.is_empty())
-        .ok_or_else(|| InfraError::Auth {
-            message: "Graph 账号缺少凭据引用，请重新登录".into(),
-        })
-}
-
 #[derive(Debug, Deserialize)]
 struct GraphMe {
     id: Option<String>,
@@ -144,18 +127,19 @@ pub async fn sign_in(config: &AzureAuthConfig) -> Result<(RemoteAccount, TokenCa
 
 pub async fn save_token_cache(
     credentials_dir: &Path,
-    credential_ref: &str,
+    credential_ref: &crate::domain::value_objects::CredentialRef,
     cache: &TokenCache,
 ) -> Result<(), InfraError> {
-    token_store::save(credentials_dir, credential_ref, cache)
+    token_store::save(credentials_dir, credential_ref.as_str(), cache)
 }
 
 /// 读取本地凭证；必要时用 refresh_token 刷新并回写。
 pub async fn get_access_token(
     credentials_dir: &Path,
     config: &AzureAuthConfig,
-    credential_ref: &str,
+    auth: &crate::domain::entities::GraphAuthConfig,
 ) -> Result<String, InfraError> {
+    let credential_ref = auth.credential_ref.as_str();
     let Some(mut cache) = token_store::load(credentials_dir, credential_ref)? else {
         return Err(InfraError::Auth {
             message: "账户未登录或凭证已清除，请重新登录".into(),

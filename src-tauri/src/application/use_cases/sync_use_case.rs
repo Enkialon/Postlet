@@ -7,20 +7,18 @@ use crate::application::dto::{
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{
-    Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients,
+    Contact, MailFolderSyncState, Message, MessageRecipient, MessageWithRecipients, ReceiveConfig, GraphAuthConfig,
 };
 use crate::domain::services::resolve_self_addresses;
 use crate::domain::value_objects::{
-    AccountId, ContactId, ContactSource, EmailAddress, FolderId, MailAuthKind, MailTlsMode,
-    MessageId, MessageSyncStatus, ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
+    AccountId, ContactId, ContactSource, EmailAddress, FolderId, MessageId, MessageSyncStatus,
+    ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
 use crate::infrastructure::imap::{
     discover_folder_tree, session_login, sync_account_blocking, FolderSyncRequest,
-    ImapAuth, ImapEndpoint,
 };
-use crate::infrastructure::mail::credentials;
 use crate::infrastructure::mail::cursor::{encode_uid_cursor, encode_uidvalidity, parse_cursor};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
@@ -118,9 +116,9 @@ pub async fn trigger_mail_sync(
         .map_err(AppError::from)?;
     }
 
-    let result = match transport.receive_protocol {
-        ReceiveProtocol::Graph => sync_graph_mail(db, paths, operation, cmd, &transport).await,
-        ReceiveProtocol::Imap => sync_imap_mail(db, paths, operation, cmd, &transport).await,
+    let result = match &transport.receive {
+        ReceiveConfig::Graph(auth) => sync_graph_mail(db, paths, operation, cmd, auth).await,
+        ReceiveConfig::Imap(_) => sync_imap_mail(db, paths, operation, cmd, &transport).await,
     };
 
     match result {
@@ -170,10 +168,10 @@ async fn sync_graph_mail(
     paths: &AppPaths,
     operation: &MailOperation,
     cmd: &TriggerMailSyncCommand,
-    transport: &crate::domain::entities::AccountMailTransport,
+    auth: &GraphAuthConfig,
 ) -> Result<ChangeSet, AppError> {
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?))
+    let token = operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, auth))
         .await
         .map_err(AppError::from)?;
 
@@ -265,39 +263,8 @@ async fn sync_imap_mail(
     cmd: &TriggerMailSyncCommand,
     transport: &crate::domain::entities::AccountMailTransport,
 ) -> Result<ChangeSet, AppError> {
-    let host = transport
-        .imap_host
-        .clone()
-        .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_host"))?;
-    let port = transport
-        .imap_port
-        .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_port"))?;
-    let tls = transport
-        .imap_tls
-        .unwrap_or(MailTlsMode::Implicit);
-    let username = transport
-        .username
-        .clone()
-        .ok_or_else(|| AppError::validation("IMAP 账号缺少 username"))?;
-    let secret = credentials::load(&paths.credentials_dir, &transport)
-        .await
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
-
-    let auth = match transport.auth_kind {
-        MailAuthKind::Password => ImapAuth::Password {
-            username: username.clone(),
-            password: secret.password.ok_or_else(|| AppError::auth("缺少 IMAP 密码"))?,
-        },
-        MailAuthKind::OAuth2 => ImapAuth::OAuth2 {
-            username: username.clone(),
-            access_token: secret
-                .access_token
-                .ok_or_else(|| AppError::auth("缺少 IMAP OAuth access_token"))?,
-        },
-    };
-
-    let endpoint = ImapEndpoint { host, port, tls };
+    let ReceiveConfig::Imap(config) = &transport.receive else { return Err(AppError::validation("账号收信配置不是 IMAP")); };
+    let (endpoint, auth) = crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
 
     // 先收集各文件夹游标与已知 UID（按 sync_enabled / 指定夹）
     let mut requests = Vec::new();
@@ -661,13 +628,10 @@ pub async fn trigger_contact_sync(
             .await
             .map_err(AppError::from)?
     };
-    if transport.receive_protocol != ReceiveProtocol::Graph {
-        // IMAP 无 Graph 通讯录 Delta；直接成功返回
-        return Ok(());
-    }
+    let ReceiveConfig::Graph(auth) = &transport.receive else { return Ok(()); };
 
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, auth)
         .await
         .map_err(AppError::from)?;
 
@@ -808,11 +772,11 @@ pub async fn refresh_mail_folders(
         .map_err(AppError::from)?;
     drop(conn);
 
-    let discovered: Vec<DiscoveredFolder> = match transport.receive_protocol {
-        ReceiveProtocol::Graph => {
+    let discovered: Vec<DiscoveredFolder> = match &transport.receive {
+        ReceiveConfig::Graph(auth) => {
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
             let token =
-                operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(&transport)?))
+                operation.wait(graph::auth::get_access_token(&paths.credentials_dir, &config, auth))
                     .await
                     .map_err(AppError::from)?;
             let remote = operation.wait(graph::mail::list_mail_folders(&token))
@@ -822,38 +786,8 @@ pub async fn refresh_mail_folders(
                 remote_binding: folder.id, parent_binding: folder.parent_id, display_name: folder.display_name,
             }).collect()
         }
-        ReceiveProtocol::Imap => {
-            let host = transport
-                .imap_host
-                .clone()
-                .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_host"))?;
-            let port = transport
-                .imap_port
-                .ok_or_else(|| AppError::validation("IMAP 账号缺少 imap_port"))?;
-            let tls = transport.imap_tls.unwrap_or(MailTlsMode::Implicit);
-            let username = transport
-                .username
-                .clone()
-                .ok_or_else(|| AppError::validation("IMAP 账号缺少 username"))?;
-            let secret = credentials::load(&paths.credentials_dir, &transport)
-                .await
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::auth("缺少 IMAP 凭证"))?;
-            let auth = match transport.auth_kind {
-                MailAuthKind::Password => ImapAuth::Password {
-                    username: username.clone(),
-                    password: secret
-                        .password
-                        .ok_or_else(|| AppError::auth("缺少 IMAP 密码"))?,
-                },
-                MailAuthKind::OAuth2 => ImapAuth::OAuth2 {
-                    username: username.clone(),
-                    access_token: secret
-                        .access_token
-                        .ok_or_else(|| AppError::auth("缺少 IMAP OAuth access_token"))?,
-                },
-            };
-            let endpoint = ImapEndpoint { host, port, tls };
+        ReceiveConfig::Imap(config) => {
+            let (endpoint, auth) = crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
             let mut session = session_login(&endpoint, &auth, operation).await.map_err(AppError::from)?;
             let control = operation.clone();
             let nodes = operation.run_blocking(move || {
@@ -873,7 +807,7 @@ pub async fn refresh_mail_folders(
     };
     operation.checkpoint()?;
     let mut tx = db.begin().await?;
-    let retired = folder_states::reconcile_discovered(&mut tx, account_id, transport.receive_protocol, &discovered, now_ms()).await?;
+    let retired = folder_states::reconcile_discovered(&mut tx, account_id, transport.receive.protocol(), &discovered, now_ms()).await?;
     let mut changes = ChangeSet::empty(account_id.clone(), ChangeOrigin::UserAction);
     for folder_id in retired { invalidate_folder_generation(&mut tx, account_id, &folder_id, &mut changes).await?; }
     operation.checkpoint()?;

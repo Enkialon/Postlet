@@ -23,26 +23,29 @@ CREATE TABLE accounts (
 CREATE INDEX idx_accounts_email ON accounts(email);
 
 CREATE TABLE account_mail_transport (
-    account_id          TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-    receive_protocol    TEXT NOT NULL
-        CHECK(receive_protocol IN ('graph', 'imap')),
-    send_protocol       TEXT NOT NULL
-        CHECK(send_protocol IN ('graph', 'smtp')),
-    auth_kind           TEXT NOT NULL
-        CHECK(auth_kind IN ('password', 'oauth2')),
-    credential_ref      TEXT,
-    imap_host           TEXT,
-    imap_port           INTEGER,
-    imap_tls            TEXT
-        CHECK(imap_tls IS NULL OR imap_tls IN ('implicit', 'starttls', 'plain')),
-    smtp_host           TEXT,
-    smtp_port           INTEGER,
-    smtp_tls            TEXT
-        CHECK(smtp_tls IS NULL OR smtp_tls IN ('implicit', 'starttls', 'plain')),
-    username            TEXT,
-    imap_idle_supported INTEGER
-        CHECK(imap_idle_supported IS NULL OR imap_idle_supported IN (0, 1)),
-    updated_at          INTEGER NOT NULL
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    receive_protocol TEXT NOT NULL CHECK(receive_protocol IN ('graph', 'imap')),
+    send_protocol TEXT NOT NULL CHECK(send_protocol IN ('graph', 'smtp')),
+    receive_credential_ref TEXT NOT NULL CHECK(length(receive_credential_ref) BETWEEN 1 AND 128 AND receive_credential_ref NOT GLOB '*[^a-zA-Z0-9_-]*'),
+    send_credential_ref TEXT NOT NULL CHECK(length(send_credential_ref) BETWEEN 1 AND 128 AND send_credential_ref NOT GLOB '*[^a-zA-Z0-9_-]*'),
+    imap_host TEXT,
+    imap_port INTEGER,
+    imap_tls TEXT,
+    imap_username TEXT,
+    smtp_host TEXT,
+    smtp_port INTEGER,
+    smtp_tls TEXT,
+    smtp_username TEXT,
+    imap_idle_supported INTEGER CHECK(imap_idle_supported IS NULL OR imap_idle_supported IN (0, 1)),
+    updated_at INTEGER NOT NULL,
+    CHECK((receive_protocol = 'graph' AND imap_host IS NULL AND imap_port IS NULL AND imap_tls IS NULL AND imap_username IS NULL AND imap_idle_supported IS NULL)
+       OR (receive_protocol = 'imap' AND imap_host IS NOT NULL AND length(trim(imap_host)) > 0 AND imap_host = trim(imap_host)
+           AND imap_port IS NOT NULL AND imap_port BETWEEN 1 AND 65535 AND imap_tls IS NOT NULL AND imap_tls IN ('implicit','starttls')
+           AND imap_username IS NOT NULL AND length(trim(imap_username)) > 0 AND imap_username = trim(imap_username))),
+    CHECK((send_protocol = 'graph' AND smtp_host IS NULL AND smtp_port IS NULL AND smtp_tls IS NULL AND smtp_username IS NULL)
+       OR (send_protocol = 'smtp' AND smtp_host IS NOT NULL AND length(trim(smtp_host)) > 0 AND smtp_host = trim(smtp_host)
+           AND smtp_port IS NOT NULL AND smtp_port BETWEEN 1 AND 65535 AND smtp_tls IS NOT NULL AND smtp_tls IN ('implicit','starttls')
+           AND smtp_username IS NOT NULL AND length(trim(smtp_username)) > 0 AND smtp_username = trim(smtp_username)))
 );
 
 CREATE TABLE mail_folder_sync_state (

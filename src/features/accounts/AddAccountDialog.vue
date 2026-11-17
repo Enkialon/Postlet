@@ -24,12 +24,15 @@ const form = reactive({
   display_name: '',
   username: '',
   password: '',
+  smtp_same_login: true,
+  smtp_username: '',
+  smtp_password: '',
   imap_host: '',
   imap_port: 993,
-  imap_tls: 'implicit' as MailTlsMode,
+  imap_tls: 'implicit' as Exclude<MailTlsMode, 'plain'>,
   smtp_host: '',
   smtp_port: 587,
-  smtp_tls: 'starttls' as MailTlsMode,
+  smtp_tls: 'starttls' as Exclude<MailTlsMode, 'plain'>,
 });
 
 const fieldClass =
@@ -40,6 +43,9 @@ function resetForm(): void {
   form.display_name = '';
   form.username = '';
   form.password = '';
+  form.smtp_same_login = true;
+  form.smtp_username = '';
+  form.smtp_password = '';
   form.imap_host = '';
   form.imap_port = 993;
   form.imap_tls = 'implicit';
@@ -91,6 +97,7 @@ async function submitImap(): Promise<void> {
   const email = form.email.trim();
   const imapHost = form.imap_host.trim();
   const smtpHost = form.smtp_host.trim();
+  const imapUsername = form.username.trim() || email;
   if (!email || !imapHost || !smtpHost || !form.password) {
     accounts.error.value = {
       code: 'validation',
@@ -99,21 +106,38 @@ async function submitImap(): Promise<void> {
     };
     return;
   }
+  if (!form.smtp_same_login) {
+    const smtpUser = form.smtp_username.trim();
+    if (!smtpUser || !form.smtp_password) {
+      accounts.error.value = {
+        code: 'validation',
+        message: '单独配置 SMTP 时请填写 SMTP 用户名与密码',
+        retryable: false,
+      };
+      return;
+    }
+  }
   await accounts.addImapSmtpAccount({
     email,
     display_name: form.display_name.trim() || email,
-    auth_kind: 'password',
     imap_host: imapHost,
     imap_port: Number(form.imap_port) || 993,
     imap_tls: form.imap_tls,
     smtp_host: smtpHost,
     smtp_port: Number(form.smtp_port) || 587,
     smtp_tls: form.smtp_tls,
-    username: form.username.trim() || email,
-    password: form.password,
-    access_token: null,
-    refresh_token: null,
-    expires_at_ms: null,
+    imap_auth: {
+      kind: 'password',
+      username: imapUsername,
+      password: form.password,
+    },
+    smtp_auth: form.smtp_same_login
+      ? { kind: 'shared' }
+      : {
+          kind: 'password',
+          username: form.smtp_username.trim(),
+          password: form.smtp_password,
+        },
   });
   if (!accounts.error.value) {
     emit('close');
@@ -273,7 +297,7 @@ function backToProviders(): void {
           />
         </label>
         <label class="grid gap-1.5 text-[13px] text-text-secondary">
-          用户名
+          收信用户名
           <input
             v-model="form.username"
             :class="fieldClass"
@@ -284,7 +308,7 @@ function backToProviders(): void {
           />
         </label>
         <label class="grid gap-1.5 text-[13px] text-text-secondary">
-          密码
+          收信密码
           <input
             v-model="form.password"
             :class="fieldClass"
@@ -329,7 +353,6 @@ function backToProviders(): void {
           >
             <option value="implicit">隐式 TLS（如 993）</option>
             <option value="starttls">STARTTLS</option>
-            <option value="plain">明文</option>
           </select>
         </label>
 
@@ -367,9 +390,45 @@ function backToProviders(): void {
           >
             <option value="starttls">STARTTLS（如 587）</option>
             <option value="implicit">隐式 TLS（如 465）</option>
-            <option value="plain">明文</option>
           </select>
         </label>
+
+        <label
+          class="flex cursor-pointer items-start gap-2 text-[13px] text-text-secondary"
+        >
+          <input
+            v-model="form.smtp_same_login"
+            class="mt-0.5"
+            type="checkbox"
+            :disabled="accounts.signingIn.value"
+          />
+          <span>SMTP 使用相同登录</span>
+        </label>
+
+        <template v-if="!form.smtp_same_login">
+          <label class="grid gap-1.5 text-[13px] text-text-secondary">
+            SMTP 用户名
+            <input
+              v-model="form.smtp_username"
+              :class="fieldClass"
+              type="text"
+              autocomplete="username"
+              required
+              :disabled="accounts.signingIn.value"
+            />
+          </label>
+          <label class="grid gap-1.5 text-[13px] text-text-secondary">
+            SMTP 密码
+            <input
+              v-model="form.smtp_password"
+              :class="fieldClass"
+              type="password"
+              autocomplete="current-password"
+              required
+              :disabled="accounts.signingIn.value"
+            />
+          </label>
+        </template>
       </form>
 
       <ErrorState

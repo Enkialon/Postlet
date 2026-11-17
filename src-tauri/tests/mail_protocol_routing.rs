@@ -1,16 +1,48 @@
 //! 协议路由与 IMAP 游标编解码回归。
 
-use postlet_lib::domain::entities::AccountMailTransport;
+use postlet_lib::domain::entities::{
+    Account, AccountMailTransport, MailEndpoint, PasswordAuthConfig, PasswordMailConfig,
+    ReceiveConfig, SendConfig,
+};
 use postlet_lib::domain::value_objects::{
-    AccountId, MailAuthKind, MailTlsMode, ReceiveProtocol, SendProtocol,
+    AccountId, CredentialRef, EmailAddress, MailTlsMode, ReceiveProtocol, SendProtocol, SyncStatus,
 };
 use postlet_lib::infrastructure::db;
 use postlet_lib::infrastructure::mail::cursor::{
     encode_last_uid, encode_uidvalidity, parse_cursor,
 };
 use postlet_lib::infrastructure::repository::{accounts, mail_transports};
-use postlet_lib::domain::entities::Account;
-use postlet_lib::domain::value_objects::{EmailAddress, SyncStatus};
+
+fn password_mail(
+    host: &str,
+    port: u16,
+    tls: MailTlsMode,
+    username: &str,
+    reference: &str,
+) -> PasswordMailConfig {
+    PasswordMailConfig {
+        endpoint: MailEndpoint::new(host.into(), port, tls).unwrap(),
+        auth: PasswordAuthConfig::new(username.into(), CredentialRef::new(reference).unwrap())
+            .unwrap(),
+    }
+}
+
+fn with_imap_receive(
+    transport: &AccountMailTransport,
+    host: &str,
+    port: u16,
+    tls: MailTlsMode,
+    username: &str,
+    reference: &str,
+) -> AccountMailTransport {
+    AccountMailTransport {
+        account_id: transport.account_id.clone(),
+        receive: ReceiveConfig::Imap(password_mail(host, port, tls, username, reference)),
+        send: transport.send.clone(),
+        imap_idle_supported: transport.imap_idle_supported,
+        updated_at: transport.updated_at,
+    }
+}
 
 #[test]
 fn imap_cursor_roundtrip() {
@@ -48,25 +80,33 @@ async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_s
     assert!(mail_transports::get(&mut conn, &account.id).await.unwrap().is_none());
     assert!(sqlx::query("INSERT INTO account_mail_transport(account_id,updated_at) VALUES (?,?)")
         .bind(account.id.as_str()).bind(now).execute(&mut *conn).await.is_err());
-    let graph = AccountMailTransport::graph_default(account.id.clone(), "graph-reference".into(), now);
+    let graph = AccountMailTransport::graph(
+        account.id.clone(),
+        CredentialRef::new("graph-reference").unwrap(),
+        now,
+    );
     mail_transports::upsert(&mut conn, &graph).await.unwrap();
     let t = mail_transports::require(&mut conn, &account.id).await.unwrap();
-    assert_eq!(t.receive_protocol, ReceiveProtocol::Graph);
-    assert_eq!(t.send_protocol, SendProtocol::Graph);
+    assert_eq!(t.receive.protocol(), ReceiveProtocol::Graph);
+    assert_eq!(t.send.protocol(), SendProtocol::Graph);
 
+    let reference = "test-credential";
     let imap = AccountMailTransport {
         account_id: account.id.clone(),
-        receive_protocol: ReceiveProtocol::Imap,
-        send_protocol: SendProtocol::Smtp,
-        auth_kind: MailAuthKind::Password,
-        credential_ref: Some("test-credential".into()),
-        imap_host: Some("imap.example.com".into()),
-        imap_port: Some(993),
-        imap_tls: Some(MailTlsMode::Implicit),
-        smtp_host: Some("smtp.example.com".into()),
-        smtp_port: Some(587),
-        smtp_tls: Some(MailTlsMode::StartTls),
-        username: Some("user@example.com".into()),
+        receive: ReceiveConfig::Imap(password_mail(
+            "imap.example.com",
+            993,
+            MailTlsMode::Implicit,
+            "user@example.com",
+            reference,
+        )),
+        send: SendConfig::Smtp(password_mail(
+            "smtp.example.com",
+            587,
+            MailTlsMode::StartTls,
+            "user@example.com",
+            reference,
+        )),
         imap_idle_supported: Some(true),
         updated_at: now,
     };
@@ -75,46 +115,105 @@ async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_s
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.receive_protocol, ReceiveProtocol::Imap);
-    assert_eq!(loaded.send_protocol, SendProtocol::Smtp);
-    assert_eq!(loaded.imap_port, Some(993));
+    assert_eq!(loaded.receive.protocol(), ReceiveProtocol::Imap);
+    assert_eq!(loaded.send.protocol(), SendProtocol::Smtp);
+    let ReceiveConfig::Imap(loaded_imap) = &loaded.receive else {
+        panic!("expected imap");
+    };
+    assert_eq!(loaded_imap.endpoint.port(), 993);
     assert_eq!(loaded.imap_idle_supported, Some(true));
 
     // SMTP 配置可以独立改变；收信能力观测只更新自己的字段，不整行写回旧快照。
     let mut current = imap.clone();
-    current.smtp_host = Some("new-smtp.example.com".into());
+    current.send = SendConfig::Smtp(password_mail(
+        "new-smtp.example.com",
+        587,
+        MailTlsMode::StartTls,
+        "user@example.com",
+        reference,
+    ));
     current.updated_at = now + 1;
     mail_transports::upsert(&mut conn, &current).await.unwrap();
     assert!(mail_transports::record_imap_idle_support(&mut conn, &imap, false).await.unwrap());
     let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
-    assert_eq!(after.smtp_host, current.smtp_host);
+    let SendConfig::Smtp(after_smtp) = &after.send else {
+        panic!("expected smtp");
+    };
+    assert_eq!(after_smtp.endpoint.host(), "new-smtp.example.com");
     assert_eq!(after.updated_at, current.updated_at);
     assert_eq!(after.imap_idle_supported, Some(false));
 
     // 挂起的旧探测在凭据轮换后返回，不能恢复旧引用或写入旧能力。
-    current.credential_ref = Some("rotated-credential".into());
+    current = with_imap_receive(
+        &current,
+        "imap.example.com",
+        993,
+        MailTlsMode::Implicit,
+        "user@example.com",
+        "rotated-credential",
+    );
     current.imap_idle_supported = None;
     current.updated_at += 1;
     mail_transports::upsert(&mut conn, &current).await.unwrap();
     assert!(!mail_transports::record_imap_idle_support(&mut conn, &imap, true).await.unwrap());
     let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
-    assert_eq!(after.credential_ref, current.credential_ref);
+    assert_eq!(
+        after.receive.credential_ref(),
+        current.receive.credential_ref()
+    );
     assert_eq!(after.imap_idle_supported, None);
     assert_eq!(after.updated_at, current.updated_at);
 
     // 同一个引用下改变端点、TLS 或用户名，同样不能接受旧观测。
     for field in ["host", "port", "tls", "username", "protocol"] {
-        let mut changed = current.clone();
-        match field {
-            "host" => changed.imap_host = Some("new-imap.example.com".into()),
-            "port" => changed.imap_port = Some(143),
-            "tls" => changed.imap_tls = Some(MailTlsMode::StartTls),
-            "username" => changed.username = Some("other-user".into()),
-            "protocol" => changed.receive_protocol = ReceiveProtocol::Graph,
+        let mut changed = match field {
+            "host" => with_imap_receive(
+                &current,
+                "new-imap.example.com",
+                993,
+                MailTlsMode::Implicit,
+                "user@example.com",
+                "rotated-credential",
+            ),
+            "port" => with_imap_receive(
+                &current,
+                "imap.example.com",
+                143,
+                MailTlsMode::Implicit,
+                "user@example.com",
+                "rotated-credential",
+            ),
+            "tls" => with_imap_receive(
+                &current,
+                "imap.example.com",
+                993,
+                MailTlsMode::StartTls,
+                "user@example.com",
+                "rotated-credential",
+            ),
+            "username" => with_imap_receive(
+                &current,
+                "imap.example.com",
+                993,
+                MailTlsMode::Implicit,
+                "other-user",
+                "rotated-credential",
+            ),
+            "protocol" => AccountMailTransport::graph(
+                current.account_id.clone(),
+                CredentialRef::new("rotated-credential").unwrap(),
+                current.updated_at,
+            ),
             _ => unreachable!(),
-        }
+        };
+        changed.updated_at = current.updated_at;
         mail_transports::upsert(&mut conn, &changed).await.unwrap();
-        assert!(!mail_transports::record_imap_idle_support(&mut conn, &current, true).await.unwrap(), "{field}");
+        assert!(
+            !mail_transports::record_imap_idle_support(&mut conn, &current, true)
+                .await
+                .unwrap(),
+            "{field}"
+        );
         let after = mail_transports::get(&mut conn, &account.id).await.unwrap().unwrap();
         assert_eq!(after.imap_idle_supported, None);
     }

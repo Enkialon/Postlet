@@ -5,7 +5,6 @@ import type {
   FolderId,
   GroupId,
   Importance,
-  MailAuthKind,
   MailTlsMode,
   MessageId,
   PageDirection,
@@ -109,22 +108,30 @@ export interface UpdateAccountAliasesCommand {
   aliases: string[];
 }
 
+/** IMAP 仅密码；无 OAuth2 半支持分支 */
+export type ImapAuthenticationInput = {
+  kind: 'password';
+  username: string;
+  password: string;
+};
+
+/** SMTP 默认 Shared；显式 Password 才单独登录 */
+export type SmtpAuthenticationInput =
+  | { kind: 'shared' }
+  | { kind: 'password'; username: string; password: string };
+
 /** 新增 / 更新 IMAP+SMTP 账号（协议字段，非服务商品牌） */
 export interface UpsertImapSmtpAccountCommand {
   email: string;
   display_name: string;
-  auth_kind: MailAuthKind;
   imap_host: string;
   imap_port: number;
   imap_tls: MailTlsMode;
   smtp_host: string;
   smtp_port: number;
   smtp_tls: MailTlsMode;
-  username: string | null;
-  password: string | null;
-  access_token: string | null;
-  refresh_token: string | null;
-  expires_at_ms: TimestampMs | null;
+  imap_auth: ImapAuthenticationInput;
+  smtp_auth: SmtpAuthenticationInput;
 }
 
 /** 批量标记已读 / 未读 */

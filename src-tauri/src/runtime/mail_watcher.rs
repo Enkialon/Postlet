@@ -2,11 +2,9 @@
 
 use crate::application::dto::TriggerMailSyncCommand;
 use crate::application::use_cases::sync_use_case;
-use crate::domain::value_objects::{AccountId, MailTlsMode, ReceiveProtocol};
-use crate::infrastructure::imap::{
-    IdleOutcome, ImapAuth, ImapEndpoint, run_idle_until_cancel, session_login,
-};
-use crate::infrastructure::mail::credentials;
+use crate::domain::entities::ReceiveConfig;
+use crate::domain::value_objects::AccountId;
+use crate::infrastructure::imap::{IdleOutcome, load_connection, run_idle_until_cancel, session_login};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports};
 use crate::runtime::{ChangeDispatcher, MailSyncGate};
@@ -51,7 +49,7 @@ async fn run_cycle(
     account_id: &AccountId,
     control: &super::mail_watchers::WatcherControl,
 ) -> bool {
-    let (transport, secret) = {
+    let (endpoint, auth, use_idle) = {
         let mut conn = match db.acquire().await {
             Ok(c) => c,
             Err(_) => return false,
@@ -62,52 +60,23 @@ async fn run_cycle(
         {
             return false;
         }
-        let t = match mail_transports::get(&mut conn, account_id).await {
+        let transport = match mail_transports::get(&mut conn, account_id).await {
             Ok(Some(t)) => t,
             _ => return false,
         };
-        if t.receive_protocol != ReceiveProtocol::Imap {
+        let ReceiveConfig::Imap(config) = &transport.receive else {
             return false;
-        }
-        let secret = match credentials::load(&paths.credentials_dir, &t).await {
-            Ok(Some(s)) => s,
+        };
+        let (endpoint, auth) = match load_connection(&paths.credentials_dir, config).await {
+            Ok(v) => v,
             _ => return false,
         };
-        (t, secret)
+        (
+            endpoint,
+            auth,
+            transport.imap_idle_supported.unwrap_or(false),
+        )
     };
-
-    let host = match transport.imap_host.clone() {
-        Some(h) => h,
-        None => return false,
-    };
-    let port = match transport.imap_port {
-        Some(p) => p,
-        None => return false,
-    };
-    let tls = transport.imap_tls.unwrap_or(MailTlsMode::Implicit);
-    let username = transport
-        .username
-        .clone()
-        .unwrap_or_else(|| secret.username.clone());
-    let auth = match (
-        transport.auth_kind,
-        secret.password.clone(),
-        secret.access_token.clone(),
-    ) {
-        (crate::domain::value_objects::MailAuthKind::Password, Some(password), _) => {
-            ImapAuth::Password { username, password }
-        }
-        (crate::domain::value_objects::MailAuthKind::OAuth2, _, Some(access_token)) => {
-            ImapAuth::OAuth2 {
-                username,
-                access_token,
-            }
-        }
-        _ => return false,
-    };
-
-    let endpoint = ImapEndpoint { host, port, tls };
-    let use_idle = transport.imap_idle_supported.unwrap_or(false);
 
     // 先完成一批并提交；有历史缺口时主动续跑，不能进入无限 IDLE 等新邮件。
     let Some(operation) = control.begin_operation(Duration::from_secs(10 * 60)) else {

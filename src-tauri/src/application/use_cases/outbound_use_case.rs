@@ -1,17 +1,13 @@
 //! 外发：将 PendingLocal 按 send_protocol 推到 Graph / SMTP。
 
 use crate::application::error::AppError;
-use crate::domain::entities::MessageWithRecipients;
-use crate::domain::value_objects::{
-    AccountId, BodyContentType, MailAuthKind, MailTlsMode, MessageSyncStatus, RecipientRole,
-    SendProtocol,
-};
+use crate::domain::entities::{MessageWithRecipients, SendConfig, GraphAuthConfig, PasswordMailConfig};
+use crate::domain::value_objects::{AccountId, BodyContentType, MessageSyncStatus, RecipientRole};
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::{self, mail::GraphOutgoing};
-use crate::infrastructure::mail::credentials;
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{accounts, mail_transports, messages};
-use crate::infrastructure::smtp::{self, SmtpAuth, SmtpEndpoint, SmtpOutgoing};
+use crate::infrastructure::smtp::{self, SmtpOutgoing};
 use sqlx::SqlitePool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,12 +45,12 @@ pub async fn flush_pending_message(
         .map_err(AppError::from)?;
     drop(conn);
 
-    match transport.send_protocol {
-        SendProtocol::Graph => {
-            send_via_graph(paths, &transport, &bundle).await?;
+    match &transport.send {
+        SendConfig::Graph(auth) => {
+            send_via_graph(paths, auth, &bundle).await?;
         }
-        SendProtocol::Smtp => {
-            send_via_smtp(paths, &account, &transport, &bundle).await?;
+        SendConfig::Smtp(config) => {
+            send_via_smtp(paths, &account, config, &bundle).await?;
         }
     }
 
@@ -70,11 +66,11 @@ pub async fn flush_pending_message(
 
 async fn send_via_graph(
     paths: &AppPaths,
-    transport: &crate::domain::entities::AccountMailTransport,
+    auth: &GraphAuthConfig,
     bundle: &MessageWithRecipients,
 ) -> Result<(), AppError> {
     let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, graph::auth::credential_reference(transport)?)
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, auth)
         .await
         .map_err(AppError::from)?;
 
@@ -119,40 +115,10 @@ async fn send_via_graph(
 async fn send_via_smtp(
     paths: &AppPaths,
     account: &crate::domain::entities::Account,
-    transport: &crate::domain::entities::AccountMailTransport,
+    config: &PasswordMailConfig,
     bundle: &MessageWithRecipients,
 ) -> Result<(), AppError> {
-    let host = transport
-        .smtp_host
-        .clone()
-        .ok_or_else(|| AppError::validation("SMTP 账号缺少 smtp_host"))?;
-    let port = transport
-        .smtp_port
-        .ok_or_else(|| AppError::validation("SMTP 账号缺少 smtp_port"))?;
-    let tls = transport.smtp_tls.unwrap_or(MailTlsMode::StartTls);
-    let username = transport
-        .username
-        .clone()
-        .unwrap_or_else(|| account.email.as_str().to_string());
-    let secret = credentials::load(&paths.credentials_dir, &transport)
-        .await
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::auth("缺少 SMTP 凭证"))?;
-
-    let auth = match transport.auth_kind {
-        MailAuthKind::Password => SmtpAuth::Password {
-            username,
-            password: secret
-                .password
-                .ok_or_else(|| AppError::auth("缺少 SMTP 密码"))?,
-        },
-        MailAuthKind::OAuth2 => SmtpAuth::OAuth2 {
-            username,
-            access_token: secret
-                .access_token
-                .ok_or_else(|| AppError::auth("缺少 SMTP OAuth access_token"))?,
-        },
-    };
+    let (endpoint, auth) = smtp::load_connection(&paths.credentials_dir, config).await?;
 
     let mut to = Vec::new();
     let mut cc = Vec::new();
@@ -195,7 +161,7 @@ async fn send_via_smtp(
     };
 
     smtp::send_message(
-        &SmtpEndpoint { host, port, tls },
+        &endpoint,
         &auth,
         &outgoing,
     )
