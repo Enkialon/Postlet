@@ -17,7 +17,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  sent: [item: MessageWithRecipients];
+  sent: [result: import('../../domain/dto').ComposeSendResult];
   modeChange: [mode: 'compact' | 'full'];
 }>();
 
@@ -219,6 +219,7 @@ async function doSend(): Promise<void> {
 
   const result = await send(mailEditor.getHtml());
   if (!result) return;
+  // 入队成功才清空编辑器；queued 不等于已送达
   mailEditor.clear();
   syncCcBccVisibility();
   if (mode.value === 'full') collapse();

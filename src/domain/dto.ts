@@ -256,6 +256,12 @@ export interface ImportAttachmentCommand {
   content_base64: string;
 }
 
+/** 发送结果：入队状态 + 本地消息（queued 不等于已送达） */
+export interface ComposeSendResult {
+  message: import('./entities').MessageWithRecipients;
+  send_state: import('./types').SendState;
+}
+
 /** 写信收件人（标签展示名 + 地址） */
 export interface ComposeRecipientRef {
   address: EmailAddress;

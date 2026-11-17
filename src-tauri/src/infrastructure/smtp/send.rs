@@ -179,6 +179,75 @@ fn build_body(builder: MessageBuilder, mail: &SmtpOutgoing) -> Result<Message, I
     })
 }
 
+/// 直接投递已持久化的 MIME 字节；envelope 决定 RCPT（含 Bcc），不再重新构造内容。
+pub async fn send_raw_message(
+    endpoint: &SmtpEndpoint,
+    auth: &SmtpAuth,
+    mime: &[u8],
+    envelope: &crate::infrastructure::mail::outbound_content::SnapshotEnvelope,
+) -> Result<SendResult, InfraError> {
+    use lettre::address::Envelope;
+
+    if matches!(auth, SmtpAuth::OAuth2 { .. }) {
+        return Err(InfraError::Auth {
+            message: "通用 SMTP V1 不支持 OAuth2，请使用密码或邮箱授权码".into(),
+        });
+    }
+    if endpoint.tls == MailTlsMode::Plain {
+        return Err(InfraError::Remote {
+            message: "SMTP 明文连接已禁用，请使用隐式 TLS 或 STARTTLS".into(),
+            retryable: false,
+        });
+    }
+
+    let to: Vec<lettre::Address> = envelope
+        .to
+        .iter()
+        .chain(envelope.cc.iter())
+        .chain(envelope.bcc.iter())
+        .filter_map(|r| r.address.parse().ok())
+        .collect();
+    let from: lettre::Address = envelope.from.parse().map_err(|_| InfraError::Remote {
+        message: "无效发件地址".into(),
+        retryable: false,
+    })?;
+    let envelope = Envelope::new(Some(from), to).map_err(|e| InfraError::Remote {
+        message: format!("构造投递 envelope 失败: {e}"),
+        retryable: false,
+    })?;
+
+    let tls_params = TlsParameters::new(endpoint.host.clone()).map_err(|e| InfraError::Network {
+        message: format!("SMTP TLS 参数失败: {e}"),
+    })?;
+    let builder = match endpoint.tls {
+        MailTlsMode::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(&endpoint.host)
+            .map_err(|e| InfraError::Network {
+                message: format!("SMTP relay 失败: {e}"),
+            })?
+            .port(endpoint.port)
+            .tls(Tls::Wrapper(tls_params)),
+        MailTlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::relay(&endpoint.host)
+            .map_err(|e| InfraError::Network {
+                message: format!("SMTP relay 失败: {e}"),
+            })?
+            .port(endpoint.port)
+            .tls(Tls::Required(tls_params)),
+        MailTlsMode::Plain => unreachable!("明文在连接前已被拒绝"),
+    };
+    let transport = match auth {
+        SmtpAuth::Password { username, password } => builder
+            .credentials(Credentials::new(username.clone(), password.clone()))
+            .timeout(Some(Duration::from_secs(60)))
+            .build(),
+        SmtpAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
+    };
+
+    match transport.send_raw(&envelope, mime).await {
+        Ok(_) => Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data)),
+        Err(err) => Err(classify_smtp_error(&err)),
+    }
+}
+
 /// 将 lettre 错误映射为「不可自动重试 / 可重试 / 结果不确定」。
 ///
 /// 与锁定版本 lettre 0.11.23 的 `smtp::Error` API 对应：

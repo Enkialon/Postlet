@@ -1,8 +1,8 @@
 //! 本地写信用例：SQLite 草稿 + 受管理附件引用；发送仍拒绝附件直至 Task 08。
 
 use crate::application::dto::{
-    ComposeAttachmentDraft, ComposeDraft, ComposeRecipientRef, ImportAttachmentCommand,
-    SaveComposeDraftCommand, SendComposedMailCommand,
+    ComposeAttachmentDraft, ComposeDraft, ComposeRecipientRef, ComposeSendResult,
+    ImportAttachmentCommand, SaveComposeDraftCommand, SendComposedMailCommand,
 };
 use crate::application::error::{AppError, AppErrorCode};
 use crate::application::use_cases::attachment_use_case;
@@ -409,7 +409,7 @@ pub async fn send(
     db: &SqlitePool,
     paths: &AppPaths,
     cmd: SendComposedMailCommand,
-) -> Result<MessageWithRecipients, AppError> {
+) -> Result<ComposeSendResult, AppError> {
     if !cmd.attachments.is_empty() {
         return Err(AppError::validation(
             "附件内容存储尚未接通发送通道，无法发送含附件的邮件；草稿已保留",
@@ -515,7 +515,8 @@ pub async fn send(
         references: references.clone(),
         attachments: attachment_bytes,
     };
-    let (_snapshot_id, internet_message_id) = persist_snapshot(&mut tx, paths, &snapshot_input).await?;
+    let (snapshot_id, internet_message_id) =
+        persist_snapshot(&mut tx, paths, &snapshot_input).await?;
 
     let t = now_ms();
     let message_id = MessageId::new(next_local_id("msg"));
@@ -585,6 +586,28 @@ pub async fn send(
         t,
     )
     .await?;
+    // 发送任务与消息/快照/草稿删除同事务入队；入队成功才清理草稿
+    let task = crate::domain::entities::SendTask {
+        task_id: format!("send-{}", Uuid::new_v4().as_hyphenated()),
+        account_id: cmd.account_id.clone(),
+        message_id: message_id.clone(),
+        content_version: 1,
+        snapshot_id,
+        state: crate::domain::entities::SendState::Queued,
+        attempt_id: None,
+        claim_token: None,
+        lease_until: None,
+        attempts: 0,
+        next_attempt_at: None,
+        last_error_code: None,
+        last_error: None,
+        accepted_at: None,
+        created_at: t,
+        updated_at: t,
+    };
+    crate::infrastructure::repository::send_tasks::enqueue(&mut tx, &task)
+        .await
+        .map_err(AppError::from)?;
     attachments::delete_draft(&mut tx, &cmd.account_id, &cmd.session_id).await?;
     accounts::bump_change_version(&mut tx, &cmd.account_id).await?;
     tx.commit().await?;
@@ -599,13 +622,8 @@ pub async fn send(
         .await;
     }
 
-    let _ = crate::application::use_cases::outbound_use_case::flush_pending_message(
-        db,
-        paths,
-        &cmd.account_id,
-        &message_id,
-    )
-    .await;
-
-    Ok(bundle)
+    Ok(ComposeSendResult {
+        message: bundle,
+        send_state: crate::domain::entities::SendState::Queued,
+    })
 }

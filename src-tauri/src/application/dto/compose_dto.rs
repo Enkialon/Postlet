@@ -61,6 +61,13 @@ pub struct SaveComposeDraftCommand {
     pub attachments: Vec<ComposeAttachmentDraft>,
 }
 
+/// 发送结果：消息 + 队列状态（入队不等于已送达）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ComposeSendResult {
+    pub message: crate::domain::entities::MessageWithRecipients,
+    pub send_state: crate::domain::entities::SendState,
+}
+
 /// 发送写信内容
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SendComposedMailCommand {

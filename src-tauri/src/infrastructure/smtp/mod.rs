@@ -2,7 +2,9 @@
 
 mod send;
 
-pub use send::{send_message, SmtpAuth, SmtpEndpoint, SmtpOutgoing, SmtpSendResult};
+pub use send::{
+    send_message, send_raw_message, SmtpAuth, SmtpEndpoint, SmtpOutgoing, SmtpSendResult,
+};
 
 pub async fn load_connection(
     credentials_dir: &std::path::Path,

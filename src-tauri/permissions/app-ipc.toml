@@ -43,4 +43,5 @@ commands.allow = [
   "compose_save_draft",
   "compose_clear_draft",
   "compose_send",
+  "get_send_state",
 ]

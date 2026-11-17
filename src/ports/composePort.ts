@@ -1,12 +1,12 @@
 import type {
   ComposeAttachmentDraft,
   ComposeDraft,
+  ComposeSendResult,
   ImportAttachmentCommand,
   SaveComposeDraftCommand,
   SendComposedMailCommand,
 } from '../domain/dto';
-import type { AccountId, SessionId } from '../domain/types';
-import type { MessageWithRecipients } from '../domain/entities';
+import type { AccountId, MessageId, SendState, SessionId } from '../domain/types';
 
 /** 写信 / 草稿入站端口 */
 export interface ComposePort {
@@ -20,6 +20,11 @@ export interface ComposePort {
   importAttachment(
     cmd: ImportAttachmentCommand,
   ): Promise<ComposeAttachmentDraft>;
-  /** 发送后返回新建的 outbound 邮件聚合 */
-  send(cmd: SendComposedMailCommand): Promise<MessageWithRecipients>;
+  /** 入队发送；返回 queued 状态与本地消息（不等于服务器已接受） */
+  send(cmd: SendComposedMailCommand): Promise<ComposeSendResult>;
+  /** 查询某封本地发送邮件的队列状态 */
+  getSendState(
+    accountId: AccountId,
+    messageId: MessageId,
+  ): Promise<SendState | null>;
 }

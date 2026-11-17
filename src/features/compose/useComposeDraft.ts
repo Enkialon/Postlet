@@ -232,7 +232,10 @@ export function useComposeDraft() {
     );
   }
 
-  async function send(bodyHtml: string): Promise<MessageWithRecipients | null> {
+  /** 返回入队结果（queued 不代表服务器已接受） */
+  async function send(
+    bodyHtml: string,
+  ): Promise<import('../../domain/dto').ComposeSendResult | null> {
     const aid = accountId.value;
     const sid = sessionId.value;
     if (!aid || !sid) return null;

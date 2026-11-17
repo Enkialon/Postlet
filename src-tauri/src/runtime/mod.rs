@@ -9,6 +9,7 @@ pub mod mail_sync;
 pub mod mail_sync_scheduler;
 pub mod mail_watcher;
 pub mod mail_watchers;
+pub mod send_worker;
 pub mod accounts;
 
 pub use change_dispatcher::ChangeDispatcher;

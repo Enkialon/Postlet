@@ -7,6 +7,7 @@ import type {
   CursorPage,
   DeleteMessagesCommand,
   ComposeAttachmentDraft,
+  ComposeSendResult,
   HideGroupCommand,
   EnsureGroupSessionCommand,
   EnsurePrivateSessionCommand,
@@ -45,6 +46,7 @@ import type {
   EmailAddress,
   GroupId,
   MessageId,
+  SendState,
   SessionId,
 } from '../../domain/types';
 import { invoke } from './invoke';
@@ -152,7 +154,9 @@ export function createTauriPorts(): AppPorts {
       importAttachment: (cmd: ImportAttachmentCommand) =>
         invoke<ComposeAttachmentDraft>('compose_import_attachment', { cmd }),
       send: (cmd: SendComposedMailCommand) =>
-        invoke<MessageWithRecipients>('compose_send', { cmd }),
+        invoke<ComposeSendResult>('compose_send', { cmd }),
+      getSendState: (accountId: AccountId, messageId: MessageId) =>
+        invoke<SendState | null>('get_send_state', { accountId, messageId }),
     },
     group: {
       listGroups: (query: GroupListQuery) =>

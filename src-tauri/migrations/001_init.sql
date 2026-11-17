@@ -400,3 +400,33 @@ CREATE TABLE snapshot_attachments (
 
 CREATE INDEX idx_snapshot_attachments_content
     ON snapshot_attachments(account_id, content_id);
+
+-- Task 08：发送任务（阶段/尝试/租约/错误）；发送状态不再复用消息同步状态
+CREATE TABLE send_tasks (
+    task_id         TEXT NOT NULL,
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    message_id      TEXT NOT NULL,
+    content_version INTEGER NOT NULL DEFAULT 1,
+    snapshot_id     TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'queued'
+        CHECK(state IN ('queued','sending','accepted','retryable','failed','uncertain','cancelled')),
+    attempt_id      TEXT,
+    claim_token     TEXT,
+    lease_until     INTEGER,
+    attempts        INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+    next_attempt_at INTEGER,
+    last_error_code TEXT,
+    last_error      TEXT,
+    accepted_at     INTEGER,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (account_id, task_id),
+    FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, snapshot_id) REFERENCES outbound_snapshots(account_id, snapshot_id)
+);
+
+CREATE INDEX idx_send_tasks_due
+    ON send_tasks(state, next_attempt_at);
+
+CREATE INDEX idx_send_tasks_message
+    ON send_tasks(account_id, message_id);

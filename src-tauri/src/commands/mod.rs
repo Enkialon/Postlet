@@ -2,7 +2,7 @@
 
 use crate::query_page::CursorPage;
 use crate::application::dto::{
-    ComposeAttachmentDraft, ComposeDraft, ContactListQuery, ContactSyncProgress,
+    ComposeAttachmentDraft, ComposeDraft, ComposeSendResult, ContactListQuery, ContactSyncProgress,
     CreateManualGroupCommand, DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
     EnsurePrivateSessionCommand, GroupListQuery, ImportAttachmentCommand, MailSyncProgress,
     MarkMessagesReadCommand, MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
@@ -17,7 +17,8 @@ use crate::application::use_cases::{
     message_use_case, session_use_case, sync_use_case,
 };
 use crate::domain::entities::{
-    Account, Contact, Group, GroupParticipant, MailFolderSyncState, MessageWithRecipients, Session,
+    Account, Contact, Group, GroupParticipant, MailFolderSyncState, MessageWithRecipients,
+    SendState, Session,
 };
 use crate::domain::value_objects::{AccountId, ContactId, GroupId, MessageId, SessionId};
 use crate::AppState;
@@ -448,6 +449,31 @@ pub async fn compose_import_attachment(
 pub async fn compose_send(
     state: State<'_, AppState>,
     cmd: SendComposedMailCommand,
-) -> Result<MessageWithRecipients, AppError> {
-    compose_use_case::send(&state.db, &state.paths, cmd).await
+) -> Result<ComposeSendResult, AppError> {
+    let result = compose_use_case::send(&state.db, &state.paths, cmd).await?;
+    // 入队即派发一次；失败由 send_worker 的周期 tick 兜底
+    crate::runtime::send_worker::kick(
+        state.db.clone(),
+        state.paths.clone(),
+        state.changes.clone(),
+        state.mail_sync_gate.clone(),
+    );
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_send_state(
+    state: State<'_, AppState>,
+    account_id: String,
+    message_id: String,
+) -> Result<Option<SendState>, AppError> {
+    let mut conn = state.db.acquire().await?;
+    let task = crate::infrastructure::repository::send_tasks::get_for_message(
+        &mut conn,
+        &AccountId::new(account_id),
+        &crate::domain::value_objects::MessageId::new(message_id),
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(task.map(|t| t.state))
 }

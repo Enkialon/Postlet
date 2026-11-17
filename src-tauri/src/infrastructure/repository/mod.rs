@@ -9,5 +9,6 @@ pub mod mail_transports;
 pub mod messages;
 pub mod mutations;
 pub mod outbound_snapshots;
+pub mod send_tasks;
 pub mod sessions;
 mod rows;

@@ -37,3 +37,13 @@ export type ReceiveProtocol = 'graph' | 'imap';
 export type SendProtocol = 'graph' | 'smtp';
 /** TLS 模式（明文仅兼容历史；通用账号入口不提供） */
 export type MailTlsMode = 'implicit' | 'starttls' | 'plain';
+
+/** 发送任务状态（与 Rust SendState 对齐）；只有 accepted 才算已发送 */
+export type SendState =
+  | 'queued'
+  | 'sending'
+  | 'accepted'
+  | 'retryable'
+  | 'failed'
+  | 'uncertain'
+  | 'cancelled';

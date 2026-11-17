@@ -59,6 +59,12 @@ pub fn run() {
                 mail_sync_gate.clone(),
             );
             runtime::aggregate_scheduler::spawn(db.clone(), changes.clone());
+            runtime::send_worker::spawn(
+                db.clone(),
+                paths.clone(),
+                changes.clone(),
+                mail_sync_gate.clone(),
+            );
             // 启动核对：暂存/孤儿/无引用附件（忙锁则跳过单个账号）
             {
                 let db_reconcile = db.clone();
@@ -133,6 +139,7 @@ pub fn run() {
             commands::compose_clear_draft,
             commands::compose_import_attachment,
             commands::compose_send,
+            commands::get_send_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

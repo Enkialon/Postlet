@@ -26,7 +26,7 @@ import type {
   GroupParticipant,
   MessageWithRecipients,
 } from '../../domain/entities';
-import type { SessionListItem } from '../../domain/dto';
+import type { ComposeSendResult, SessionListItem } from '../../domain/dto';
 import { asAppError } from '../../shared/errors/asAppError';
 
 /** 估算行高（含气泡间距）；实际高度由 measureElement 校正 */
@@ -452,7 +452,7 @@ async function confirmDeleteMessage(): Promise<void> {
   }
 }
 
-async function onMailSent(_item: MessageWithRecipients): Promise<void> {
+async function onMailSent(_result: ComposeSendResult): Promise<void> {
   pendingStickBottom.value = true;
   await loadInitial();
   void refreshConversations();

@@ -5,14 +5,11 @@ import type {
   ComposeRecipientRef,
   ImportAttachmentCommand,
   SaveComposeDraftCommand,
+  ComposeSendResult,
   SendComposedMailCommand,
 } from '../../domain/dto';
-import type {
-  Message,
-  MessageRecipient,
-  MessageWithRecipients,
-} from '../../domain/entities';
-import type { AccountId, MessageId, SessionId } from '../../domain/types';
+import type { Message, MessageRecipient } from '../../domain/entities';
+import type { AccountId, MessageId, SendState, SessionId } from '../../domain/types';
 import type { MemoryStore } from './memoryStore';
 
 function stripHtml(html: string): string {
@@ -213,7 +210,17 @@ export class MemoryComposeAdapter implements ComposePort {
     return { ...att };
   }
 
-  async send(cmd: SendComposedMailCommand): Promise<MessageWithRecipients> {
+  /** 内存适配器：入队后立即视为 queued；无真实远端 */
+  private sendStates = new Map<string, SendState>();
+
+  async getSendState(
+    accountId: AccountId,
+    messageId: MessageId,
+  ): Promise<SendState | null> {
+    return this.sendStates.get(`${accountId}:${messageId}`) ?? null;
+  }
+
+  async send(cmd: SendComposedMailCommand): Promise<ComposeSendResult> {
     if (cmd.attachments.length > 0) {
       this.store.failValidation(
         '附件内容存储尚未接通发送通道，无法发送含附件的邮件；草稿已保留',
@@ -316,6 +323,10 @@ export class MemoryComposeAdapter implements ComposePort {
     this.releaseDraftRefs(cmd.account_id, cmd.session_id);
     this.drafts.delete(this.draftKey(cmd.account_id, cmd.session_id));
 
-    return { message, recipients };
+    this.sendStates.set(`${cmd.account_id}:${messageId}`, 'queued');
+    return {
+      message: { message, recipients },
+      send_state: 'queued',
+    };
   }
 }
