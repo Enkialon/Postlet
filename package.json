@@ -10,6 +10,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:mail-content": "playwright test",
+    "test:mail-content:tauri": "node tests/mail-content/tauri-webview-verify.mjs",
     "tauri": "tauri",
     "i18n:extract": "node plugins/vite-plugin-auto-i18n/extract.mjs",
     "test:conversation-order": "npx --yes tsx src/features/conversations/conversationListOrder.selftest.ts"

@@ -1,0 +1,43 @@
+{
+  "status": "ok",
+  "platform": "win32",
+  "webview": "WebView2",
+  "mode": "release",
+  "exePath": "V:\\project\\github\\Postlet\\src-tauri\\target\\release\\postlet.exe",
+  "cdpPort": 9222,
+  "parentHasRealTauri": true,
+  "beforeAuthorizeRequests": [],
+  "probe": {
+    "sandbox": "allow-same-origin",
+    "sandboxTokens": [
+      "allow-same-origin"
+    ],
+    "allowsScripts": false,
+    "allowsSameOrigin": true,
+    "frameUrl": "about:srcdoc",
+    "parentHasTauriBridge": true,
+    "frameHasOwnTauriBridge": true,
+    "frameTauriAccessError": null,
+    "mailScriptMarker": false,
+    "parentInjectedScriptRan": false,
+    "ipcProbeResult": "no-ipc-side-effect",
+    "imgWithSrc": 0,
+    "dangerousNodes": 2
+  },
+  "verifiedOn": [
+    "Windows 10/11 WebView2 via CDP",
+    "release postlet.exe + sandbox fixture mirroring MailBodyView"
+  ],
+  "residual": [
+    "macOS WKWebView and Linux WebKitGTK not covered by this harness.",
+    "Release mode uses a standalone sandbox fixture mirroring MailBodyView; full Vue MailBodyView path is covered in dev mode + Playwright.",
+    "Packaged NSIS/MSI installer UI smoke is not automated here; release exe isolation is the production WebView binary check."
+  ],
+  "bypassSanitizerRemoteRequests": [
+    {
+      "url": "https://tracker.invalid/bypass",
+      "resourceType": "image"
+    }
+  ],
+  "generatedAt": "2026-11-17T10:12:34.708Z"
+}
