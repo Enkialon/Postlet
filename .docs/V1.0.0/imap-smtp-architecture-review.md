@@ -1,298 +1,472 @@
-# IMAP / SMTP 与架构复核及修改建议
+# IMAP / SMTP 与架构待解决问题
 
-## 1. 复核基线与结论
+## 1. 当前复核结果
 
-- 复核日期：2026-11-16。
-- 代码基线：`91e92a6c47620848e51dbf8067adf3ac7ffc4eec`；开始复核时工作区干净。
-- 范围：IMAP 连接、认证、同步、解析、IDLE、远端变更；SMTP 构造与发送；账号、写信、同步用例；后台调度；相关模型、仓储、前端附件入口及现有测试。
-- 方法：重新读取当前代码并检索调用点，核对协议规范与锁定版本 `imap 2.4.1` 的 API。未运行测试、未连接真实邮箱；验收场景均为待实现的验证要求，不表示已经通过。
-- 本次仅新增本文档，没有修改业务代码。
+- 更新日期：2026-11-17。
+- 复核基线：`61b16ab46eb2052797fcf03ad3555a374fad214a`，证据以本轮最后读取的当前源码为准；本次只修改本文档。
+- 原 18 个实现问题：**4 个原始缺陷已解决并删除正文，2 个部分解决，11 个未解决，1 个 V1 暂缓（I-09）**。暂缓不代表已修复。
+- 本轮新增 **I-19 / P1**：HTML 邮件默认允许远程资源，内容隔离与 CSP 保护不足。静态代码已确认配置与执行路径，未验证实际跟踪请求或 XSS/IPC 利用。
+- 当前 V1 实现问题共 **14 个：12 个未解决、2 个部分解决；P1 为 7 个，P2 为 7 个**。另列 1 个 V1 暂缓实现项；其“显式拒绝通用 OAuth2 配置”要求仍由 A-05/I-17 纳入 V1，不随完整功能一起暂缓。
+- 原 6 个架构问题：均未完整解决，继续保留；它们与实现项有关联，不重复计入上面的实现问题 P1/P2 数量。
+- 下文仅列尚需处理的内容，编号沿用原文，因此存在跳号。部分修复项只描述剩余问题，不再沿用过时证据。
+- 本次补充修订保留以上问题数量、优先级及状态；新增的是待实现的规则和验收，不表示缺陷已修复。重点核对了 Message/RemoteMessage、mutation 仓储及执行、文件夹发现/同步、SMTP 发送和 ChangeDispatcher；跨条目规则统一见 §3“统一核心模型的不变量与操作决策表”。
+- 本轮重新读取相关源码、调用点和测试定义；只修改本文档，没有修改业务代码，没有重新运行测试或连接真实邮箱。保留此前复核记录的 17 项 Rust 测试通过结论，该历史记录不等于本次重新验证，也不等于所有协议行为已经实测。
 
-结论：会话优先、前端 Port/Adapter、领域层无 IO、协议字段路由和数据库事务这些基础可以保留；当前主要缺口集中在远端身份、同步完整性、发送状态和后台任务保障。存在会影响远端数据和用户操作结果的确定性缺陷，应先修复这些行为，再收敛架构。
+QQ 邮箱历史范围受限已经确认与账号“仅收取最近 30 天”设置有关，不把这一配置现象作为代码缺陷。当前代码使用 `UID SEARCH ALL` 与本地已下载 UID 求差集，最新优先每轮最多下载 200 封，每次 FETCH 最多 8 封，未完成历史主动续跑；不再以 high/low 游标排除下载候选。这是当前正确性基线，并非永久唯一算法；允许在发现进度、实际持久化和失败重试分离后，安全引入高水位增量发现。UID 不保证数字连续。
 
-优先级：P1 表示可能误操作远端、漏信、丢失发送内容或阻断关键能力；P2 表示一致性、性能、可维护性或能力完整性问题。本文中的“风险”表示满足所述条件时可能发生，不等于已经在真实邮箱复现。
+**统一模型与 V1 范围**：Postlet 以标准 IMAP/RFC 邮件能力为业务基线，所有协议共用本地 MessageId、SessionId、单一可选 RemoteLocation 和文件夹模型。Message 固定归属一个 Account、一个 Session，最多一个有效远端位置；不同账号/不同位置的实体独立，同位置重复同步幂等，不做内容去重。Graph 独有的 Immutable ID、conversationId、changeKey 不参与身份、受控移动关联、会话归属或其他业务正确性决策。Rust infrastructure 适配远端访问、操作定位和同步，输出统一事实；application 可按账号协议选择具体模块函数，但不解析 remote_key。前端 Port/Adapter 仍负责桌面入站。通用 IMAP/SMTP V1 仅支持密码、应用密码/邮箱授权码；不建设通用 OAuth2/XOAUTH2 生命周期，已实现的 Graph OAuth 保留。
 
-所有建议遵循根目录 [AGENTS.md](../../AGENTS.md)：按未上线 V1 直接修改正确模型；不保留旧 IPC、旧 schema 的兼容双轨；不引入 Repository/TransactionManager trait 对象；不新增 Rust `interfaces/` 层。
+**V1 已认可的策略**：只对 INBOX 建立 IDLE，所有勾选文件夹由约 60 秒的等待超时/轮询兜底同步。这个取舍本身不是问题，不要求为每个文件夹建立长连接。IDLE 已有进入监听、变化、超时与失败日志；日志中的“本批下载”不包含单纯 FLAGS 更新数量。
 
-## 2. 相比上次分析，当前已经改善的部分
+优先级：P1 为远端误操作、内容丢失或关键能力不可用；P2 为一致性、恢复、性能及能力完整性。风险条目均说明触发条件，不表示已经在真实邮箱发生。
 
-| 内容 | 最新代码证据 | 本次判断 |
+遵循 [AGENTS.md](../../AGENTS.md)：按未上线 V1 修改正确形态，不保留兼容双轨；domain 无 IO；Repository/用例继续使用模块函数和具体事务；不增加 Repository/TransactionManager trait 对象或 Rust `interfaces/` 层；前端遵循 Port → Adapter。
+
+下文 Rust 路径省略 `src-tauri/src/`；函数名用于稳定定位。
+
+## 2. 实现问题
+
+### I-01 / P1：单封删除可能扩大为整夹永久清理
+
+**状态**：未修复。
+
+**问题与影响**：删除目标 B 时，可能顺带永久清除同一文件夹中其他客户端已标记 `\Deleted` 的 A。
+
+**原因与依据**：`infrastructure/imap/client.rs::uid_delete` 给目标设置 Deleted 后，`uid_expunge` 任何错误均回退为普通 `session.expunge()`。普通 EXPUNGE 清理的是整夹所有 Deleted 邮件，网络错误也会触发扩大范围。
+
+**解决方案**：取消普通 EXPUNGE 回退。先探测 UIDPLUS/MOVE 等能力，再根据产品语义选择指定 UID 永久删除，或移动至明确配置/发现的 Trash。不具备安全能力时返回能力错误或保留待处理状态。设置 Deleted 后失败必须记录已发生的副作用，不将其当成完全未执行。
+
+**验收**：预置其他 Deleted 邮件；模拟不支持 UID EXPUNGE、NO 和断线，本次删除均不得额外清除其他邮件。
+
+### I-06 / P1：IMAP 身份与待推操作缺少 UIDVALIDITY
+
+**状态**：未修复；同步检测 generation 变化并重新下载，并未解决身份和写操作问题。
+
+**问题与影响**：邮箱重建后相同 UID 代表另一封邮件，可能命中旧记录，或让旧待删除/待已读操作作用于新邮件。
+
+**原因与依据**：`imap/parse.rs::remote_id` 仍为 `imap:{folder}:{uid}`；`sync_folder` 仅按 generation 决定是否信任 known 集合；`uid_set_seen/uid_delete` SELECT 后不校验预期 UIDVALIDITY。`sync_use_case::upsert_remote_message` 仍按同一个 graph_id 查找，且会保留旧 session 或拒绝复活旧 DeletedRemote 记录。
+
+**解决方案**：采用 A-01 的统一远端定位字段，**一个 Message 最多一个有效 RemoteLocation**，位置唯一键为 `(account_id, folder_id, remote_key)`。同位置重复同步更新同一 Message；不同位置创建独立 Message。所有移动均按源位置移除、目标位置新增处理，不替换原 Message 的位置或保留其 MessageId。IMAP Adapter 将 UIDVALIDITY + UID 编码为不透明 remote_key；Graph Adapter 使用 API 操作必需的普通消息 ID。业务层不解析标识，不依赖 Graph 专有身份能力。
+
+IMAP 文件夹同步状态另存 UIDVALIDITY。generation 变化时失效该夹旧代定位、游标及引用旧定位的待执行操作；旧 Message 保留为无有效位置，新代邮件按新位置创建 Message，不能用新代相同 UID 继承旧身份、已读意图或删除任务。Adapter 必须在执行写操作的同一选夹连接上 SELECT 校验预期 generation，不匹配则拒绝并请求同步。Graph/IMAP、Postlet 发起或外部发起的移动都按源位置移除、目标位置新增处理；即使 remote_key 字符串未变，folder_id 改变也属于不同位置。RFC Message-ID、In-Reply-To、References 仅用于关系/会话判断，不用于跨位置合并实体。
+
+**验收**：旧代与新代 UID 10 的 remote_key、MessageId 均不同，旧任务不能改动新代，旧删除标记不能阻止新信入库。Graph 普通 ID 改变、旧 ID 不可定位时不能把旧任务重定向到其他消息。两种协议同位置重复导入均幂等；位置消失不直接永久删除本地 Message。所有移动均使源实体失去有效位置，目标按其位置幂等建立独立 Message；复制保留源实体并在目标建立独立 Message。业务层不解析 remote_key，不读取 Graph 专有身份属性。
+
+### I-07 / P1：附件只有元数据，发送时被静默丢弃
+
+**状态**：未修复。
+
+**问题与影响**：用户选了附件，消息显示 has_attachments，但收件人收不到；仅附件邮件可能发成空邮件。
+
+**原因与依据**：`src/features/compose/useComposeDraft.ts::addAttachments` 仅保存 name/size/mime；`application/dto/compose_dto.rs::ComposeAttachmentDraft` 无内容引用；`outbound_use_case::send_via_smtp` 固定传 `attachments: Vec::new()`。Graph 外发模型也未接通这些附件。
+
+**一致性风险**：附件由 SQLite 元数据/稳定引用和文件系统实际内容两部分组成，两者不共享事务。先写文件后 SQL 提交失败会留下孤儿文件；先提交引用后写文件失败会留下无效引用。前端临时 File/路径不能支撑重启和发送重试；共享内容若随一封消息删除可能误删其他消息仍在引用的文件。这些是附件存储实现必须覆盖的失败路径，当前尚无完整内容存储流程，不将其描述为已复现的数据丢失。
+
+**解决方案**：
+
+1. 先定义统一附件实体、稳定引用和 ComposePort 导入契约，由 Rust 管理内容，Graph/IMAP/SMTP 共用同一存储生命周期，不依赖前端临时路径。
+2. 内容先进入临时区域，校验归属、长度/完整性等后，在同一受管理文件系统内原子移动到最终位置；原子移动不等于跨 SQLite 原子事务或崩溃持久性，需明确平台持久化保障。
+3. SQLite 事务内一起保存消息、附件引用和发送任务；仅当内容已持久化、可读取且引用提交成功，任务才允许实际发送。每次重试前重新核验可用性，缺失则失败并提示，绝不退化成不带附件发送。
+4. SQL 失败时清理未引用内容；崩溃重启核对暂存、孤儿文件和失效引用。并发导入/发送与回收要协调，删除前检查所有持久化引用及运行中任务，不能只靠文件名或一封消息的删除动作回收。
+5. 明确草稿删除、消息删除、发送失败、账号退出、取消和崩溃恢复的保留/回收时机；退出不应无条件删除仍被消息或重试任务引用的内容。接通前明确拒绝实际发送含附件的邮件。
+
+**验收**：二进制/同名/仅附件及接收端字节一致；注入临时写失败、移动失败、SQL 回滚、引用提交后内容缺失、发送中断和回收竞态。在每个边界模拟退出/崩溃并重启，重试内容仍可用、孤儿可回收、无效引用可见；多消息共享附件时删除其中一封不得破坏其他引用，不得静默发送不完整内容。
+
+### I-08 / P1：发送错误被忽略，没有可恢复的发送任务
+
+**状态**：未修复。
+
+**问题与影响**：失败后 UI 仍可能按成功流程清空草稿，邮件长留 PendingLocal；并发或远端接受后本地写失败可能导致重复发送。
+
+**原因与依据**：`compose_use_case::send` 先提交消息并清除内存草稿，再 `let _ = flush_pending_message(...).await`。全局检索仍只有此处调用，未发现定时恢复 PendingLocal 的入口。`outbound_use_case::flush_pending_message` 无认领/lease，成功后才写 Synced，返回到 UI 的 bundle 仍是发送前状态。
+
+**解决方案**：消息与持久化发送任务同事务入队；worker 条件认领，记录 lease、尝试次数、下次时间、结构化错误。区分排队、发送中、服务器接受、失败、结果不确定；首次发送前保存稳定 Message-ID 和内容，重试复用。永久拒绝停止自动重试，瞬时失败退避，DATA 最终应答丢失不盲目重发。UI 明确区分“已入队”和“发送成功”，提交后分发准确状态。
+
+**边界**：SMTP 没有普遍可用的幂等键；稳定 Message-ID 与任务认领不能保证严格恰好一次。
+
+服务器接受只表示接收了投递责任，不等于最终到达收件箱；V1 不建设通用送达回执状态机，UI 使用“服务器已接受”语义，不声称最终送达。发送任务在网络调用前持久化“发送中/尝试标识”；已开始传输而没有确定拒绝/接受证据的崩溃恢复进入“结果不确定”，不能只因 lease 到期重发。接受证据应尽快保存；若保存失败，内存仍在时只重试本地确认，崩溃后无法证明接受则保持不确定，提示用户核对。Sent 副本只能按 §3 规则辅助核对，不把“暂未找到”当作未发送证明。A-06 定义发送、归档和同步的独立状态。
+
+**验收**：离线、重启恢复、并发认领、认证拒绝、服务器接受后数据库失败、最终应答丢失；内容不丢，状态准确。
+
+### I-10 / P1：IMAP 已读/删除失败后没有周期重试
+
+**状态**：未修复；网页已读能够拉回本地，不代表本地操作失败能够补推。
+
+**问题与影响**：离线更改已读或删除，第一次推送失败后可能长期不再执行。未完成的本地已读意图还会在拉取时优先于远端 FLAGS，造成状态长期不一致。
+
+**原因与依据**：`message_use_case::spawn_flush_due_mutations` 只在用户动作后触发一次；失败记录 available_at，但周期性的 `flush_due_mutations` 只出现在筛选 Graph 账号的 `runtime/mail_sync_scheduler.rs`。IMAP watcher 仍只调用收信同步。`sync_use_case::upsert_remote_message` 优先 pending.desired_is_read。
+
+**解决方案**：将 mutation 恢复纳入所有已登录账号的公共调度，与收信、发送分开失败处理。增加认领/版本保护，避免即时与定时任务并发覆盖用户最新意图；按错误类别退避或停止，失败可见，退出后不派发。
+
+业务意图与远端执行目标必须分开持久化：每项 mutation 保存 AccountId、MessageId、意图版本，以及入队时唯一位置的 folder_id、remote_key、预期 generation/定位修订号、目标值和执行阶段；不得到执行时才读取 Message 的“当前 folder/id”重新选目标。没有有效位置时不得派发远端已读/删除，保留本地操作或返回可见的不可操作结果。generation 失效、位置消失、连续反向操作、远端成功后本地失败的共同规则见 §3 决策表。当前 `mutations::acknowledge/record_failure` 已按 version 条件更新，但这只保护本地确认，不能阻止旧网络请求晚到覆盖远端新值；仍需按 Message 串行、派发前检查版本及完成后补推最新值。
+
+**验收**：IMAP 离线改已读/删除，恢复网络且无新用户动作也会补推；覆盖重启与连续反向更改场景。
+
+增加目标安全验收：入队后移动/删除位置、UIDVALIDITY 改变或文件夹角色改变，旧任务不得改目标；已读 true→false 的旧请求晚到不得确认/清除新版本，最终远端收敛到 false。远端成功而本地确认回滚后重启，按 §3 的操作类别恢复，不重复执行未知结果的移动/复制。
+
+### I-11 / P2：SMTP 回复头、纯文本和已发送副本缺少闭环
+
+**状态**：未修复。
+
+**问题与影响**：回复线程可能断开；纯文本阅读器只看到截断预览；不自动保存 Sent 的服务端没有副本，自动保存的服务端后续同步又可能出现重复本地记录。
+
+**原因与依据**：`outbound_use_case::send_via_smtp` 从本信 internet_message_id 取 In-Reply-To/References，而 compose 把父信 ID 存在 in_reply_to。text/plain 取 body_preview。`smtp/send.rs` 结果只有 accepted，本次生成的 Message-ID 未保存；没有 Sent APPEND/关联流程。
+
+**解决方案**：持久化本信稳定 Message-ID；正确使用父信 in_reply_to，单独构造 References 链；plain 来自完整正文。明确服务器自动保存或客户端 APPEND 的账号策略，复用同一 MIME；归档失败只重试归档，不重新 SMTP 发送。Sent 副本按其位置幂等入库，不与其他位置的 Message 合并，不按 Message-ID 去重。
+
+发送接受、投递结果、Sent 归档和位置同步分别记状态，完整契约见 A-06。账号归档策略明确为“服务器保存”或“客户端 APPEND”；未知时要求配置确认，不同时盲用两种策略。客户端 APPEND 仅在服务器接受已确认后执行，使用首次发送前持久化的归档 MIME；保留相同正文/附件/Message-ID，SMTP envelope 与 Bcc 隐私处理另存，不因重试重新生成 Date、boundary 或内容。APPENDUID 可在 Adapter 内映射为确定目标位置；未返回映射或最终应答丢失时先核对 Sent，不能盲目再次 APPEND。服务器保存模式不因短期未同步到副本就自动 APPEND，超时显示归档待核对。
+
+发送任务与 Sent Message 的关联只是任务确认/展示关系，不是跨位置去重：有本客户端 APPEND/Graph 操作返回的确定位置时，可将**尚无位置**的本地发送 Message 绑定该位置；若该位置已被同步建成另一个 Message，则保留既有实体，任务引用它，原无位置发送记录退出普通会话展示，不合并两个 Message。没有确定位置映射的自动保存副本按独立 Message 入库；已接受的本地发送记录仅在发送状态区保留，普通会话以远端 Sent Message 为准，尚未同步副本时显示“等待已发送副本”。不为隐藏重复按 Message-ID/正文猜关联。归档任务无确定证据时保持待核对，不删除任何副本，也不阻塞 Sent 消息的正常同步展示。
+
+**验收**：新信/回复头正确，长正文 plain 完整，两种 Sent 行为可归档，归档失败不重发。Sent 同位置重复同步幂等，不同位置的副本始终为不同 Message；发送给另一个已登录账号时 Sent 与 INBOX 独立。缺失/重复 Message-ID、正文相同或仅回复关系均不合并实体；无位置发送记录与远端 Sent 的展示规则不产生两条普通会话记录。
+
+增加 SMTP 已接受但 APPEND 被拒/断线、APPEND 成功但本地回滚、服务器自动副本延迟/重复、相同内容多次发送及服务器改写正文的验收；归档恢复不得触发 SMTP，证据不全保持待核对。
+
+### I-12 / P2：MIME、特殊文件夹角色与日期语义不完整
+
+**状态**：未修复这些剩余问题；递归解析和基本预览已有，不再要求重做。
+
+**问题与影响**：文本/HTML 附件可能被误选为正文；附件状态不准确；草稿可能进入普通会话；收件排序受发送者 Date 影响；地址组成员遗漏。
+
+**原因与依据**：`imap/parse.rs::walk_parts` 递归取首个 plain/html，没有 Content-Disposition 和 multipart 结构选择；parse_rfc822 固定 has_attachments/is_draft=false、importance=Normal，received_at/sent_at 都为 header_date.or(internal_date_ms)。FLAGS 仅提取 Seen，push_role 仅处理 Single 地址。`imap/client.rs::discover_folder_tree` 只保存名称/父路径/delimiter，未保留 LIST 的 SPECIAL-USE 属性；`domain/entities/sync_state.rs::MailFolderSyncState` 无统一角色字段。Graph 侧已有 INBOX well-known 标注，但未形成完整角色模型；现有文件夹名称、默认勾选规则也不能替代角色的可靠识别。
+
+**解决方案**：
+
+- 保留现有递归解析，按 alternative/mixed/related 与 disposition 选择正文，独立收集附件和 inline/CID 引用；映射必要邮件 FLAGS；sent_at 使用 Date，received_at 优先 INTERNALDATE 并定义回退；展开地址组。预览转换使用成熟的 HTML 结构/实体处理。
+- 在统一文件夹模型中表达 `Inbox / Sent / Drafts / Trash / Junk / Archive / All / Custom`，不同协议 Adapter 转换成相同角色，不建立两套业务目录。
+- IMAP 优先使用服务器提供的 [RFC 6154 SPECIAL-USE 属性](https://www.rfc-editor.org/rfc/rfc6154.html#section-2)，如 `\Sent`、`\Drafts`、`\Trash`、`\Junk`、`\Archive`、`\All`。INBOX 有自身协议语义，不是 RFC 6154 新增的统一 `\Inbox` 属性；Custom 表示无已确定特殊角色。标准并不要求服务器用同一机制返回上述所有业务角色。
+- 识别顺序为服务器角色优先；缺失时允许用户手动指定；谨慎名称匹配只能作为待确认默认建议。保存来源，明确角色冲突/服务器信息变化后的确认策略。
+- 区分邮件 FLAG `\Draft` 与文件夹属性 `\Drafts`，不能只凭其中之一或目录名称替代全部业务判断。统一定义各角色的同步、归档和展示规则：Drafts/Trash/Junk 不误混入普通会话，Sent 参与外发展示，Archive/All 按下述范围处理。文件夹仍不是默认主导航。
+
+**重复展示策略（V1）**：每个 Message 只按自身当前文件夹角色决定范围。INBOX、Archive、Sent、Custom 的非草稿消息进入普通会话；Drafts、Trash、Junk 及带 Draft/Deleted 标志的消息进入相应范围。All 是可能重叠的汇总范围，已同步的 All Message 保留为独立实体，但不进入默认普通会话和未读计数；仅显式查看 All 范围时展示，并提示仅同步 All 不会填充普通会话。INBOX 与 Archive 同时存在相同内容时允许两条独立记录及独立未读计数，标注账号/文件夹来源，不按内容折叠或联动操作。这是展示过滤，不是底层去重，也不自动改变用户勾选的同步文件夹。角色变更只重算受影响消息/会话投影、校验旧任务，不改变身份；Sent 角色不单独证明作者身份或发送成功，外发方向仍按账号自身地址及可信发送任务判定。
+
+**验收**：嵌套 MIME、HTML 附件、CID、日期和地址组；服务器返回特殊属性、无 SPECIAL-USE、非英文/重命名目录、手动映射、歧义名称、角色冲突均可预测。分别测试 Draft FLAG 与 Drafts 属性：草稿、已发送、垃圾、删除目录识别正确，不错误混入普通会话；Graph/IMAP 同角色规则一致。INBOX/Archive/All 三个位置建立三个独立 Message，默认普通会话仅展示前两个，All 范围展示 All 实体；修改任一实体不改其他实体。仅勾选 All 的结果与提示符合上述契约。
+
+### I-13 / P2：同步提交和失败隔离不足；性能优化按需推进
+
+**状态**：部分修复。FLAGS 已按最多 200 个 UID 批量核对，逐封往返缺陷不再保留；剩余如下。
+
+**问题与影响**：一个文件夹失败可丢弃本轮其他夹尚未提交的下载结果；永久损坏邮件可能反复占据候选，整页均失败时阻断更旧历史。当前全量 UID/FLAGS 核对有随邮箱增长的开销，但是否构成实际性能瓶颈尚待基准测试，不能仅因使用全量算法就要求 V1 立即重构。
+
+**原因与依据**：`imap/session_ops.rs::sync_account_blocking` 将所有文件夹结果收集后一次返回，循环中使用 `?`；application 收到整个 batch 后才逐夹提交。`sync_folder` 每轮 SEARCH ALL 并核对所有已知 FLAGS；missing_imap_page 每轮取最新的缺失项，没有逐 UID 的失败记录/退避。如果最新候选一整页都永久失败，较旧项无法进入下载页；FETCH 网络错误也会中断整个调用。
+
+**解决方案与状态契约**：
+
+1. 正确性改进优先：application 按夹/批次提交、汇总失败；单 UID 记录尝试、退避及可见错误，让其他候选继续，失败不能当作完成。
+2. 分开保存三种事实：**远端 UID 发现进度**、**正文等所需内容实际下载并持久化完成状态**、**失败/待重试 UID**。进度、候选与失败记录须有明确的事务/恢复边界，不能只保存一个“成功最大 UID”代表所有事实。
+3. 首次同步/历史补齐继续使用 UID 集合差集、失败记录和主动续跑，防止中间缺口被遗漏。当前 `UID SEARCH ALL` + 差集保留为正确性基线，但不是永久唯一方案。
+4. 日常增量可在 UIDVALIDITY 不变时，由 IMAP Adapter 使用已发现最大 UID 或 UIDNEXT 等优化新邮件发现。UID 数字不连续，发现不代表下载成功；只有发现结果已可靠保存为候选/重试状态后才能推进对应发现进度。高水位不能让失败 UID 永久失去补抓机会。
+5. 增量发现不能替代 FLAGS 更新、远端删除检测、历史补漏和 generation 检查；保留周期集合一致性核对及失败补偿。generation 改变时旧发现进度和旧操作失效，按 I-06 恢复。
+6. 大邮箱优化以请求数、耗时、内存和服务端行为测试为依据；安全高水位、CONDSTORE/QRESYNC、核对频率等是可选演进，不要求 V1 立即全部实现，更不能以速度换漏信风险。
+
+**验收**：一个文件夹失败不抹掉其他已完成批次；最新整页坏信时仍能下载更旧有效邮件。未来增量优化需覆盖稀疏 UID、UIDNEXT 与实际候选有差异、发现后崩溃/下载失败、离线大量新增、旧信 FLAGS 变化/删除、周期补漏及 UIDVALIDITY 改变；最终与集合基线一致。先记录大邮箱性能数据再决定优化，不把尚未运行的性能测试写成既定故障。
+
+### I-14 / P2：监听任务缺少退出、取消和配置变更生命周期
+
+**状态**：部分修复。IDLE 已用 wait_with_timeout，等待约 60 秒后同步所有勾选夹；历史主动续跑、5 秒发现账号、监听日志均已有。仅保留生命周期问题。
+
+**问题与影响**：退出、切换协议、清理数据或替换凭据时，没有明确的任务终止与重建；已有连接可能继续存活，长期失败任务不能被统一回收。
+
+**原因与依据**：`runtime/mail_watcher.rs` 用永久 started 集合记账号，任务没有 JoinHandle/取消信号；watch_one_account 无限循环。run_cycle 会检查协议、重读凭据，但不会退出并从任务表移除。run_idle_until_cancel 名称含 cancel，实际没有取消参数；退出后也未在每轮明确检查 is_signed_in。
+
+**解决方案**：账号任务表持有 handle、取消信号和配置版本；退出/配置切换触发取消和重建，定期扫描只作兜底。对阻塞协议循环设置取消检查和有限等待，终止后移除任务表记录。保留 INBOX IDLE + 全部勾选夹定时同步的 V1 策略。
+
+**验收**：退出、切换协议、替换凭据、清理本地数据、断线后任务有明确状态和退出期限；重新登录不重复创建或遗留旧任务。
+
+### I-15 / P2：连接超时、地址回退和密码处理不一致
+
+**状态**：未修复；IDLE 的有限等待不等于整个阻塞同步任务可取消。
+
+**问题与影响**：双栈地址首个不可达时失败；STARTTLS 可能长期阻塞；合法密码被改变；外层超时后旧任务仍可能运行，与下一次同步重叠。
+
+**原因与依据**：`imap/client.rs::connect_tcp` 只取 DNS 第一个地址；STARTTLS 绕过自定义 connect/read/write timeout；登录 trim 密码。`sync_use_case::trigger_mail_sync` 的总 timeout 只能取消等待，不能终止运行中的 spawn_blocking，guard 却会释放。
+
+**解决方案**：统一 TLS/STARTTLS 连接与 IO 总预算，受预算约束地尝试地址；密码原样传递。按锁定库 API 处理握手/greeting；阻塞循环可取消且单步有界，gate 释放与实际任务结束一致。不因使用阻塞 crate 本身就要求换库。
+
+**验收**：首地址不可达、STARTTLS/握手停滞、总超时、取消、含空格密码；不积累重叠阻塞任务。
+
+### I-16 / P1：凭证明文保存且非原子覆盖
+
+**状态**：未修复。
+
+**问题与影响**：本地普通 JSON 包含密码/access/refresh token；中断覆盖可能破坏凭据；Debug 或删除失败处理可能暴露/残留秘密。
+
+**原因与依据**：`mail/credentials.rs::save` 直接 serde_json + tokio::fs::write，MailSecret 派生 Debug。`account_use_case::sign_out` 忽略通用凭据删除结果。
+
+**解决方案**：使用系统凭据存储，或由系统保护密钥的加密存储，数据库保存引用；秘密类型去除或脱敏 Debug。文件式元数据原子替换。退出时删除失败可见且可恢复。V1 允许清理开发凭据后重新登录，不保留明文兼容读取分支。
+
+**验收**：普通磁盘 JSON 与日志无秘密，写中断保留有效状态，退出/删除失败可观察。
+
+### I-17 / P2：账号配置先提交，凭据后校验/保存
+
+**状态**：未修复。
+
+**问题与影响**：缺密码、缺 token 或秘密存储失败后，数据库账号/协议配置已改变并可能显示已登录。
+
+**原因与依据**：`mail_account_use_case::upsert_imap_smtp_account` 在构造 MailSecret 和检查必填值之前 tx.commit，再调用 credentials::save。
+
+**解决方案**：纯参数校验提前，包含端点、端口、认证必填和 TLS 策略。新凭据写入独立引用，数据库事务最后切换引用及有效账号状态；失败清理未引用新凭据，切换成功后回收旧引用。SQLite 与外部凭据存储不共享事务，需补偿/恢复，不能覆盖旧秘密后假装可以回滚。
+
+**V1 认证边界**：通用邮箱入口必须在任何账号/凭据写入前显式拒绝 OAuth2/XOAUTH2，覆盖 IPC 直接调用与后台路径，不能只依赖当前 UI 固定 password。已有通用配置若选了 OAuth2，应明确提示当前不支持，不进入错误认证或静默降级。Graph OAuth 的账号、令牌流程及共用枚举中的合法 Graph 分支必须保留；完整通用 OAuth2 规划移至 §6。
+
+**验收**：缺凭据、秘密存储失败、SQL 提交失败、更新已有账号失败均不留下不可用却已启用的配置。构造通用 OAuth2 IPC 请求得到明确不支持错误且无存储/网络副作用；Graph OAuth 回归不受影响。
+
+### I-18 / P2：SMTP 错误不分类型，明文策略不一致
+
+**状态**：未修复。
+
+**问题与影响**：认证/永久拒绝被当作可重试，无法正确指导重试或用户修正；明文模式是否允许没有一致边界。
+
+**原因与依据**：`smtp/send.rs::send_message` 对 transport.send 的任意错误映射 retryable=true；SMTP 支持 Tls::None，IMAP 禁用 Plain。
+
+**解决方案**：按 lettre 错误和 SMTP 状态区分认证、暂时失败、永久拒绝、结果不确定。普通远端账号统一要求受保护连接；如需本地开发 SMTP，限定为明确开发配置。错误不必然意味着远端未接受，结果不确定应与 I-08 联动。
+
+**验收**：认证拒绝、4xx、5xx、TLS 不可用、DATA 应答丢失分别得到正确状态和重试策略。
+
+### I-19 / P1：HTML 邮件默认允许远程资源，渲染隔离与 CSP 保护不足
+
+**状态**：新增，静态确认存在默认远程资源允许路径及防御缺口；未运行恶意邮件、浏览器网络捕获或 IPC 利用测试。不能写成“HTML 完全未经清洗”或“已经证实可执行脚本/调用 IPC”。
+
+**已有保护与代码证据**：
+
+- `src/features/conversations/MailReadingPane.vue` 将正文交给 `src/shared/mail-content/MailBodyView.vue`；聊天预览使用 Vue 文本插值，没有发现该路径直接 v-html 输出原始正文。
+- MailBodyView 使用 `vue-letter 0.2.3`。本轮读取实际安装的 `node_modules/vue-letter/dist/vue-letter.js`：内置 lettersanitizer 使用标签/属性白名单，删除 script/iframe 等元素及不允许属性，限制 href/src 和 CSS URL 协议，处理样式，并为链接设置 noopener/noreferrer。存在清洗链路，不把危险 script/事件属性直接放行当作已确认事实；清洗是否可被特定畸形输入绕过尚待测试，不能称为“完善保护已证明”。
+- MailBodyView 的 click capture 拦截非 http/https 外链（mailto 单独放行）；`src/adapters/tauri/createTauriPorts.ts::createTauriPorts` 的平台适配实现再次只允许 http/https 经 opener 打开。主窗口 capability 没有配置 remote URL 授权。这些是已有边界，不能描述为任意外链都可调用高权限。
+
+**已确认的问题、原因与影响**：
+
+1. MailBodyView 配置 allowed-schemas 为 http/https/mailto，没有设置 rewriteExternalResources 或“加载远程内容”授权。所检查依赖会保留允许的图片 src 和 CSS url，因此外部图片/跟踪资源默认允许自动请求，缺少隐私授权和统一资源策略。实际网络请求需在目标 WebView 中捕获确认。
+2. MailBodyView 明确 `use-iframe=false`，清洗结果经依赖 innerHTML 进入主应用 DOM，没有独立的低权限邮件渲染上下文。`src-tauri/tauri.conf.json` 的 CSP 为 null；`capabilities/default.json` 将 core/opener/allow-ipc 授予 main，`permissions/app-ipc.toml` 含写信、删除等命令。配置缺少纵深保护：**若**清洗发生绕过，内容可能落在有应用权限的页面；尚未证明绕过或成功 IPC 调用，不能据此宣称已复现 XSS/命令执行。
+3. 当前没有受控 CID → 内嵌附件资源映射；cid 不在允许协议中，不能通过直接放开任意 asset/file/data 协议来补齐。没有发现完整的 HTML 附件预览入口，其权限风险待实现方案与测试核实，不作为已确认可利用漏洞。
+
+**解决方案**：
+
+- 复用并评估成熟 Sanitizer，锁定明确的标签、属性、CSS 与 URL 策略，补维护/升级与回归验证；不自行开发 HTML 解析器或渲染引擎。外部正文、HTML 附件统一视为不可信。
+- 默认阻止外部图片及其他资源自动加载，用户主动授权后按邮件/来源范围加载；覆盖 HTML 与 CSS 资源路径，必要时避免清洗阶段自身发起请求，不能只拦截链接点击。
+- CID 只映射本邮件拥有的、经过校验的受管理内容；限制资源和协议，防止 file、任意本地 asset、脚本协议及未受控 data 内容获得访问。
+- 采用经验证的低权限、隔离渲染方案（例如正确配置 sandbox 的独立邮件上下文），不给邮件内容主窗口 IPC 能力。不能把 useIframe=true 当成自动安全：当前依赖 iframe 分支本身未设置 sandbox，需明确 origin、权限、跨上下文消息和链接处理。
+- 配置适当的 CSP、Capabilities 与外链策略形成多层保护；开发/生产都验证。HTML 附件使用同等隔离或交给明确的外部应用处理，不能作为应用同源高权限页面加载。相关边界参考 [Tauri Capabilities](https://v2.tauri.app/security/capabilities/) 与 [CSP](https://v2.tauri.app/security/csp/)。
+
+**验收**：用 script、事件属性、危险/编码 URL、SVG/MathML、畸形 HTML/CSS 等安全样例验证清洗；默认打开邮件/清洗时无外部跟踪请求，授权仅开放允许资源，拒绝仍生效。覆盖 CSS 资源、CID 越权、mailto/http 外链、file/asset/data、HTML 附件及新窗口。隔离内容不能访问主窗口或成功调用删除/发送等 IPC，检查 CSP 违例和 capabilities 实际执行。该组测试目前均未运行，不能以静态审查替代。
+
+## 3. 架构问题
+
+### A-01：通用邮件身份仍套用 Graph 模型
+
+**问题**：缺少以标准 IMAP/RFC 能力为基线的本地身份、单一远端定位和生命周期规则。本地消息与远端操作 ID 混杂；不能将 Graph 额外标识的稳定性作为业务前提，也不需要跨账号/跨文件夹内容去重系统。
+
+**原因与依据**：Message/RemoteMessage 当前仍有 GraphImmutableId、graph_change_key、created_at_graph；IMAP 使用 GraphMessageChange，进度编码在 delta_link/next_link 字符串里。这些是现有代码事实，不是要求未来继续使用相应 Graph 身份能力。虽然差集补拉已可工作，统一位置约束仍缺失，尤其见 I-06；本文不据字段存在就断言 conversationId 已参与实际聚合，但明确禁止未来以它或 changeKey 等决定业务身份和会话。
+
+**解决方案：Message 最多一个远端位置，直接保存定位字段**：
+
+```text
+Account 1 ─── N Message
+Session 1 ─── N Message
+Message 1 ─── 0..1 RemoteLocation
+```
+
+所有协议统一按位置新增、更新、移除消息。**移动 = 源位置移除 + 目标位置新增**，Postlet 自己发起的移动也遵循同一规则：源 Message 保留为无有效位置的记录，目标使用独立 MessageId；源、目标不做实体关联或合并，Session 各自按既有规则确定。远端仍采用协议原生安全移动能力，本地模型不要求改写远端操作方式，也不要求为保留 MessageId 提供操作映射或并发合并设计。
+
+**推荐存储**：沿用当前 Message 行承载定位的方式，改为协议中性的 `folder_id + remote_key` 可空字段组，并保存定位有效性、定位修订号和该位置的 FLAGS 观测；不新建位置集合表或 Message↔位置关联表。两字段同时为空表示没有定位，同时有值表示保存了一份定位；保存旧定位供幂等核对时须标明 missing/invalidated，不能当作有效操作目标。有效定位最多一份，`(account_id, folder_id, remote_key)` 对所有非空定位唯一，失效旧定位也占用其原键，防止同位置反复建新实体。无位置的发送记录不受这个唯一键限制。domain 可用可选 RemoteLocation 值对象表达同一字段组，不增加协议专用业务实体。
+
+| 标识 | 唯一职责及不变量 |
+|---|---|
+| MessageId | Postlet 本地生成的唯一 ID；Message 固定属于一个 Account 和该账号内一个 Session，位置或内容不生成该 ID |
+| RFC Message-ID | 标准邮件头，只作引用、关系和既有会话规则的输入；不加唯一约束，不用于合并实体 |
+| RemoteKey | 仅定位远端邮件；IMAP Adapter 编码 UIDVALIDITY + UID，Graph Adapter 使用普通消息 ID；业务层不解析，也不当跨文件夹稳定身份 |
+| AccountId | 所有权边界，Message、Folder、Session 和任务目标必须同账号；不同账号实体永远独立 |
+| FolderId | 本地文件夹身份，映射远端文件夹名称/路径/ID；不是角色，不直接用远端路径替代本地身份 |
+
+不同位置的邮件即使主题、发件人、正文、附件、RFC Message-ID 全部相同，也分别创建 Message。Session 聚合按既有纯领域规则独立执行，可以将多个 Message 放到同一会话展示，不能因此合并实体或联动操作；跨账号总览只组合账号内 Session/Message 查询结果，不共享 Message，也不新增跨账号 Session 身份系统。例如 A 向 B 发信且两账号均登录：A/Sent 的 M1 与 B/INBOX 的 M2 永远独立，已读、删除、发送/同步状态和任务失败互不继承。
+
+**本轮补核源码与结构影响**：`domain/entities/message.rs::Message` 已有 account_id/session_id 与单一 folder_id，适合直接修订；`migrations/001_init.sql` 当前是 `(account_id, graph_id)` 唯一键，无 RemoteLocation 表。后续替换为上述三列唯一约束，移除 graph_change_key/created_at_graph 等统一模型中的 Graph 专名，标准 Date/INTERNALDATE 语义按 I-12；Message→Session 复合外键沿用，Message→Folder 加同账号约束。`imap/parse.rs` 直接用邮箱路径构造 FolderId，`graph/mail.rs::map_remote_message` 直接用远端 parentFolderId 构造 FolderId，`repository/folder_states.rs::upsert_discovered` 按该值继承游标/勾选：需改为本地 FolderId 与远端绑定分开保存，连同 mutation 固定目标一起改。V1 可重建开发库，不保留旧 Graph 命名或双轨模型；本次不执行迁移。
+
+Graph Delta 可留在 Adapter 内作为发现变更/恢复同步的优化，输出统一位置/FLAGS/内容变更事实。Immutable ID、conversationId、changeKey 不参与任何身份、移动关联、会话归属或其他业务正确性决策；普通消息 ID 只用于操作定位。不新增 GraphLocation/ImapLocation 业务分支。
+
+**验收**：
+
+- 同账号同位置重复/并发同步只生成一个 Message；不同位置、不同账号均生成不同 Message，所有标准头和内容完全相同也不合并。
+- Postlet/外部移动、Graph/IMAP 均按源位置移除、目标位置新增处理，目标实体不继承源 MessageId；目标已同步入库时仅按位置更新。复制保留源并在目标建立独立 Message。generation 变化时旧任务不能触及新代。
+- A/Sent 与 B/INBOX 两实体独立修改/失败恢复；同 Session 内两个相同内容 Message 的操作也互不影响。缺失/畸形/重复 Message-ID 和仅有回复关系均不改变位置幂等规则。
+- 不提供/改变 Graph 专有身份字段或移除 Delta 优化，不改变身份、会话与操作安全决策。以上均为待实现验收，不声称当前代码已满足。
+
+### 统一核心模型的不变量与操作决策表
+
+本节共同约束 A-01、I-06、I-10、I-12、A-06，不新增问题编号。规则均为本次确定的 V1 目标；数据库改动集中在 Message、Folder 和任务字段，不引入通用身份匹配系统。
+
+**状态、文件夹和生命周期**：
+
+| 归属 | 不变量、执行/失败规则 | 现有结构影响与最小验收 |
 |---|---|---|
-| MIME 正文递归解析 | `infrastructure/imap/parse.rs::collect_text_parts / walk_parts` | 已解决“只遍历一层 multipart”的问题，不再列为未修复项；附件排除与 MIME 结构语义仍有缺口，见 I-12 |
-| 正文预览 | `parse.rs::html_to_plain / truncate_preview` | 已优先使用 plain，否则去 HTML 标签、处理常见实体；不再认为 HTML 原文直接作为预览 |
-| 日期回退 | `sync.rs` 获取 INTERNALDATE，`parse_rfc822` 接收 `internal_date_ms` | Date 缺失时已有回退；收件时间仍优先取 Date，语义问题见 I-12 |
-| 删除扫描抬高游标 | `sync.rs` 已删除用全量远端 UID 推高 `last_uid` 的循环 | 该特定问题已修复；分页截断和单封失败跨越仍存在，见 I-02、I-05 |
+| Message 的唯一定位 | 定位有效性为 present/missing/invalidated；连接失败、关闭同步或一次不完整扫描不等于位置消失。只有当前代的完整集合核对或确定移出/删除事实才可标 missing；generation 改变标 invalidated。保留旧键只用于核对，不可写远端 | Message 增定位状态/修订号；完整扫描缺失与网络失败分别验收，旧键重复同步不得重复建实体 |
+| 远端 FLAGS 与 UI 状态 | 当前唯一位置保存观测 FLAGS；UI 已读默认取该位置 Seen，本地最新有效已读意图覆盖；本地草稿状态独立，远端 Draft FLAG 与 Drafts 角色按 I-12 决定草稿范围。Deleted FLAG、Trash 角色、用户删除意图和远端位置消失分开记录，不能互相当成功证明 | 可保留 is_read/is_draft 为可重算缓存，另存远端观测及意图；两份同内容不同位置 Seen 不同时各自展示，不做聚合/传播 |
+| 待完成意图 | 同事务保存本地展示意图、固定目标任务与 Session 投影；同步继续保存真实远端观测，但不覆盖最新有效意图。成功确认或用户取消后重算；终止失败保留可见错误并重算真实状态，不伪装远端已完成 | 改 `upsert_remote_message` 的 pending 覆盖与 DeletedRemote 短路；验收同步旧 FLAGS 不抹掉排队意图，失败后错误/真实状态可见 |
+| 无有效位置的 Message | 远端消失/失效只停用定位和旧目标任务，保留内容、附件引用、Session 归属、错误记录；不自动物理删除。普通远端会话列表/未读计数排除无有效位置记录，本地草稿/发送状态由专门状态展示；账号清理或显式本地清除才回收，附件按 I-07 引用规则 | 拆除“DeletedRemote=用户删除/永久销毁”的混用；最后/唯一位置消失后内容可核对，重启不错误复活，附件不被提前清理 |
+| Folder 身份 | Folder 固定属一个 Account；本地 FolderId 与远端绑定、名称、角色、UIDVALIDITY 分离。已确认本客户端重命名可更新原绑定，必须核对重命名后 generation；外部名称/路径变化无可靠连续性时旧夹退役、新建 FolderId，不按名称/角色猜身份 | Folder/同步状态增加绑定及退役/配置修订；验收重命名、同名删除重建均不继承错误 UID/游标/任务 |
+| 目录删除/重建与角色变化 | 目录确定删除使其位置失效、任务停止；重建使用新 FolderId，不继承勾选/游标或待执行任务。角色变更只重算展示，不改变身份；语义任务保存源/目标 FolderId 与配置修订，执行前角色/绑定改变则停止并要求重新确认，不能把旧 Trash 操作转到新角色目录 | 不再由 `upsert_discovered` 按路径无条件继承；验收 Trash 改成 Archive 后旧删除任务不再派发，其他账号同名目录不受影响 |
 
-上面的改善不代表 IMAP 同步已完整修复，不能直接把上次报告中的条目原样作为当前结论。
+**身份与操作决策**：
 
-## 3. 当前问题与具体修改方式
+| 场景 | 必须采取的 V1 决策 | 失败/歧义处理及最小验收 |
+|---|---|---|
+| 同 RemoteLocation 重复同步 | 按三列唯一键更新原 Message，FLAGS-only 不改内容/Session；数据库唯一约束保证并发幂等。同代 missing 位置被权威核对重新确认存在，可恢复原实体；invalidated 旧代不能复用，新代是新键 | 内容空标题/空正文合法；并发重复输入只有一个实体；位置恢复不能继承已终止的删除任务 |
+| 移动（Postlet 或外部发起） | 本地统一按源位置移除、目标位置新增处理：源 Message 标 missing 并停止其旧目标任务，目标按三列唯一键创建/更新独立 Message，按既有会话规则确定 Session；不继承源 MessageId，不建立源→目标身份映射。Postlet 发起时仅持久化安全执行所需的固定源位置、预期 generation/定位修订、目标 FolderId 和执行阶段 | 远端继续使用 IMAP UID MOVE、Graph 原生 move 等协议能力；本地拆成位置增删不等于远端拆成不安全的 COPY/DELETE/EXPUNGE。缺少安全移动能力则报能力错误或保留待处理，不扩大操作范围。结果不确定先核对、不盲目重发；源缺失不能单独证明目标已到达。验收本客户端/外部移动结果一致、目标先被同步发现或重复返回均同位置幂等、无跨位置实体合并 |
+| Postlet 复制 | 源 Message 不变，新位置总是新 Message；COPYUID/Graph 返回值只用于确定复制结果和幂等入库，不建立共享实体 | 复制结果不确定先核对，不盲目重做 COPY；验收复制两条独立状态/任务 |
+| 同账号不同夹、相同 Message-ID/全文 | 不同位置独立 Message，按 I-12 展示范围过滤 | 无跨位置匹配/自动合并后台任务；验收主题/发件人/正文/ID 全同仍独立 |
+| Message-ID 缺失、重复、畸形；只有 In-Reply-To/References | 不影响按位置入库；合法标准头仅参与既有会话规则，回复关系不等于实体同一性 | 验收异常头不阻止新位置入库，不生成唯一键冲突 |
+| 同信发给多个已登录账号 | 每个账号各自创建 Message，独立 Session 归属及已读/删除/重试 | A→B 示例中修改 M1 不改 M2，即使 UI 总览同时展示 |
+| UIDVALIDITY 变化后重新发现 | 失效旧定位和旧任务；新代按新 remote_key 建新 Message | 新旧同 UID/同全文也不继承任务；I-06 的写前检查不可省略 |
+| 已读/删除 | 用户选定 Message，任务固定其当前唯一位置；已读使用设置到目标值而非 toggle。默认删除为移动到已确认 Trash，本地同样按源位置移除、Trash 位置新增处理；永久删除只允许明确选定当前位置并遵守 I-01，不做整夹 EXPUNGE | 不作用于同内容其他实体；无安全删除能力则可见失败，不扩大范围。Trash 中永久删除仍须明确操作 |
 
-以下源文件路径以仓库根目录为基准，Rust 路径统一省略 `src-tauri/src/`。以函数名定位，避免后续修改导致行号失效。
+**PendingMutation 的最小安全与恢复规则**：
 
-### I-01 / P1：单封删除回退为整夹 EXPUNGE
+1. 入队事务保存业务意图版本及唯一固定定位快照，目标同时校验账号归属、位置有效性、定位修订、文件夹绑定/配置修订和预期 generation。Adapter 在实际写入连接上校验 generation；业务层不解析 remote_key。当前 mutation 的 `(account_id, message_id)` 行可继续承载最新意图，不引入多目标子任务框架，但须补固定目标/阶段/认领字段。
+2. 同 Message 的网络写串行；认领和派发前检查最新版本。反向已读更新使旧版本过期，旧请求若已发出无法撤销，完成后只记录该尝试结果，不确认新版本，继续按最新目标值补推。确认/失败写入必须以版本和 lease 条件更新；过期认领不能与仍在执行的旧连接并行写。验收 true→false、断线重启、旧响应晚到最终收敛为 false。
+3. generation/定位失效或位置消失即停止旧目标；不通过 Message-ID、全文、同 UID、同名目录自动重新定位。移动后的目标是独立 Message，源实体旧读/删任务不转移，必要时由用户对目标实体重新操作。删除安全优先于自动补推。验收旧删除永不误伤新代、移动目标或复制件。
+4. 同步请求携带本地观测序号/定位修订；写操作成功前发起的旧读取不能在成功后覆盖确认值，移动前的旧快照也不能恢复已移出的源位置。过期批次丢弃后重新核对；目标位置无论先由操作返回还是同步发现，都走同一位置唯一键入库，不需要跨位置关联、实体合并或专用并发合并流程。成功后同事务保存已知结果、确认对应意图及投影，再进行新一轮权威核对；远端其他客户端后来修改则正常反映，不能永久锁定本地意图。该序号不是 Graph changeKey。
+5. 远端已成功而本地确认失败：进程仍在时只重试本地确认；崩溃后已读 set 可在目标仍有效时幂等重放。永久删除核对原位置已不存在可确认效果；MOVE/COPY/APPEND 最终结果未知先核对，无法确定则标“结果不确定”供人工处理，不重做可能产生新副本的动作。不能因旧位置消失就宣称目标 Trash/归档已成功。最小验收覆盖远端成功后 SQL 回滚、lease 恢复、断线后源缺失但目标未知。
 
-**证据**：`infrastructure/imap/client.rs::uid_delete` 先设置目标 UID 的 `\Deleted`，`uid_expunge` 发生任何错误后调用 `session.expunge()`。
+这些规则只增加固定目标、版本及必要执行阶段，不建立跨位置身份推断或通用任务框架。发送/归档独立恢复见 I-08/I-11/A-06，提交与前端恢复见 A-03。
 
-**影响**：普通 EXPUNGE 会清除当前文件夹内所有带 `\Deleted` 的邮件，包含其他客户端先前标记的邮件。网络故障、权限错误也被当作回退理由，扩大了删除范围。协议行为见 [RFC 3501 §6.4.3](https://www.rfc-editor.org/rfc/rfc3501.html#section-6.4.3)。
+### A-02：infrastructure 反向依赖 application
 
-**修改方式**：
+**问题**：基础设施与应用 DTO/错误形成反向依赖。
 
-1. 删除任何错误都回退普通 EXPUNGE 的逻辑，探测 UIDPLUS/MOVE 等能力后明确选择策略。
-2. 若产品的“删除”指移入废纸篓，优先使用受支持的 UID MOVE，并明确 Trash 的发现和配置。
-3. 永久删除仅在可限定 UID 的能力下执行；不具备能力时返回明确的能力错误或保留待处理状态，不清理其他 UID。
-4. 已设置 `\Deleted` 后失败也必须保留操作进度；不得把它当作完全没有副作用的失败。
+**原因与依据**：imap/graph 依赖 application::dto::remote_models；repository 多处依赖 application 的查询、分页、任务类型和 PortError，违背约定依赖方向。
 
-**验收**：A 已被另一客户端标为删除，用户删除 B；模拟 UID EXPUNGE 不支持、NO、断线，A 均不能被本次操作额外永久清除。
+**解决方案：按职责定归属，避免机械搬移 DTO**：
 
-### I-02 / P1：最新 200 封截断后推进游标，遗漏其余邮件
+| 类型/职责 | 归属及边界 |
+|---|---|
+| 统一 Message、RemoteLocation、Session、文件夹角色、领域不变量/纯业务规则 | domain；无 IO、不依赖 application/infrastructure/runtime/Tauri，不携带 Graph/IMAP 专用业务概念 |
+| Graph/IMAP/SMTP SDK 数据、UID/服务器响应和协议编码 | infrastructure 的协议 Adapter 内部，进入用例前映射统一业务类型 |
+| SQLx Row、数据库错误、查询构造等技术类型 | infrastructure repository；不泄露为 UI 业务契约 |
+| 用例命令、编排结果、应用错误和查询用例输出 | application；不能因某个 repository 使用就全部搬至 infrastructure |
+| Tauri 参数/序列化及展示传输 DTO | commands/入站边界按需映射；可复用纯用例 DTO，但不将所有 IPC DTO 塞进 domain |
+| 真正跨层的纯分页、筛选或结果数据契约 | 先判断业务语义，能归已有统一业务/查询类型则复用；只有确有跨层稳定用途时放入小型无 IO 的纯契约模块，不借此增加通用接口框架 |
 
-**证据**：`infrastructure/imap/sync.rs::sync_folder` 对排序后的 UID 列表保留最新 `page_limit` 条；`application/use_cases/sync_use_case.rs::sync_imap_mail` 固定传入 200，并保存最大成功 UID。
+本轮实际依赖：repository::sessions/groups 直接使用 application 的列表/分页 DTO；多个协议模块返回 application::remote_models，技术错误 PortError 也在 application；application 同时调用这些 infrastructure 模块。domain 当前未发现实际反向导入，不把它写成已发生的领域 IO 污染。
 
-**影响**：首次有 UID 1～1000 时只拉取 801～1000，下一轮从 1001 开始，1～800 没有后续补拉入口。离线新增超过 200 封也会遗漏。
+允许依赖为 `commands → application → domain / infrastructure`、`infrastructure → domain`，runtime/组合根调用 application 并组织基础设施；如提取纯契约模块，各层单向依赖它，模块本身不反向依赖任何调用方。消除 `infrastructure → application → infrastructure` 与 A-03 的运行时环，不为了消除单个 import 增加 interfaces 或 trait。
 
-**修改方式**：
+具体处理应结合查询责任：repository 返回统一实体/必要的纯查询行，用例组装列表 DTO；确有共享语义的分页契约再提取。Repository 继续使用具体模块函数，application 可使用 SqlitePool 显式控制事务，repository 借用同一事务连接。目标是职责清晰和业务协议解耦，不是把所有 application DTO 下沉。
 
-- 为 V1 先实现最容易验证的有界升序批处理：选取当前未处理范围最早的一批，落库成功后继续下一批，每次执行有总时限，下一轮恢复。
-- 若保留“最新优先”，必须分开保存新增邮件进度和历史补拉进度，例如 `incremental_high_water_uid`、`backfill_before_uid`、`backfill_complete`；首次最新批次不能等价于历史同步完成。
-- 进度与该批邮件、聚合任务同事务提交。UI 区分“一轮执行完成”和“历史同步完成”。
+**修订时机**：与 A-01/A-06 同阶段确定类型归属和函数签名，同时修改调用方和仓储契约；不能先按反向依赖实现完新模型，最后再大规模搬移。统一位置/FLAGS/关联事实/操作结果及纯状态转换归 domain，SDK 响应和 SQL Row 留 infrastructure；ChangeSet/用例输出留 application，repository 不为返回 ChangeSet 反向导入 application。application 在同一事务内组合仓储写入、投影和变更版本。此处只梳理现有边界，不引入 Repository trait、TransactionManager、事件总线或 interfaces。
 
-**验收**：首次 1000 封、离线新增 450 封、分页中断重启、UID 不连续，最终应无遗漏；每次执行的下载量保持有界。
+**验收**：infrastructure 不导入 application；跨仓储事务仍由 application 控制。
 
-### I-03 / P1：没有新增时误报“无法读取正文”
+### A-03：application 依赖 runtime 和全局 AppState
 
-**证据**：`sync_folder` 使用 `UID last_uid+1:*`，FETCH 遍历时跳过 `uid <= last_uid`，之后仍以原 `uid_list` 非空且 `fetched_ok == 0` 判断失败。
+**问题**：运行时调用用例，用例反向依赖运行时与 Tauri 状态。
 
-**影响**：非空邮箱没有新增时，该范围仍可能返回最后一封旧邮件；所有候选被跳过后误报错误，后续 FLAGS 和删除核对也不执行。该范围语义见 [RFC 3501 §6.4.8](https://www.rfc-editor.org/rfc/rfc3501.html#section-6.4.8)。
+**原因与依据**：sync/aggregate/account 依赖 runtime 的 gate/dispatcher，dispatcher 持有 AppHandle；compose/account 直接使用 AppState；message 用例直接 tauri::async_runtime::spawn。
 
-**修改方式**：在 SEARCH 结果进入分页和 FETCH 前，增量路径先过滤 `uid > last_uid`；对加一使用检查运算，避免 UID 上界溢出。有效新增集合为空应正常继续 FLAGS/删除核对。只针对实际请求但未取得内容的 UID 报获取失败。
+**解决方案**：用例显式接收所需资源、返回结果和 ChangeSet；外部调度负责 gate、任务启动、取消、commit 后分发。长流程按提交批次产生变更，避免一个后续失败让前面已提交内容无法通知。无需增设 interfaces 或 Repository trait。
 
-**验收**：已同步最大 UID=100，服务器对 `UID 101:*` 返回 100；本轮成功，且远端已读变化、删除仍能落库。另测空邮箱和 UID 上界。
+**提交与恢复契约（推荐 V1）**：
 
-### I-04 / P1：后台下载正文会设置远端已读
+- ChangeSet 只描述**已成功提交**的变更。事务内可收集候选摘要，但 commit 失败必须丢弃，不能先发事件再提交。涉及位置、Message、Session 投影与 mutation 的写入由 application 在同一事务完成；网络调用不持有长数据库事务。
+- 每个账号持久化单调 `change_version`，所有影响前端查询的提交（含任务状态/清理）在同事务递增。提交后 ChangeSet 带该版本；账号内版本与 IMAP generation、mutation version 严格区分。账号清空时保留/递增版本；账号删除后通过账号列表重查失效，重新创建使用新 AccountId。
+- 前端事件只是刷新提示。启动、重新订阅、恢复焦点及低频兜底检查经 Port 查询账号版本；版本改变/跳号即重查受影响范围，无法恢复范围时重查该账号。列表/详情查询返回与数据同一读快照的版本；刷新期间收到更高版本继续刷新，不把旧查询结果标成最新。进程重启前的版本仍有效，不能用当前进程 AtomicU64 充当持久版本。
+- 数据库提交成功但进程在通知前退出时，下次查询按持久版本恢复 UI，不回滚已提交事实，也不重新执行协议动作以“补事件”。无需持久化全部 UI ChangeSet 历史。
+- **系统通知 V1 采用尽力而为**：仅 IncrementalSync 真正新增入站允许通知；允许提交与通知之间崩溃导致漏提示，重启不补放历史提醒，通知失败不影响收信状态。当前通知函数是 stub，并非已实现可靠投递。V1 不要求可靠系统通知，因此不新增 Outbox。若将来明确要求崩溃后仍补通知，才在产生通知资格的同一事务写局部 notification outbox，由外部 worker 发送/确认并按账号、消息、通知种类去重；OS 显示后本地确认前崩溃仍可能重复，不能宣称恰好一次，也不引入通用事件总线。
+- 多夹/多批次采用每批提交并交付结果的用例边界，由外部循环调度/分发；后续错误单独汇总，不能只返回 Err 丢掉先前已提交摘要。每批都有独立版本。若在交付前崩溃或事件发送失败，UI 按版本补查；系统通知遵守上述尽力而为边界。不能把多批候选预先合成“已提交”ChangeSet。
 
-**证据**：`sync_folder` 和 `fetch_one_rfc822` 均优先获取 `RFC822`；`BODY.PEEK[]` 只作为失败回退。
+**源码/数据库影响**：当前 `dto/change_set.rs::MailChangedEvent.generation` 和 `runtime/change_dispatcher.rs` 的 AtomicU64 仅进程内单调，emit 失败只日志；`TauriChangeEventsAdapter.ts` 也仅按该值过滤，不能证明崩溃恢复。新增持久账号版本、查询/事件版本契约及 Port/Adapter 刷新入口，移出用例中的 dispatcher/spawn；不要求对旧 DTO 兼容。
 
-**影响**：同步动作可能把未读邮件标成已读。`RFC822` 等价于 `BODY[]`，区别于不设置 Seen 的 PEEK，见 [RFC 3501 §6.4.5](https://www.rfc-editor.org/rfc/rfc3501.html#section-6.4.5)。
+**验收**：用例不依赖 Tauri/AppState/runtime 具体分发器；手动和后台触发共享一致重入规则。
 
-**修改方式**：所有后台正文下载统一使用 `BODY.PEEK[]`，删除会设置 Seen 的兜底；如需降级，只降级可选获取字段。已读写入只经过显式用户操作与对应 mutation。
+增加 commit 前失败不发事件、commit 后分发前强杀、前端漏事件/重订阅/焦点恢复、刷新请求乱序和两批成功第三批失败验收：数据库与查询版本一致、前两批仍可刷新，未提交批不出现；重启不重复协议动作、不补发历史系统通知。通知失败不回滚收信；若以后启用 outbox，另验同事务回滚、重复认领、OS 成功后确认失败，不借此扩大本次 V1 范围。
 
-**验收**：同步前后服务器未读标记不变；批量和单封重试路径都验证。
+### A-04：后台恢复保障按协议割裂
 
-### I-05 / P1：缺正文补抓失效，游标仍可能跨过失败邮件
+**问题**：收信、mutation、发送的恢复能力不一致，重复组装认证与端点。
 
-**证据**：`sync_folder` 在检查 `item.body()` 之前调用 `seen_uids.insert(uid)`；后续单封重试遇到 seen UID 会跳过。只要其他 UID 成功，就可能继续提交更大的游标。
+**原因与依据**：Graph scheduler 带 mutation/locate；IMAP watcher 仅负责收信和 IDLE；发送任务没有周期处理。IMAP 历史续跑已修复，但不能替代 I-08/I-10 的恢复职责。
 
-**影响**：批量响应包含 UID、但缺少正文时不会补抓；例如 UID 101 缺正文、102 成功，保存 102 后无法再通过新增查询补回 101。I-02 修复后该问题仍独立存在。
+**解决方案**：共用账号任务生命周期和恢复调度，收信、mutation、发送、聚合分别失败处理；Graph Delta 留在 Adapter 内作为同步优化，IMAP IDLE 用于变化唤醒，两者均驱动统一业务变更与后续处理。远端 locate 仅核对已知定位或受控操作结果，不通过 Graph 普通 ID/专有属性追踪跨文件夹身份；外部移出按 A-01 建立独立消息。端点和认证解析提取基础设施模块函数，不按邮箱品牌复制业务。
 
-**修改方式**：区分已返回 UID、成功完成 UID 和待重试 UID；仅在解析成功后记完成。游标只能越过已经处理或确认远端消失的候选；如允许越过失败项，必须把失败 UID 同事务持久化为重试任务。对单封损坏内容设置独立失败状态，避免一个坏信无限阻塞整个邮箱。
+**验收**：不同协议下相同操作都具备离线重试、重启恢复、退出停止与观测能力。
 
-**验收**：批量缺正文、单封补抓恢复；中间 UID 解析失败、后续 UID 成功；故障恢复后缺失邮件能补回。远端恰好删除该 UID 时可正确结束任务。
+### A-05：收发认证绑定，配置允许无效状态
 
-### I-06 / P1：IMAP 身份缺少 UIDVALIDITY，旧操作可能作用于新邮件
+**问题**：IMAP/SMTP 不能独立表达认证，缺端点等错误留到执行时才发现；缺协议配置还会静默默认 Graph。
 
-**证据**：`parse.rs::remote_id` 仅生成 `imap:{folder}:{uid}`；`sync_folder` 发现 UIDVALIDITY 变化只重新下载；`client.rs::uid_set_seen / uid_delete` SELECT 后不校验预期 UIDVALIDITY。
+**原因与依据**：AccountMailTransport 独立 receive/send_protocol，却仅一份 auth_kind/username，端点字段大量 Option；repository::mail_transports::ensure_default 在缺行时写 graph_default。
 
-**影响**：邮箱重建后相同 UID 可能代表不同邮件；新内容会命中旧本地身份，旧 pending mutation 也可能修改或删除新邮件。旧 deleted 状态还可能阻止新一代同 UID 邮件入库。
+**解决方案**：ReceiveConfig/SendConfig 枚举各自关联 AuthConfig/CredentialRef，可显式共用引用。入口校验后类型满足必填不变量。Graph 默认只用于明确创建 Graph 账号，运行中的配置缺失应报错。品牌仅做预填，不做协议判断。
 
-**修改方式**：
+V1 的有效认证配置还必须区分范围：通用 IMAP/SMTP 仅密码或邮箱授权码；Graph 保留 OAuth。当前 AddAccountDialog 通用提交固定 password，但 IPC DTO 和 mail_account_use_case 仍接受 OAuth2，因此 UI 没有选项并不等于后端已显式禁止。不引入通用 OAuth 授权端点/scopes/token 生命周期；先按 I-17 在入口拒绝并在执行路径明确报不支持，保留 Graph 合法认证分支。
 
-1. 用类型和数据库唯一键明确表示 `(account_id, mailbox, uidvalidity, uid)`，不能只给字符串换一个通用名称。
-2. UIDVALIDITY 变化后使旧位置与游标失效，终止或隔离引用旧一代的 mutation，再建立新一代投影；不要把“身份失效”直接解释为用户永久删除。
-3. 每次远端写操作 SELECT 后校验预期 UIDVALIDITY，不匹配则拒绝写并请求重同步。
-4. `internet_message_id` 只能辅助关联；不能假设全局唯一，也不能无条件用它合并所有邮件。
+**验收**：不同收发用户名/凭据可用；无效组合不能构造或落库；缺配置不被悄悄路由 Graph；通用 OAuth2 被明确拒绝、无副作用，Graph OAuth 回归通过。此处不要求 V1 支持更多认证协议。
 
-**验收**：旧代 UID 10 与新代 UID 10 内容不同；旧代待删除/待已读任务均不得作用于新代，旧内容不得覆盖新代。
+### A-06：局部变更靠空值占位，发送状态与同步混用
 
-### I-07 / P1：附件只有元数据，实际发送为空
+**问题**：完整快照与局部更新无显式区分，发送阶段含义不明确。
 
-**证据**：`src/features/compose/useComposeDraft.ts::addAttachments` 只提取 name/size/mime；`application/dto/compose_dto.rs::ComposeAttachmentDraft` 没有内容引用；`outbound_use_case.rs::send_via_smtp` 传 `attachments: Vec::new()`。Graph 外发模型同样未接上这些附件。
+**原因与依据**：imap::flag_only_remote 构造空 subject/body=None 的 RemoteMessage；upsert_remote_message 据此猜测 FLAGS-only。RemoteField/RemoteMessagePatch 虽已定义但未接入；MessageSyncStatus 同时承担发送状态。
 
-**影响**：用户看到附件列表，本地 `has_attachments` 为真，收件人实际收到的邮件没有附件。仅附件邮件甚至可能被发送成空正文邮件。
+**解决方案**：显式变更类型表达完整快照、FlagsChanged、位置移出/失效；稀疏更新区分 Unchanged/Value。FLAGS 更新指向 Message 当前唯一定位和预期 generation/定位修订，不以空标题/空正文推测；更新该位置远端观测后，结合最新本地意图重算 UI 状态，不影响其他 Message。未返回某 FLAG 是 Unchanged；显式完整 FLAGS 集不含某 FLAG 才表示清除；无法获得的能力表达未知，不能伪造 false。接入或删除未使用 Patch 类型，保留一套实际契约，与 A-01/A-02 一起调整类型和仓储。
 
-**修改方式**：先定义附件实体/引用和 ComposePort 的导入契约，再由 Adapter 将内容交给 Rust 暂存；Rust 返回稳定附件 ID。发送前在 application 校验所属账号/草稿、存在性和大小，读取持久化附件构建实际 MIME。消息、发送任务、附件引用同事务落库，文件导入采用暂存与清理流程。两种发送协议共用该内容来源。完成前至少拒绝带附件的实际发送，避免静默丢弃。
+**状态分离**：
 
-**验收**：同名附件、二进制附件、仅附件邮件、重启后发送、暂存文件缺失和发送失败重试；接收端文件字节与原始文件一致。
+移动只产生源位置移出和目标位置新增两类事实，不增加“保持身份的移动”变更类型；源实体状态及任务不迁移到目标实体。原生操作返回值可确认执行结果、提供目标位置供普通入库，但不参与跨位置身份关联；未知结果按既有失败恢复规则核对，不自动重做移动。
 
-### I-08 / P1：发送错误被忽略，缺少持久化发送任务及结果状态
+| 状态归属 | V1 推荐状态与边界 |
+|---|---|
+| 发送任务（Message 关联） | 排队、发送中、服务器已接受、可重试失败、永久失败、结果不确定、取消；持久化尝试阶段/lease/错误。只有确定未接受的可重试失败自动重发；发送中 lease 过期但无法证明未提交则不确定。接受不是最终送达，不以 Synced 表示接受 |
+| Sent 归档任务（接受后独立推进） | 等待服务器副本/待 APPEND、归档中、已确认归档位置、可重试失败、结果不确定、需配置；服务器保存或客户端 APPEND 为互斥账号策略。有确定操作结果才引用对应 Sent Message，不按内容匹配；APPEND 的未知结果先核对，归档任何失败不得重新入发送队列 |
+| Message 的单一 RemoteLocation / 文件夹同步 | Message 行保存定位 present/missing/invalidated、该位置 FLAGS 观测及内容完整性；文件夹保存同步进度/错误。Sent 副本未同步不表示 SMTP 失败，位置存在也不证明发送任务接受 |
+| 本地 Message / 展示投影 | 内容、账号/会话归属、本地草稿或无有效位置的保留记录；is_read/is_draft/展示范围等按 §3 派生，待完成意图单独覆盖。不同位置实体无共享状态，删除意图不是 DeletedRemote 同义词 |
 
-**证据**：`compose_use_case.rs::send` 提交消息、移除内存草稿后，以 `let _ = flush_pending_message(...).await` 忽略发送错误。检索当前 `src-tauri/src`，`flush_pending_message` 只有此处调用，未发现定时恢复 PendingLocal 的入口。`outbound_use_case.rs::flush_pending_message` 只在发送前读状态、成功后写 Synced，没有任务认领。
+首次发送前在内容持久化后，同事务保存发送任务、稳定 Message-ID、Date、完整可重放 MIME 引用、envelope 和附件引用；提交后才允许网络发送。编辑排队内容需取消尚未派发任务并创建新的内容版本；发送中/结果不确定时不直接改原尝试内容。SMTP/Graph Adapter 输出统一接受/拒绝/不确定事实，不把 Graph 普通操作 ID 当业务身份或最终送达证明。Graph 当前 `save_to_sent_items=true` 仅表示请求保存，未证明归档已确认；统一接入时遵循 I-11 的确定操作结果及独立位置入库规则。
 
-**影响**：失败无法可靠反馈，消息可能长期滞留；并发发送可能重复提交；SMTP 已接受后本地落库失败，后续再次发送会重复。返回的 bundle 也是发送前的 PendingLocal 快照。
+**源码/数据库影响**：拆除 MessageSyncStatus 同时表示发送与删除的职责，增加发送/归档任务及不可变内容引用、位置同步状态和本地意图；`smtp/send.rs` 当前现场构造 MIME、仅返回 accepted，`outbound_use_case` 随后将 Message 标为 Synced，不能作为上述状态机已实现的证据。
 
-**修改方式**：
+**验收**：空标题/空正文合法邮件不会误判变更类型，局部更新不清空其他字段，发送阶段可区分。
 
-- 在本地提交时同时创建持久化发送任务；由公共 worker 通过条件更新认领，记录 lease、尝试次数、下次执行时间和结构化错误。
-- 明确区分排队、发送中、服务器已接受、失败和结果不确定；不要用同一个 Synced 概括所有过程。
-- 在首次发送前生成并保存稳定 Message-ID，以及可重用的邮件内容/MIME；重试不重新生成身份。
-- 已明确拒绝的永久失败停止自动重试；瞬时失败退避；最终 DATA 发送后连接中断等情况进入“结果不确定”，不能盲目无限重发。
-- 发送任务的接受结果、消息状态和 UI ChangeSet 在本地事务中一致更新。草稿何时清空取决于明确的“已入队”契约，UI 不得将入队等同于成功投递。
+增加相互独立验收：已接受但归档失败、归档已有关联但同步暂失败、最终应答丢失/发送中崩溃、发送前 MIME 持久化失败；重启后状态不混用，同一尝试内容保持稳定，未确认未接受的任务不自动重发。
 
-**限制**：任务认领和稳定 Message-ID 能降低重复，但 SMTP 不提供普遍的幂等键，不能承诺严格恰好一次。DATA 最终应答超时的重复风险见 [RFC 5321 §4.5.3.2.6](https://www.rfc-editor.org/rfc/rfc5321.html#section-4.5.3.2.6)。
+## 4. 后续实施顺序
 
-**验收**：离线发送、重启恢复、两个 worker 同时认领、认证失败、服务器接受后数据库失败、最终应答丢失；UI 分别显示真实状态且不静默丢失内容。
+| 顺序 | 内容 | 对应问题 |
+|---|---|---|
+| 1. 安全止损 | 阻止扩大删除、附件静默丢弃、发送错误冒充成功、凭据泄露及 HTML 远程资源自动加载 | I-01、I-07、I-08、I-16、I-19（已静态确认路径，利用与网络效果待测试） |
+| 2. 统一核心模型 | 共同确定 Message 0..1 定位、账号内身份、位置唯一键、Folder 身份、FLAGS/意图/发送归档状态及依赖归属；同时修订仓储函数/事务契约和相关表；账号/凭据配置一致，显式拒绝不支持的认证 | A-01、A-02、A-06；I-06、I-10、I-12 的模型部分；A-05、I-17；A-03 的版本/提交契约 |
+| 3. 可靠收发与后台恢复 | 完成发送/归档任务边界、mutation 固定目标恢复、附件生命周期、单 UID 失败隔离、按夹提交与变更版本、账号任务取消；性能先测量 | I-07、I-08、I-10、I-13、I-14、I-15、I-16/I-17 的恢复；A-03、A-04、A-06 |
+| 4. 协议完整性及验证 | 完善 MIME/回复头/plain、特殊文件夹与 All 展示范围、Sent APPEND/服务器保存、SMTP 错误分类和 HTML 隔离；验证 Graph/IMAP 同位置幂等、不同位置独立与操作安全 | I-01、I-11、I-12、I-18、I-19；A-01 至 A-06 回归 |
 
-### I-09 / P1：XOAUTH2 被重复 Base64 编码，令牌续期未接入
+每项按“领域规则 → Repository 模块函数契约 → application 编排与 infrastructure → 必要的 IPC/前端 Port 与 Adapter”实施。V1 可重建开发库和重新登录，不为旧字段或旧 IPC 保留兼容链。
 
-**证据**：`client.rs::Xoauth2::process` 返回 Base64；锁定的 imap 2.4.1 在 `authenticate` 内部再次编码。`MailSecret` 保存 refresh_token/expires_at_ms，但通用 IMAP/SMTP 路径只读取 access_token。
+阶段允许必要的前置依赖，同一问题可先止损、再完善恢复和验证，不重复计为新问题。A-02 随核心模型调整，不留到最后搬类型；统一定位直接放在 Message，移动沿用位置移除/新增，不增加身份保留映射、位置集合表或跨文件夹合并任务，尽量一次改完相关表和调用方。通用 OAuth2/XOAUTH2 的完整能力不进入 V1 必须完成顺序；但拒绝不支持的配置是 V1 入口正确性要求。Graph OAuth 保留。全量 UID 差集、历史主动续跑、FLAGS 批量核对及 INBOX IDLE 策略继续有效，不恢复为未实现项。
 
-**修改方式**：Authenticator 返回原始 SASL 字节/字符串，只让库编码一次；处理认证失败 challenge 时按协议结束交换。通用令牌获取封装为基础设施模块函数，使用到期时间、刷新授权配置和账号级并发保护；刷新失败区分可重试与须重新授权。先在 application 取得有效 token，再调用 IMAP/SMTP。不能仅凭 refresh_token 字符串就宣称支持任意 OAuth 服务，需完整授权服务器、客户端和 scope 配置。
+## 5. 验证缺口
 
-**验收**：模拟服务器校验解码一次后的 SASL 数据；到期前刷新、并发刷新、refresh token 轮换、授权撤销；不得把 token 写进日志。依据：[imap 2.4.1 authenticate 源码](https://docs.rs/imap/2.4.1/src/imap/client.rs.html#478-480)。
+现有 `domain/services/imap_sync_policy.rs` 的 5 项纯规则测试覆盖稀疏 UID、跨批次补齐、失败保留、空邮箱/删除和 UID 上界；`tests/imap_history_sync.rs` 验证已提交进度与启用文件夹驱动续跑。另有协议配置/游标与 Repository 事务测试。此前复核记录共 17 项通过，本轮仅检查相关测试定义、未重跑，不将历史结果用于证明本次新增模型规则已满足。
 
-### I-10 / P1：IMAP 变更队列缺少定时重试入口
+仍需补充：
 
-**证据**：`message_use_case.rs` 为失败 mutation 记录下次执行时间；`runtime/mail_sync_scheduler.rs` 只筛选 Graph 账号后调用 `flush_due_mutations`；IMAP watcher 只调用邮件同步。用户动作会即时触发一次 flush，但不能替代恢复任务。
+1. 模拟协议交互：安全删除、缺正文/解析失败、整页坏信/批次网络错误、IDLE 超时与取消、SMTP 临时/永久拒绝和不确定结果。纯集合测试不替代真实解析与网络交互测试。V1 验证通用 OAuth2 配置/IPC/后台路径被明确拒绝且无副作用、Graph OAuth 不受影响，不要求通用刷新/轮换/撤销测试。
+2. 统一模型与 SQLite：Message 最多一个有效位置、三列唯一键和并发重复同步幂等；不同账号/不同位置的 Message 永远独立，头/正文全同不合并，A→B 的 Sent/INBOX 独立状态与任务。所有移动（含 Postlet 发起）均源位置移除、目标位置新增，目标不继承源 MessageId；复制保留源并在目标新建，操作返回与同步重复发现目标均按位置幂等。覆盖原生移动能力不足、UIDVALIDITY 不匹配、移动成功后 SQL 失败、最终应答丢失及重启核对，不盲目重做或扩大远端操作范围；异常头/回复关系只影响既有会话判断、generation/定位失效、旧任务不追到目标、已读反向操作和旧 FLAGS 晚到、lease 恢复；文件夹重命名/删除重建/角色变化不继承旧任务。改变/不提供 Graph 专有身份字段或停用 Delta 不改变业务决策。另测退出/清理竞态、外部凭据补偿。
+3. MIME/特殊文件夹：嵌套结构、disposition、CID、地址组、日期、完整 plain；SPECIAL-USE/无扩展、INBOX 语义、Draft FLAG 与 Drafts 属性、非英文名称/角色手动映射。Graph/IMAP 同角色规则一致，INBOX/Archive/All 各自独立入库，All 默认排除、显式范围展示；同内容不同位置的已读/删除独立，不要求底层去重。
+4. 附件故障注入：临时写/原子移动/SQL 事务各阶段失败和崩溃重启，孤儿清理与无效引用、发送重试持久内容、多消息共享引用、回收与导入/运行任务竞态、账号退出后的保留策略；接收端字节一致且不静默缺附件发送。
+5. HTML 安全：检查实际安装的 Sanitizer 版本与策略，构造脚本/事件/危险 URL/畸形 HTML/CSS 样例；捕获打开和清洗期间的网络请求，验证默认屏蔽、授权范围、CID/本地资源越权、外链与 HTML 附件隔离。分别在 Tauri 开发/生产检查 CSP、窗口/子上下文 capabilities 与 IPC 拒绝；目前未运行，不声称已证实 XSS、IPC 利用或 HTML 附件越权。
+6. 受控端到端与性能：大邮箱基准、服务器收取范围、不同 IDLE/UIDPLUS/MOVE、两类 Sent 行为。未来采用发现高水位/UIDNEXT 时，对照集合基线验证发现后崩溃、下载失败、稀疏 UID、FLAGS/删除和周期补漏；不把优化缺失本身列为发布阻塞，也不把服务器不可见邮件误判成分页失败。
+7. 发送/归档恢复：首次网络调用前 Message-ID/MIME 已持久化；确定拒绝才自动重发，接受后本地回滚/最终应答丢失不盲目重发；APPEND 失败只重试归档，未知结果不盲目重做。自动保存 Sent 按位置独立入库，不按头/正文匹配；确定操作结果绑定无位置发送记录或引用已存在 Sent 实体，不合并实体，普通会话无位置发送记录展示符合 I-11。
+8. ChangeSet/通知一致性：commit 前失败、commit 后分发前崩溃、漏事件/重订阅/查询乱序、两批成功后第三批失败；版本与数据同快照，已提交批次均可重查恢复，系统通知尽力而为且重启不补放历史，不以通知失败回滚收信或重做协议操作。
 
-**修改方式**：将 mutation 与发送任务处理放入所有已登录账号共用的后台调度；接收同步、mutation、发送、聚合各自具备进度与错误处理，某项失败不阻断其他任务。mutation 增加认领/版本保护，避免即时任务与定时任务并发发送旧状态；账号退出后停止派发。
+只在对应行为和失败路径验证后移除问题；“能收新邮件”“网页已读后来一致”或“增加日志”均不能等同于所有收发与恢复问题已解决。
 
-**验收**：IMAP 账号离线改已读/删除，首次失败后不再触发用户动作，恢复网络即可补推；重启恢复；连续更改同一封邮件时最后意图生效。
+## 6. V1 暂不支持及后续规划
 
-### I-11 / P2：SMTP 回复头、纯文本正文和服务器副本关联不完整
+### I-09 / P2（V1 暂缓）：通用 OAuth2/XOAUTH2 分支不可视为已支持
 
-**证据**：`outbound_use_case.rs::send_via_smtp` 从 `message.internet_message_id` 构建 In-Reply-To/References，而 compose 已把父信 ID 存到 `message.in_reply_to`；HTML 邮件的 text/plain 部分仅取截断的 body_preview。发送结果只有 accepted，未保存本次生成的 Message-ID，也没有 IMAP Sent APPEND 路径。
+**状态**：暂缓完整能力，未修复；从 V1 必须实现功能列表移出，不计为已解决。显式拒绝该配置的 V1 必要工作归 I-17/A-05。
 
-**影响**：回复线程断开，纯文本阅读器看到截断正文；不自动保存 Sent 的服务器没有远端已发送副本；自动保存副本的服务器后续同步可能产生与本地消息未关联的第二条记录。
+**技术事实与依据**：`imap/client.rs::Xoauth2::process` 自己 Base64 编码，锁定 imap 2.4.1 的 authenticate 再编码，存在双重编码。`MailSecret` 虽有 refresh_token/expires_at_ms，通用 IMAP/SMTP 仅读取 access_token。当前 AddAccountDialog 通用账号固定 password，但 `UpsertImapSmtpAccountCommand`、`mail_account_use_case` 和协议执行分支仍允许 OAuth2，后端尚未显式禁止。这些是静态代码结论，没有成功认证/攻击复现。
 
-**修改方式**：发送自身稳定 Message-ID，In-Reply-To 使用父信字段；独立保存并构造 References 链；text/plain 从完整正文生成。明确已发送归档策略：根据账号/服务器行为配置自动保存或客户端 APPEND，保留原 MIME；APPEND 失败只重试归档，不重发 SMTP。关联服务器副本时使用账号、发送任务、Message-ID 等证据，避免无条件按 Message-ID 去重。
+**V1 边界与处理**：新通用邮箱只支持密码、应用密码/邮箱授权码，UI 不宣称支持 OAuth2，IPC/用例和后台对不支持的配置明确报错，不进入错误 XOAUTH2 流程、不静默换认证方式。不能只删除共享枚举的 OAuth2 而破坏 Graph；Graph OAuth 登录及已有令牌管理保留。
 
-**验收**：新邮件与回复头正确；长正文 plain 不截断；自动保存与不保存 Sent 两类服务端均可归档；归档失败不造成邮件重复发送。
+**本期不要求**：通用 access_token 刷新、refresh_token 轮换/撤销/并发刷新、多服务商授权端点或 scopes 适配，均不作为 V1 发布阻塞或立即实施任务。未来确有需求时再评估启用范围，并在启用前处理已记录的编码缺陷及重新定义验收，不保留误导性的半支持对外入口。
 
-### I-12 / P2：递归 MIME 已改善，但仍未区分附件、草稿和时间语义
-
-**证据**：`parse.rs::walk_parts` 递归取第一个 plain/html，没有判断 Content-Disposition；`parse_rfc822` 固定 `has_attachments=false`、`is_draft=false`、importance=Normal，且 received_at/sent_at 都取 `header_date.or(internal_date_ms)`。FETCH FLAGS 目前仅提取 Seen。
-
-**影响**：text/html 附件可能被选成正文；附件存在状态不准确；选中 Drafts 时草稿可能进入普通会话；发送者 Date 会影响收件排序。合法地址组也被 `push_role` 的 Single-only 遍历忽略。
-
-**修改方式**：保留当前递归，按 multipart/alternative、mixed、related 与 disposition 选择正文；独立收集附件元数据，定义 inline/CID 与下载引用。保留并映射 Draft 等必要 FLAGS。sent_at 使用邮件 Date，received_at 优先 INTERNALDATE，必要回退策略显式定义。地址组展开成员，避免丢失参与人。预览转换优先选用能正确处理实体和结构的实现，避免继续堆字符串替换。
-
-**验收**：嵌套 mixed/alternative/related、HTML 文本附件、CID 图片、草稿、时区与 Date 缺失、合法地址组；检查正文选择、会话归属与列表排序。
-
-### I-13 / P2：FLAGS 全量逐封往返，大邮箱同步成本高
-
-**证据**：`sync_folder` 对每个 known UID 调一次 `uid_fetch(..., "(FLAGS)")`。`sync_account_blocking` 先收集所有文件夹结果再返回，任一文件夹失败会使之前尚未落库的结果一起丢弃。
-
-**修改方式**：FLAGS 按有界 UID 集合批量 FETCH，按返回 UID 映射；普通 IMAP 保留批量核对兜底，有能力时增加 CONDSTORE/QRESYNC 优化。文件夹/批次逐个返回并由 application 独立提交进度，不必等待整个账号所有正文下载完成。错误按文件夹汇总，保留已经完成的进度。
-
-**验收**：上万封已知邮件不产生逐封 FLAGS 网络往返；其中一个文件夹失败，其他已完成批次可恢复，内存与执行时间有界。
-
-### I-14 / P2：IDLE 保活被当成超时，任务缺少生命周期管理
-
-**证据**：`idle.rs::run_idle_until_cancel` 没有取消参数，调用 set_keepalive + wait_keepalive，不会返回 TimedOut；`mail_watcher.rs` 只 SELECT INBOX，无其他文件夹定时兜底，started 集合没有任务移除/取消机制，新增账号靠 300 秒扫描发现。
-
-**影响**：仅非 INBOX 变化时可能长期不同步；任务无法在退出、修改协议/凭证时及时停止；已经建立的连接可能继续运行。方法实际语义见 [imap IDLE 文档](https://docs.rs/imap/2.4.1/imap/extensions/idle/struct.Handle.html)。
-
-**修改方式**：用有限时等待 API，例如 wait_with_timeout，把超时转为可观测结果；短周期检查取消信号/配置版本。公共定时器始终覆盖勾选文件夹，IDLE 仅用于提前唤醒。用账号任务表管理 JoinHandle、取消信号和配置版本，账号事件触发创建/停止/重建，扫描仅作恢复兜底。
-
-**验收**：INBOX 无变化但其他勾选夹有新信；退出账号、切换协议、替换凭证、服务端断线和不支持 IDLE；任务能在明确时间内退出或重建。
-
-### I-15 / P2：连接超时与凭证输入处理不一致
-
-**证据**：`client.rs::connect_tcp` 只尝试 DNS 第一个地址；STARTTLS 使用库连接入口，绕过自定义连接/读写超时；密码登录先 trim 密码。`trigger_mail_sync` 外层 timeout 包裹 spawn_blocking 的等待，但超时不终止已启动的阻塞任务。
-
-**影响**：部分双栈网络无法回退；STARTTLS 可能长期阻塞；含首尾空格的合法密码改变；外层释放同步 gate 后旧阻塞任务还可能继续占用连接和执行 FETCH。
-
-**修改方式**：统一 TLS/STARTTLS 的连接预算和读写超时，受总预算约束尝试地址；不要 trim 密码。显式处理 greeting 和握手状态，遵循锁定库 API。为阻塞循环增加取消检查与有界操作，gate 的释放与任务实际结束语义一致。使用阻塞 imap crate 本身不违反架构，无须仅为形式更换为异步库；若更换，也要先定义取消语义。
-
-**验收**：第一个地址不可达、STARTTLS 不回应、TLS 握手停滞、总超时、取消、含空格密码；没有不断累积的后台阻塞任务。
-
-### I-16 / P1：密码与令牌以明文 JSON 保存
-
-**证据**：`infrastructure/mail/credentials.rs::save` 将完整 MailSecret 序列化后直接 `tokio::fs::write` 到 `*.mail-secret.json`。写入非原子覆盖；秘密类型还派生 Debug。
-
-**修改方式**：使用操作系统凭据存储，或由系统保护密钥的加密存储；数据库仅保存凭据引用和必要的非秘密元数据。禁止完整秘密的 Debug 输出。若有文件式元数据，使用原子替换；退出时传播或记录凭据删除失败，避免静默保留有效密码。V1 可清理本地开发凭据并重新登录，不保留长期明文兼容读取分支。
-
-**验收**：磁盘普通 JSON 不含密码/token；中断写入不破坏上一个有效版本；退出和删除失败可观测；日志不泄露秘密。
-
-### I-17 / P2：账号更新先提交，后验证和保存秘密
-
-**证据**：`mail_account_use_case.rs::upsert_imap_smtp_account` 在构造和校验 MailSecret 前提交数据库事务；password/access_token 缺失或秘密保存失败时，账号已被写入并标记登录。
-
-**修改方式**：所有纯参数校验提前，包含端点、端口、认证必填值和 TLS 策略；凭据先写入新的独立引用，数据库事务最后切换账号配置和凭据引用。数据库失败时新引用作为未引用资源清理；旧引用在切换成功后回收。外部凭据存储与 SQLite 无法靠一个 SQL 事务实现原子提交，应明确补偿/恢复流程，避免覆盖旧凭据后无法回退。
-
-**验收**：缺密码、凭据存储失败、数据库提交失败、修改已有账号失败；不能把无可用凭据的配置作为已成功登录账号使用。
-
-### I-18 / P2：SMTP 所有发送错误都被标记为可重试
-
-**证据**：`infrastructure/smtp/send.rs::send_message` 将 transport.send 的任何错误映射为 `Remote { retryable: true }`；同一实现支持 `MailTlsMode::Plain`，而 IMAP 明确禁用明文。
-
-**修改方式**：根据 lettre 错误类别与 SMTP 状态区分认证、临时失败、永久拒绝和结果不确定，不让 5xx 或错误配置无限重试。明确 V1 传输安全策略，建议账号校验时统一拒绝普通远端账号的明文凭据传输；若确需本地开发 SMTP，显式限制为开发配置。不要只根据返回一个错误就断言服务器绝未接收，见 I-08。
-
-**验收**：认证拒绝、收件人永久拒绝、4xx 暂时失败、TLS 不可用和 DATA 应答丢失；任务状态和 UI 提示与实际类别一致。
-
-## 4. 架构问题及目标形态
-
-### A-01：Graph 命名背后是身份模型与同步语义缺失
-
-当前 Message 的 `graph_id/graph_change_key/created_at_graph`、通用 RemoteMessage 的 GraphImmutableId、IMAP 复用 GraphMessageChange 与 delta_link/next_link，使 IMAP 的 mailbox generation、分页和移动语义无处表达。
-
-建议定义纯 Rust 的协议定位值对象与同步进度：Graph immutable ID；IMAP mailbox、UIDVALIDITY、UID；Graph delta/next 与 IMAP incremental/backfill 分别表达。数据库可用关联位置表保存协议投影，本地 MessageId/SessionId 继续作为稳定业务身份。Graph 账号和 IMAP 账号共用写入与聚合流程，但协议身份不能强行同形。
-
-IMAP 跨夹移动可能表现为旧 UID 消失、新夹产生新 UID；文件夹只应影响远端位置。设计时还需覆盖多位置副本：不能把“某个位置消失”直接等同于整封业务邮件被删除，也不能仅靠相同 Message-ID 自动判定所有副本同一。V1 应明确关联证据和保守策略。
-
-### A-02：基础设施反向依赖 application
-
-证据包括 `infrastructure/imap/sync.rs`、`graph/mail.rs` 依赖 application 的 RemoteMessage/变更 DTO，多个 repository 依赖 application 的查询 DTO、任务类型和 PortError。与现有架构约定的依赖方向不符。
-
-修改时区分类型归属：
-
-- 业务实体、纯规则、远端身份等无 IO 语义进入 domain。
-- 具体协议结果、存储结果与技术错误放在 infrastructure 自己的契约/类型模块；application 向上转换为用例 DTO 和 AppError。
-- 纯分页/筛选值可放在合适的底层纯类型模块，不能为了共享把所有 IPC DTO 塞进 domain。
-- repository 继续使用模块函数与 `&mut SqliteConnection`；跨仓储事务继续由 application 控制。
-
-目标是让 application 依赖 infrastructure/domain，infrastructure 不再导入 application，而非增加一套 trait 注入体系。
-
-### A-03：用例依赖运行时，形成双向关系
-
-`sync_use_case` 依赖 runtime 的 MailSyncGate/ChangeDispatcher，dispatcher 内部持有 Tauri AppHandle；`compose_use_case` 直接接收 AppState；`message_use_case` 直接使用 Tauri async_runtime 启动后台任务。runtime 又调用这些用例。
-
-建议 application 接收明确资源参数，返回业务结果与 ChangeSet；runtime/command 调用方负责 commit 成功后的分发、后台唤醒和任务生命周期。任务认领、gate 与重入策略由统一的调度入口执行，所有手动与定时触发共用入口。长流程按批次返回结果，避免“整个账号全部成功才发事件”，让已提交变更可见。
-
-这样无需创建 Rust interfaces 层，也无需引入 Repository trait；用例仍可直接使用 SqlitePool 与具体事务。
-
-### A-04：Graph 与 IMAP 拥有不同的后台可靠性保障
-
-Graph scheduler 包含同步、mutation 与 locate；IMAP watcher 独立实现登录、端点组装、认证与调度，遗漏 mutation 恢复。发送任务又不属于任何周期处理器。
-
-建议保留一套账号后台任务管理：收信同步、远端 mutation、发送、聚合和投影刷新共享生命周期、重试、观测与账号状态检查；各任务独立失败处理。Graph delta、IMAP IDLE 是收信驱动方式，协议特有 locate 仍按能力路由。IMAP 认证/端点解析提取为基础设施模块函数，不要在 sync、message、watcher 三处重复拼装。
-
-### A-05：收发协议分开了，认证与配置有效性尚未分开
-
-`domain/entities/mail_transport.rs::AccountMailTransport` 有独立 receive_protocol/send_protocol，但只有一份 auth_kind/username/secret，无法自然表达 IMAP 与 SMTP 使用不同认证。大量 Option 允许 IMAP 缺 host、SMTP 缺 port 等无效状态，错误延迟到运行时。
-
-建议用 ReceiveConfig/SendConfig 枚举表达有效配置，各自引用 AuthConfig/CredentialRef；允许两者显式共用同一引用。输入 DTO 在 application 入口完成校验，领域类型构造后满足必填不变量。协议仍按配置选择，服务商品牌只做预填模板。
-
-`repository/mail_transports.rs::ensure_default` 在配置缺失时直接写入 Graph 默认也应收敛：默认值只用于明确创建 Graph 账号，运行中的账号缺协议配置应暴露为配置错误。这样不会将损坏配置默默路由到 Graph。
-
-### A-06：完整快照、局部变更和发送状态没有明确分型
-
-FLAGS-only 通过“空 subject + body=None”制造 RemoteMessage 占位，再在 `sync_use_case::upsert_remote_message` 猜测更新类型。`RemoteMessagePatch/RemoteField` 虽然已定义，但未接入实际路径。发送状态又借用同一 MessageSyncStatus。
-
-建议变更显式分型，例如完整快照、FlagsChanged、位置失效/移出信号；部分字段采用明确的 Unchanged/Value 语义，不使用业务字段的空值作标记。发送任务单独建状态机，与接收同步状态分离。按唯一实际用途接入或删除未使用的 Patch 类型，不保留两套形状。
-
-## 5. 建议实施顺序与改动范围
-
-| 阶段 | 工作 | 主要文件/模块 | 退出条件 |
-|---|---|---|---|
-| 1. 阻止数据与操作损失 | I-01、I-03、I-04；附件未接通前明确拒绝；发送结果可见 | imap/client、imap/sync、compose/outbound 用例、ComposePort/Adapter | 不扩大删除范围，不因同步改已读，无新增不报错，不静默丢附件/吞发送失败 |
-| 2. 修正模型与任务契约 | I-06、I-08；A-01、A-05、A-06 | domain、schema、repository 模块契约、application DTO、前端 Port | 远端身份带 generation，收发配置有效，发送与局部变更显式建模 |
-| 3. 完成同步与后台恢复 | I-02、I-05、I-10、I-13～I-15；A-03、A-04 | IMAP 同步、公共调度、mutation/发送任务仓储 | 分页不漏、故障可恢复、账号生命周期可取消、阻塞任务有界 |
-| 4. 完成通用收发能力 | I-07、I-09、I-11、I-12、I-16～I-18 | 附件存储、MIME、OAuth/凭据、账号用例、SMTP | 附件可收发，回复/归档闭环，认证与错误分类正确 |
-| 5. 收敛依赖与文档 | A-02，其余跨层整理 | infrastructure 类型、application、runtime、相关设计文档 | infra 不依赖 application，用例不依赖 Tauri/AppState，契约只有一套 |
-
-阶段可分小步提交；模型相关修复必须沿“领域规则 → Repository 函数契约 → application/infra → IPC/前端 Port 与 Adapter”推进。不要为了赶阶段在永久代码里加入旧字段别名或兼容读取链。需要重置开发库时写清重建和重新登录步骤即可。
-
-## 6. 验证策略与完成标准
-
-现有 `src-tauri/tests/mail_protocol_routing.rs` 主要验证协议配置存取与游标编解码；`repository_transactions.rs` 验证本地仓储事务。当前未发现覆盖上述 IMAP/SMTP 交互行为的完整模拟服务端测试，不能用配置测试通过代替协议正确性。
-
-建议按行为补充有意义的验证：
-
-1. **纯规则测试**：UID 候选过滤/批次进度、UIDVALIDITY 不匹配、MIME 正文选择与附件排除、回复头、错误分类。
-2. **模拟协议测试**：无新增时范围返回旧 UID、缺正文、FETCH 过程中删除、UID EXPUNGE 失败、XOAUTH2 编码、IDLE 超时/取消、SMTP 拒绝及结果不确定。以协议响应驱动断言，不依赖生产邮箱。
-3. **SQLite 集成测试**：邮件与游标/重试任务同事务提交、发送认领并发、过期 lease 恢复、旧 generation mutation 失效、账号更新失败补偿、远端移出后的会话投影刷新。
-4. **受控端到端验证**：有/无 IDLE、有/无 UIDPLUS/MOVE、TLS/STARTTLS、不同 Sent 自动保存行为、附件和中文 MIME。使用测试账号；任何破坏性操作均限定测试数据。
-
-最终检查：会话仍为业务核心，Message 归属唯一 Session；文件夹只表示同步位置；协议流量只在 Rust infrastructure；Graph 继续使用 graph-rs-sdk；UI 通过 Port/Adapter；跨仓储事务由 application 控制；无旧版本兼容双轨。
-
-本文是静态复核与修改计划，不是测试通过报告。实施后应逐项记录实际验证结果、提交版本和剩余限制。
+**当前验收**：通用 OAuth2 请求明确不支持且无写库/网络副作用；密码/授权码路径仍可用；Graph OAuth 不受影响。完整通用 OAuth2 能力暂不安排实现或宣称测试通过。
