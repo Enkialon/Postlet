@@ -291,6 +291,12 @@ CREATE TABLE pending_message_mutations (
     attempts        INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
     available_at    INTEGER NOT NULL,
     last_error      TEXT,
+    -- Task 10：认领与执行阶段；旧尝试的结果不能确认新意图
+    claim_token     TEXT,
+    claimed_version INTEGER,
+    lease_until     INTEGER,
+    execution_phase TEXT CHECK(execution_phase IS NULL OR execution_phase IN ('started','sent','confirmed')),
+    last_error_code TEXT,
     PRIMARY KEY (account_id, message_id),
     FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE,
     CHECK (

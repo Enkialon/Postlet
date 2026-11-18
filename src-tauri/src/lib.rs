@@ -58,6 +58,10 @@ pub fn run() {
                 changes.clone(),
                 mail_sync_gate.clone(),
             );
+            tauri::async_runtime::block_on(
+                application::use_cases::message_use_case::recover_interrupted_mutations(&db),
+            )
+            .ok();
             runtime::aggregate_scheduler::spawn(db.clone(), changes.clone());
             runtime::send_worker::spawn(
                 db.clone(),

@@ -39,6 +39,20 @@ async fn tick_once(
     };
 
     for account in list {
+        // 待推已读/删除：两种协议都在此周期扫描（Graph 走 sendMail REST，IMAP 走 UID STORE）
+        let flush_db = db.clone();
+        let flush_paths = paths.clone();
+        let flush_account = account.id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = message_use_case::flush_due_mutations(
+                &flush_db,
+                &flush_paths,
+                &flush_account,
+                32,
+            )
+            .await;
+        });
+
         if !account_is_active_for_graph_sync(db, &account.id).await {
             continue;
         }

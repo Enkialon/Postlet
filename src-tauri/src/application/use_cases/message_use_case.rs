@@ -205,17 +205,37 @@ pub async fn delete_messages(
 }
 
 /// 串行推送到期的已读 / 删除变更。
+/// 认领租约：到期只表示需要恢复核对，不表示可以并行执行
+const MUTATION_LEASE_MS: i64 = 5 * 60 * 1000;
+
+/// 启动恢复：清理残留认领，保留意图等待重新核对。
+pub async fn recover_interrupted_mutations(db: &SqlitePool) -> Result<u32, AppError> {
+    let mut conn = db.acquire().await?;
+    mutations::recover_interrupted(&mut conn, now_ms())
+        .await
+        .map_err(AppError::from)
+}
+
 pub async fn flush_due_mutations(
     db: &SqlitePool,
     paths: &AppPaths,
     account_id: &AccountId,
     limit: u32,
 ) -> Result<u32, AppError> {
+    // 认领：写入 claim_token/租约后才允许网络写，旧结果不能确认新意图
+    let claim_token = uuid::Uuid::new_v4().to_string();
     let due = {
         let mut conn = db.acquire().await?;
-        mutations::list_due(&mut conn, account_id, now_ms(), limit)
-            .await
-            .map_err(AppError::from)?
+        mutations::claim_due(
+            &mut conn,
+            account_id,
+            now_ms(),
+            now_ms() + MUTATION_LEASE_MS,
+            &claim_token,
+            limit,
+        )
+        .await
+        .map_err(AppError::from)?
     };
     if due.is_empty() {
         return Ok(0);
@@ -264,9 +284,15 @@ pub async fn flush_due_mutations(
             },
             Err(e) => {
                 let available_at = e.retryable.then(|| now_ms() + backoff_ms(mutation.attempts));
-                mutations::record_failure(&mut conn, &mutation, &e.message, available_at)
-                    .await
-                    .map_err(AppError::from)?;
+                let _ = mutations::record_attempt_result(
+                    &mut conn,
+                    &mutation,
+                    available_at,
+                    Some(if e.retryable { "retryable" } else { "permanent" }),
+                    Some(&e.message),
+                )
+                .await
+                .map_err(AppError::from)?;
             }
         }
     }
