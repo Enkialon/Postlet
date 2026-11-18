@@ -72,6 +72,13 @@ async fn tick_once(
     };
 
     for account_id in account_ids {
+        // 先取得账号许可再认领：许可覆盖网络调用与结果落库整个尝试。
+        let operation = MailOperation::new(Duration::from_secs(120));
+        let Some(permit) =
+            gate.try_acquire_operation(account_id.as_str(), Some(operation))
+        else {
+            continue;
+        };
         let claimed = {
             let mut conn = db.acquire().await?;
             let attempt_id = uuid::Uuid::new_v4().to_string();
@@ -92,22 +99,20 @@ async fn tick_once(
         if claimed.is_empty() {
             continue;
         }
-        if claimed.len() > 0 {
-            let db2 = db.clone();
-            let paths2 = paths.clone();
-            let changes2 = changes.clone();
-            let gate2 = gate.clone();
-            let account2 = account_id.clone();
-            tauri::async_runtime::spawn(async move {
-                for task in claimed {
-                    if let Err(error) =
-                        run_attempt(&db2, &paths2, &changes2, &gate2, &account2, &task).await
-                    {
-                        eprintln!("发送尝试失败: {}", error.message);
-                    }
+        let db2 = db.clone();
+        let paths2 = paths.clone();
+        let changes2 = changes.clone();
+        let account2 = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _permit = permit;
+            for task in claimed {
+                if let Err(error) =
+                    run_attempt(&db2, &paths2, &changes2, &account2, &task).await
+                {
+                    eprintln!("发送尝试失败: {}", error.message);
                 }
-            });
-        }
+            }
+        });
     }
     Ok(())
 }
@@ -117,37 +122,10 @@ async fn run_attempt(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
-    gate: &MailSyncGate,
     account_id: &AccountId,
     task: &crate::domain::entities::SendTask,
 ) -> Result<(), AppError> {
-    let operation = MailOperation::new(Duration::from_secs(120));
-    let Some(permit) = gate.try_acquire_operation(account_id.as_str(), Some(operation.clone()))
-    else {
-        // 账号忙：放回队列稍后重试，不触碰网络
-        let mut conn = db.acquire().await?;
-        let now = now_ms();
-        send_tasks::record_result(
-            &mut conn,
-            account_id,
-            &task.task_id,
-            task.content_version,
-            task.attempt_id.as_deref().unwrap_or_default(),
-            task.claim_token.as_deref().unwrap_or_default(),
-            SendState::Retryable,
-            None,
-            Some(now + backoff_ms(task.attempts)),
-            Some("busy"),
-            Some("账号正在执行其他邮件任务"),
-            now,
-        )
-        .await
-        .map_err(AppError::from)?;
-        return Ok(());
-    };
-
     let result = outbound_use_case::execute_claimed_attempt(db, paths, account_id, task).await;
-    drop(permit);
 
     let now = now_ms();
     match result {

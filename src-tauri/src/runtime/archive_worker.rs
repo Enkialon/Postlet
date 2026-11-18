@@ -48,6 +48,13 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
             .collect::<Vec<_>>()
     };
     for account_id in account_ids {
+        // 先取得账号许可再认领；许可覆盖网络与归档结果落库整个尝试。
+        let operation = MailOperation::new(Duration::from_secs(120));
+        let Some(permit) =
+            gate.try_acquire_operation(account_id.as_str(), Some(operation))
+        else {
+            continue;
+        };
         let claimed = {
             let mut conn = db.acquire().await?;
             let now = now_ms();
@@ -63,15 +70,18 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
             .await
             .map_err(AppError::from)?
         };
-        for task in claimed {
-            let db2 = db.clone();
-            let paths2 = paths.clone();
-            let gate2 = gate.clone();
-            let account2 = account_id.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = run_attempt(&db2, &paths2, &gate2, &account2, &task).await;
-            });
+        if claimed.is_empty() {
+            continue;
         }
+        let db2 = db.clone();
+        let paths2 = paths.clone();
+        let account2 = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _permit = permit;
+            for task in claimed {
+                let _ = run_attempt(&db2, &paths2, &account2, &task).await;
+            }
+        });
     }
     Ok(())
 }
@@ -79,31 +89,10 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
 async fn run_attempt(
     db: &SqlitePool,
     paths: &AppPaths,
-    gate: &MailSyncGate,
     account_id: &AccountId,
     task: &ArchiveTask,
 ) -> Result<(), AppError> {
-    let operation = MailOperation::new(Duration::from_secs(120));
-    let Some(permit) = gate.try_acquire_operation(account_id.as_str(), Some(operation.clone()))
-    else {
-        let mut conn = db.acquire().await?;
-        let now = now_ms();
-        archive_tasks::record_append_result(
-            &mut conn,
-            task,
-            ArchiveState::Retryable,
-            Some(now + 30_000),
-            Some("账号正在执行其他邮件任务"),
-            None,
-            now,
-        )
-        .await
-        .map_err(AppError::from)?;
-        return Ok(());
-    };
-
     let result = append_once(db, paths, account_id, task).await;
-    drop(permit);
 
     let mut conn = db.acquire().await?;
     let now = now_ms();
