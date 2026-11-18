@@ -12,6 +12,7 @@ import type {
   GroupSource,
   Importance,
   MessageId,
+  FolderRole,
   SendState,
   RecipientRole,
   SessionId,
@@ -45,6 +46,9 @@ export interface Account {
 
 /** 按账户 + 文件夹保存的目录元数据与增量游标（非主导航） */
 export interface MailFolderSyncState {
+  /** IMAP SPECIAL-USE 对齐角色 */
+  role: FolderRole;
+  role_source: 'server' | 'manual' | 'guess' | 'unknown';
   account_id: AccountId;
   folder_id: FolderId;
   protocol: 'graph' | 'imap';
@@ -138,6 +142,8 @@ export interface MessageWithRecipients {
   send_state?: SendState | null;
   /** 本地删除意图待远端确认 */
   pending_delete?: boolean;
+  /** 消息所在文件夹角色；junk 默认不渲染正文 */
+  folder_role?: FolderRole | null;
 }
 
 /** 群档案：名称与成员；聊天状态在 Session */

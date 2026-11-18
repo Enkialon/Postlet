@@ -1,4 +1,5 @@
 use crate::domain::entities::*;
+use crate::domain::services::{FolderRole, RoleSource};
 use crate::domain::value_objects::*;
 use sqlx::{Row, sqlite::SqliteRow};
 
@@ -219,6 +220,12 @@ pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState
         is_retired: row.try_get("is_retired")?,
         parent_folder_id: parent.filter(|s| !s.is_empty()).map(FolderId::new),
         display_name: row.try_get::<String, _>("display_name").unwrap_or_default(),
+        role: FolderRole::parse(&row.try_get::<String, _>("role").unwrap_or_default())
+            .unwrap_or(FolderRole::Custom),
+        role_source: RoleSource::parse(
+            &row.try_get::<String, _>("role_source").unwrap_or_default(),
+        )
+        .unwrap_or(RoleSource::Unknown),
         sync_enabled: sync_enabled != 0,
         generation: row.try_get("generation")?,
         sync_cursor: row.try_get("sync_cursor")?,

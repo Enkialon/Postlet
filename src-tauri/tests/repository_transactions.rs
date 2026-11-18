@@ -227,6 +227,7 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
         &MessageWithRecipients {
             send_state: None,
             pending_delete: false,
+            folder_role: None,
             message: Message {
                 id: msg_id.clone(),
                 account_id: account_id.clone(),
@@ -329,6 +330,7 @@ async fn seeded_mailbox_supports_session_reads() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -376,6 +378,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -401,6 +404,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -443,6 +447,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -461,6 +466,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -473,6 +479,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
             cursor: None,
             limit: 20,
             kind: None,
+        include_excluded_folders: false,
         },
     )
     .await
@@ -482,7 +489,7 @@ async fn all_account_lists_hide_data_while_signed_out_keeps_account_row() {
 
 async fn list_sessions(conn: &mut sqlx::SqliteConnection, query: &SessionListQuery)
     -> Result<postlet_lib::query_page::CursorPage<sessions::SessionProjection>, postlet_lib::infrastructure::error::InfraError> {
-    sessions::list(conn, query.account_id.as_ref(), query.cursor.as_deref(), query.limit, query.kind).await
+    sessions::list(conn, query.account_id.as_ref(), query.cursor.as_deref(), query.limit, query.kind, query.include_excluded_folders).await
 }
 async fn list_contacts(conn: &mut sqlx::SqliteConnection, query: &ContactListQuery)
     -> Result<postlet_lib::query_page::CursorPage<Contact>, postlet_lib::infrastructure::error::InfraError> {

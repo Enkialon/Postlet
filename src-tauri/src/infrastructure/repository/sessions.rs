@@ -99,6 +99,7 @@ pub async fn list(
     cursor: Option<&str>,
     limit: u32,
     kind: Option<SessionKind>,
+    include_excluded_folders: bool,
 ) -> Result<CursorPage<SessionProjection>, InfraError> {
     let kind = kind.map(|k| k.as_str());
     if limit == 0 || limit > 500 {
@@ -142,9 +143,26 @@ pub async fn list(
         qb.push_bind(cursor_id.as_deref());
         qb.push(")");
     }
-    qb.push(
-        ") ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
-    );
+    if !include_excluded_folders {
+        // 普通范围排除 Trash/Junk/Drafts/All：会话至少有一条落在其它角色的可见消息
+        qb.push(
+            ") AND EXISTS (SELECT 1 FROM messages vm
+                LEFT JOIN mail_folder_sync_state vf
+                  ON vf.account_id = vm.account_id AND vf.folder_id = vm.folder_id
+                WHERE vm.account_id = sessions.account_id AND vm.session_id = sessions.id
+                  AND (vm.location_status = 'present'
+                       OR (vm.location_status IS NULL AND EXISTS (
+                           SELECT 1 FROM send_tasks st
+                           WHERE st.account_id = vm.account_id AND st.message_id = vm.id
+                             AND st.state <> 'cancelled')))
+                  AND (vf.role IS NULL OR vf.role NOT IN ('trash','junk','drafts','all'))
+            ) ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
+        );
+    } else {
+        qb.push(
+            ") ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
+        );
+    }
     qb.push_bind(i64::from(limit) + 1);
 
     let rows = qb.build().fetch_all(&mut *conn).await?;
@@ -489,12 +507,24 @@ pub async fn list_messages(
         .bind(message.id.as_str())
         .fetch_one(&mut *conn)
         .await?;
+        let folder_role: Option<String> = sqlx::query_scalar(
+            "SELECT f.role FROM messages m
+             JOIN mail_folder_sync_state f
+               ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+             WHERE m.account_id = ? AND m.id = ?",
+        )
+        .bind(account_id.as_str())
+        .bind(message.id.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
         items.push(MessageWithRecipients {
             message,
             recipients,
             send_state: send_state
                 .and_then(|s| crate::domain::entities::SendState::parse(&s)),
             pending_delete,
+            folder_role: folder_role
+                .and_then(|r| crate::domain::services::FolderRole::parse(&r)),
         });
     }
     let next_cursor = if has_more {
@@ -563,7 +593,13 @@ pub async fn recompute_projection(
         "SELECT COUNT(*) FROM messages
          WHERE account_id = ? AND session_id = ?
            AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
-         AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1) AND is_read = 0",
+         AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
+         AND NOT EXISTS (
+             SELECT 1 FROM mail_folder_sync_state f
+             WHERE f.account_id = messages.account_id AND f.folder_id = messages.folder_id
+               AND f.role IN ('trash','junk','drafts','all')
+         )
+         AND is_read = 0",
     )
     .bind(account_id.as_str())
     .bind(session_id.as_str())

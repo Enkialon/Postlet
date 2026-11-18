@@ -14,6 +14,7 @@ import type {
   AccountId,
   EmailAddress,
   GroupId,
+  FolderRole,
   MessageId,
   SendState,
   SessionId,
@@ -187,6 +188,15 @@ export class MemoryStore {
         this.messageKey(accountId, messageId),
       ),
     };
+  }
+
+  /** 消息所在文件夹角色（内存适配器按 folder_id 查表） */
+  folderRoleOf(message: Message): FolderRole | null {
+    if (!message.folder_id) return null;
+    const list = this.folderStates.get(message.account_id) ?? [];
+    return (
+      list.find((f) => f.folder_id === message.folder_id)?.role ?? null
+    );
   }
 
   /** 本地删除意图（待远端确认）；内存适配器用集合表达 */

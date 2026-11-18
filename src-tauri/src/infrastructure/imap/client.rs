@@ -47,6 +47,8 @@ pub struct ImapFolderNode {
     pub name: String,
     pub parent_name: Option<String>,
     pub delimiter: Option<String>,
+    /// LIST 返回的原始属性（含 `\Junk` 等 SPECIAL-USE；服务器不支持时为空）
+    pub attributes: Vec<String>,
 }
 
 /// LIST 全树；按 delimiter 推导父路径（多级）。
@@ -67,10 +69,16 @@ pub fn discover_folder_tree(session: &mut ImapSession) -> Result<Vec<ImapFolderN
                 .map(|(parent, _)| parent.to_string())
                 .filter(|p| !p.is_empty())
         });
+        let attributes = n
+            .attributes()
+            .iter()
+            .map(|a| format!("{a:?}").trim_matches('"').to_string())
+            .collect();
         out.push(ImapFolderNode {
             name,
             parent_name,
             delimiter,
+            attributes,
         });
     }
     Ok(out)

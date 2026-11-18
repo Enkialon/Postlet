@@ -14,6 +14,9 @@ pub struct SessionListQuery {
     pub limit: u32,
     /// 可选：仅 private / 仅 group
     pub kind: Option<SessionKind>,
+    /// 是否包含默认排除的文件夹范围（Trash/Junk/Drafts/All）
+    #[serde(default)]
+    pub include_excluded_folders: bool,
 }
 
 /// 会话内消息查询

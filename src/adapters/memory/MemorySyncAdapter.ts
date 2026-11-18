@@ -212,6 +212,8 @@ export class MemorySyncAdapter implements SyncPort {
         sync_cursor: prev?.sync_cursor ?? null,
         page_cursor: prev?.page_cursor ?? null,
         synced_at: prev?.synced_at ?? null,
+        role: prev?.role ?? 'custom',
+        role_source: prev?.role_source ?? 'unknown',
         sync_status: prev?.sync_status ?? 'idle',
         last_error: prev?.last_error ?? null,
         updated_at: t,

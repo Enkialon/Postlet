@@ -22,12 +22,14 @@ pub async fn get(
     };
     let message = super::rows::message(&row)?;
     let recipients = load_recipients(conn, account_id, &message.id).await?;
-    let (send_state, pending_delete) = load_projection(conn, account_id, &message.id).await?;
+    let (send_state, pending_delete, folder_role) =
+        load_projection(conn, account_id, &message.id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
         send_state,
         pending_delete,
+        folder_role,
     }))
 }
 
@@ -49,12 +51,14 @@ pub async fn get_by_location(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
-    let (send_state, pending_delete) = load_projection(conn, account_id, &id).await?;
+    let (send_state, pending_delete, folder_role) =
+        load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
         send_state,
         pending_delete,
+        folder_role,
     }))
 }
 
@@ -80,12 +84,14 @@ pub async fn find_by_internet_message_id(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
-    let (send_state, pending_delete) = load_projection(conn, account_id, &id).await?;
+    let (send_state, pending_delete, folder_role) =
+        load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
         send_state,
         pending_delete,
+        folder_role,
     }))
 }
 
@@ -93,7 +99,14 @@ async fn load_projection(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
     message_id: &MessageId,
-) -> Result<(Option<crate::domain::entities::SendState>, bool), InfraError> {
+) -> Result<
+    (
+        Option<crate::domain::entities::SendState>,
+        bool,
+        Option<crate::domain::services::FolderRole>,
+    ),
+    InfraError,
+> {
     let send_state: Option<String> = sqlx::query_scalar(
         "SELECT state FROM send_tasks WHERE account_id = ? AND message_id = ?
          ORDER BY created_at DESC LIMIT 1",
@@ -110,9 +123,21 @@ async fn load_projection(
     .bind(message_id.as_str())
     .fetch_one(&mut *conn)
     .await?;
+    let folder_role: Option<String> = sqlx::query_scalar(
+        "SELECT f.role FROM messages m
+         JOIN mail_folder_sync_state f
+           ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+         WHERE m.account_id = ? AND m.id = ?",
+    )
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .fetch_optional(&mut *conn)
+    .await?;
     Ok((
         send_state.and_then(|s| crate::domain::entities::SendState::parse(&s)),
         pending_delete,
+        folder_role
+            .and_then(|r| crate::domain::services::FolderRole::parse(&r)),
     ))
 }
 

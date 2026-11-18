@@ -1,5 +1,6 @@
 //! 邮件文件夹同步状态
 
+use crate::domain::services::{FolderRole, RoleSource};
 use crate::domain::value_objects::{AccountId, FolderId, ReceiveProtocol, SyncStatus, TimestampMs};
 
 /// 按账户 + 文件夹保存的目录元数据与增量游标（非主导航）
@@ -14,6 +15,10 @@ pub struct MailFolderSyncState {
     /// 父文件夹；根为 None（多级树）
     pub parent_folder_id: Option<FolderId>,
     pub display_name: String,
+    /// IMAP SPECIAL-USE 对齐角色
+    pub role: FolderRole,
+    /// 角色来源：服务器 > 手动 > 名称猜测
+    pub role_source: RoleSource,
     /// 是否纳入账户全局同步
     pub sync_enabled: bool,
     /// Adapter 提供的不透明远端代次；与同步进度分开。

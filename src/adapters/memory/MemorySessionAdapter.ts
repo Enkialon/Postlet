@@ -55,6 +55,16 @@ export class MemorySessionAdapter implements SessionPort {
         return false;
       })
       .filter((s) => (query.kind ? s.kind === query.kind : true))
+      .filter((s) => {
+        if (query.include_excluded_folders) return true;
+        // 普通范围：至少有一条落在非排除角色的可见消息
+        return this.store
+          .effectiveMessagesForSession(s)
+          .some((m) => {
+            const role = this.store.folderRoleOf(m);
+            return !['trash', 'junk', 'drafts', 'all'].includes(role ?? '');
+          });
+      })
       .sort((a, b) => (b.last_message_at ?? 0) - (a.last_message_at ?? 0))
       .map((s) => this.store.toListItem(s));
     return paginate(items, query.cursor, Math.max(1, Math.min(query.limit, 200)));

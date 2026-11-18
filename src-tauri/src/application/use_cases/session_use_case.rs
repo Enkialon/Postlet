@@ -65,6 +65,7 @@ pub async fn list_sessions(
         query.cursor.as_deref(),
         query.limit,
         query.kind,
+        query.include_excluded_folders,
     )
     .await
     .map_err(AppError::from)?;

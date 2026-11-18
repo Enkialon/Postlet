@@ -269,9 +269,13 @@ export function useMessages() {
     suppressed.delete(messageId);
     suppressAutoRead.value = suppressed;
 
-    await ensureBody(messageId);
     const accountId = nav.accountId.value;
     if (!accountId) return;
+    // 垃圾夹邮件默认不主动拉取正文；待用户显式确认后再加载
+    const cachedItem = entityCache.get(cacheKey(accountId, messageId));
+    if (cachedItem?.folder_role !== 'junk') {
+      await ensureBody(messageId);
+    }
     const item = entityCache.get(cacheKey(accountId, messageId));
     if (
       item &&

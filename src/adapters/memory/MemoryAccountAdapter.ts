@@ -131,6 +131,8 @@ export class MemoryAccountAdapter implements AccountPort {
         sync_cursor: null,
         page_cursor: null,
         synced_at: null,
+        role: 'inbox' as const,
+        role_source: 'server' as const,
         sync_status: 'idle' as const,
         last_error: null,
         updated_at: Date.now(),

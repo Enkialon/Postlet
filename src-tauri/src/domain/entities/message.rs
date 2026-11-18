@@ -67,4 +67,7 @@ pub struct MessageWithRecipients {
     /// 读模型投影：本地删除意图待远端确认（来自 mutation）
     #[serde(default)]
     pub pending_delete: bool,
+    /// 读模型投影：消息所在文件夹的 IMAP 对齐角色
+    #[serde(default)]
+    pub folder_role: Option<crate::domain::services::FolderRole>,
 }

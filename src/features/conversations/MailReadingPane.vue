@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
 import type { RecipientRole } from '../../domain/types';
 import {
@@ -25,6 +25,18 @@ const props = defineProps<{
   /** 会话联系人昵称；from_name 缺失或等于邮箱时回退 */
   preferredName?: string | null;
 }>();
+
+/** 垃圾邮件默认不渲染正文；用户显式确认后才显示 */
+const junkBodyRevealed = ref(false);
+watch(
+  () => [props.item.message.account_id, props.item.message.id] as const,
+  () => {
+    junkBodyRevealed.value = false;
+  },
+);
+
+const junk = computed(() => props.item.folder_role === 'junk');
+const canRenderBody = computed(() => !junk.value || junkBodyRevealed.value);
 
 const emit = defineEmits<{
   close: [];
@@ -291,6 +303,20 @@ const folderLabel = computed(
           >
             此邮件正文为空
           </p>
+          <div v-else-if="junk && !canRenderBody" class="mt-4 grid justify-items-start gap-2">
+            <p class="m-0 text-[14px] text-danger">
+              这封邮件来自垃圾邮件夹，正文可能含不安全内容，默认不渲染。
+            </p>
+            <Button
+              variant="ghost"
+              @click="
+                junkBodyRevealed = true;
+                emit('retryBody');
+              "
+            >
+              仍要查看正文
+            </Button>
+          </div>
           <div
             v-else-if="item.message.body_content != null"
             class="py-1 text-text-primary"

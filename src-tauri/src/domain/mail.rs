@@ -29,6 +29,8 @@ pub struct DiscoveredFolder {
     pub remote_binding: String,
     pub parent_binding: Option<String>,
     pub display_name: String,
+    /// 服务器声明的角色（SPECIAL-USE / well-known 已映射）；无则 None
+    pub server_role: Option<crate::domain::services::FolderRole>,
 }
 
 /// 远端收件人（无本地外键）

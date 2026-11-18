@@ -307,7 +307,23 @@ pub struct RemoteMailFolder {
     pub id: String,
     pub display_name: String,
     pub parent_id: Option<String>,
+    /// Graph 专有 well-known（仅本层使用）
     pub well_known_name: Option<String>,
+}
+
+/// Graph well-known → 统一 IMAP 对齐角色；未知返回 None。
+pub fn role_of_well_known(name: &str) -> Option<crate::domain::services::FolderRole> {
+    use crate::domain::services::FolderRole;
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "inbox" => FolderRole::Inbox,
+        "sentitems" => FolderRole::Sent,
+        "drafts" => FolderRole::Drafts,
+        "deleteditems" => FolderRole::Trash,
+        "junkemail" => FolderRole::Junk,
+        "archive" => FolderRole::Archive,
+        "allitems" => FolderRole::All,
+        _ => return None,
+    })
 }
 
 const FOLDER_SELECT: &[&str] = &["id", "displayName", "parentFolderId", "childFolderCount"];

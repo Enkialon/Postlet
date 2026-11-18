@@ -66,8 +66,9 @@ pub async fn upsert(
     sqlx::query(
         "INSERT INTO mail_folder_sync_state (
             account_id, folder_id, parent_folder_id, display_name, sync_enabled,
-            sync_cursor, page_cursor, synced_at, sync_status, last_error, updated_at, generation, protocol, remote_binding, binding_revision, is_retired
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            sync_cursor, page_cursor, synced_at, sync_status, last_error, updated_at, generation, protocol, remote_binding, binding_revision, is_retired,
+            role, role_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, folder_id) DO UPDATE SET
             protocol=excluded.protocol,
             remote_binding=excluded.remote_binding,
@@ -82,7 +83,9 @@ pub async fn upsert(
             synced_at=excluded.synced_at,
             sync_status=excluded.sync_status,
             last_error=excluded.last_error,
-            updated_at=excluded.updated_at",
+            updated_at=excluded.updated_at,
+            role=CASE WHEN mail_folder_sync_state.role_source = 'manual' THEN mail_folder_sync_state.role ELSE excluded.role END,
+            role_source=CASE WHEN mail_folder_sync_state.role_source = 'manual' THEN 'manual' ELSE excluded.role_source END",
     )
     .bind(state.account_id.as_str())
     .bind(state.folder_id.as_str())
@@ -100,6 +103,8 @@ pub async fn upsert(
     .bind(&state.remote_binding)
     .bind(state.binding_revision)
     .bind(state.is_retired)
+    .bind(state.role.as_str())
+    .bind(state.role_source.as_str())
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -129,6 +134,8 @@ pub async fn reconcile_discovered(
                 account_id: account_id.clone(), folder_id: FolderId::new(uuid::Uuid::new_v4().to_string()),
                 protocol, remote_binding: folder.remote_binding.clone(), binding_revision: 1, is_retired: false,
                 parent_folder_id: None, display_name: folder.display_name.clone(), sync_enabled: false,
+                role: crate::domain::services::resolve_role(folder.server_role, None, &folder.display_name).0,
+                role_source: crate::domain::services::resolve_role(folder.server_role, None, &folder.display_name).1,
                 generation: None, sync_cursor: None, page_cursor: None, synced_at: None,
                 sync_status: SyncStatus::Idle, last_error: None, updated_at: now,
             });
@@ -139,6 +146,14 @@ pub async fn reconcile_discovered(
         let state = states.get_mut(&folder.remote_binding).unwrap();
         state.parent_folder_id = folder.parent_binding.as_ref().and_then(|binding| identities.get(binding)).cloned();
         state.display_name = folder.display_name.clone(); state.updated_at = now;
+        // 服务器角色可覆盖 guess；manual 由 upsert 的 CASE 保持
+        let (role, source) = crate::domain::services::resolve_role(
+            folder.server_role,
+            if state.role_source == crate::domain::services::RoleSource::Manual { Some(state.role) } else { None },
+            &folder.display_name,
+        );
+        state.role = role;
+        state.role_source = source;
         upsert(conn, state).await?;
     }
     let mut retired = Vec::new();

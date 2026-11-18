@@ -28,6 +28,8 @@ export interface SessionListQuery {
   limit: number;
   /** 可选：仅 private / 仅 group */
   kind: SessionKind | null;
+  /** 是否包含默认排除的文件夹范围（Trash/Junk/Drafts/All） */
+  include_excluded_folders?: boolean;
 }
 
 /** 会话内消息查询 */

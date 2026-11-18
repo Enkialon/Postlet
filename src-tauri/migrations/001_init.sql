@@ -51,6 +51,11 @@ CREATE TABLE account_mail_transport (
 CREATE TABLE mail_folder_sync_state (
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     folder_id       TEXT NOT NULL,
+    -- IMAP SPECIAL-USE 对齐角色；Graph well-known 在 infrastructure 内映射后再落库
+    role            TEXT NOT NULL DEFAULT 'custom'
+        CHECK(role IN ('inbox','sent','drafts','trash','junk','archive','all','custom')),
+    role_source     TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(role_source IN ('server','manual','guess','unknown')),
     protocol        TEXT NOT NULL CHECK(protocol IN ('graph', 'imap')),
     remote_binding  TEXT NOT NULL,
     binding_revision INTEGER NOT NULL DEFAULT 1 CHECK(binding_revision >= 1),

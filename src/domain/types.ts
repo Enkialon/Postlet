@@ -46,3 +46,14 @@ export type SendState =
   | 'failed'
   | 'uncertain'
   | 'cancelled';
+
+/** 文件夹角色（IMAP SPECIAL-USE 对齐） */
+export type FolderRole =
+  | 'inbox'
+  | 'sent'
+  | 'drafts'
+  | 'trash'
+  | 'junk'
+  | 'archive'
+  | 'all'
+  | 'custom';

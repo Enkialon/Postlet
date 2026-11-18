@@ -510,6 +510,7 @@ async fn upsert_remote_message(
             recipients,
             send_state: None,
             pending_delete: false,
+            folder_role: None,
         },
     )
     .await
@@ -803,7 +804,13 @@ pub async fn refresh_mail_folders(
                 .await
                 .map_err(AppError::from)?;
             remote.into_iter().map(|folder| DiscoveredFolder {
-                remote_binding: folder.id, parent_binding: folder.parent_id, display_name: folder.display_name,
+                server_role: folder
+                    .well_known_name
+                    .as_deref()
+                    .and_then(graph::mail::role_of_well_known),
+                remote_binding: folder.id,
+                parent_binding: folder.parent_id,
+                display_name: folder.display_name,
             }).collect()
         }
         ReceiveConfig::Imap(config) => {
@@ -820,8 +827,12 @@ pub async fn refresh_mail_folders(
 
             nodes.into_iter().map(|node| {
                 let display_name = imap_folder_display_name(&node.name, node.parent_name.as_deref(), node.delimiter.as_deref());
-                DiscoveredFolder { remote_binding: if node.name.eq_ignore_ascii_case("INBOX") { "INBOX".into() } else { node.name },
-                    parent_binding: node.parent_name.map(|name| if name.eq_ignore_ascii_case("INBOX") { "INBOX".into() } else { name }), display_name }
+                DiscoveredFolder {
+                    server_role: crate::domain::services::role_from_special_use(&node.attributes),
+                    remote_binding: if node.name.eq_ignore_ascii_case("INBOX") { "INBOX".into() } else { node.name },
+                    parent_binding: node.parent_name.map(|name| if name.eq_ignore_ascii_case("INBOX") { "INBOX".into() } else { name }),
+                    display_name,
+                }
             }).collect()
         }
     };
@@ -1062,8 +1073,8 @@ mod location_tests {
         let db = db::open_memory().await.unwrap();
         sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1),('b','b@example.com',1,1)").execute(&db).await.unwrap();
         let a = AccountId::new("a"); let b = AccountId::new("b");
-        let parent = DiscoveredFolder { remote_binding: "Parent".into(), parent_binding: None, display_name: "Parent".into() };
-        let child = DiscoveredFolder { remote_binding: "Parent/Box".into(), parent_binding: Some("Parent".into()), display_name: "Box".into() };
+        let parent = DiscoveredFolder { server_role: None, remote_binding: "Parent".into(), parent_binding: None, display_name: "Parent".into() };
+        let child = DiscoveredFolder { server_role: None, remote_binding: "Parent/Box".into(), parent_binding: Some("Parent".into()), display_name: "Box".into() };
         let mut tx = db.begin().await.unwrap();
         folder_states::reconcile_discovered(&mut tx, &a, ReceiveProtocol::Imap, &[parent.clone(), child.clone()], 1).await.unwrap();
         let folders = folder_states::list_by_account(&mut tx, &a).await.unwrap();
