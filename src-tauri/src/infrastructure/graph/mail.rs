@@ -280,7 +280,14 @@ pub async fn move_message(
     Ok(())
 }
 
-pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), InfraError> {
+/// Graph 发送结果：`Err` 仅表示「可证明服务器未接受」；请求已发出但没有
+/// 拿到确定应答时返回 `Uncertain`，不得据此自动重发。
+pub async fn send_mail(
+    access_token: &str,
+    mail: &GraphOutgoing,
+) -> Result<crate::domain::mail::SendResult, InfraError> {
+    use crate::domain::mail::{SendOutcome, SendResult, SendStage};
+
     let content_type = match mail.body_content_type {
         BodyContentType::Html => "HTML",
         BodyContentType::Text => "Text",
@@ -299,14 +306,59 @@ pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), I
         "saveToSentItems": mail.save_to_sent_items,
     });
 
-    let response = client(access_token)
+    let response = match client(access_token)
         .me()
         .send_mail(&payload)
         .send()
         .await
-        .map_err(|e| map_http_err("Graph sendMail", e))?;
-    ensure_success(response, "Graph sendMail").await?;
-    Ok(())
+    {
+        Ok(response) => response,
+        Err(error) => {
+            // 连接阶段失败可证明请求未发出；其余传输错误（超时、连接中断、
+            // 应答读取失败）可能发生在服务器已接受之后。
+            if error.is_definitely_not_sent() {
+                return Err(map_http_err("Graph sendMail", error));
+            }
+            return Ok(SendResult::new(SendOutcome::Uncertain, SendStage::Data));
+        }
+    };
+    let status = response.status();
+    if status.is_success() {
+        return Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data));
+    }
+    let body = response.text().await.unwrap_or_default();
+    classify_send_status(status, &body)
+}
+
+/// 非 2xx 发送应答：5xx 可能已被上游接受，其余为明确拒绝。
+fn classify_send_status(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> Result<crate::domain::mail::SendResult, InfraError> {
+    use crate::domain::mail::{SendOutcome, SendResult, SendStage};
+    if status.is_server_error() {
+        return Ok(SendResult::new(SendOutcome::Uncertain, SendStage::Data));
+    }
+    Err(classify_graph_status(status, "Graph sendMail", body))
+}
+
+/// 仅当可证明请求未离开客户端时才是确定未发送。
+trait GraphSendFailureExt {
+    fn is_definitely_not_sent(&self) -> bool;
+}
+
+impl GraphSendFailureExt for graph_rs_sdk::GraphFailure {
+    fn is_definitely_not_sent(&self) -> bool {
+        use graph_rs_sdk::GraphFailure;
+        match self {
+            GraphFailure::ReqwestError(error) => error.is_connect() || error.is_builder(),
+            GraphFailure::PreFlightError { .. }
+            | GraphFailure::HttpError(_)
+            | GraphFailure::UrlParse(_)
+            | GraphFailure::GraphRsError(_) => true,
+            _ => false,
+        }
+    }
 }
 
 fn recipients_json(list: &[(String, String)]) -> Vec<Value> {
@@ -666,6 +718,18 @@ fn parse_graph_time(node: Option<&Value>) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_status_distinguishes_unknown_from_definite_rejection() {
+        use crate::domain::mail::{SendOutcome, SendStage};
+        let uncertain = classify_send_status(reqwest::StatusCode::BAD_GATEWAY, "").unwrap();
+        assert_eq!(uncertain.outcome, SendOutcome::Uncertain);
+        assert_eq!(uncertain.stage, SendStage::Data);
+        let rejected = classify_send_status(reqwest::StatusCode::BAD_REQUEST, "").unwrap_err();
+        assert!(!matches!(rejected, InfraError::Network { .. }));
+        let throttled = classify_send_status(reqwest::StatusCode::TOO_MANY_REQUESTS, "").unwrap_err();
+        assert!(matches!(throttled, InfraError::Remote { retryable: true, .. }));
+    }
 
     #[test]
     fn directory_traversal_never_treats_unknown_child_count_as_empty() {

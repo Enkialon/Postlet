@@ -27,8 +27,6 @@ pub async fn execute_claimed_attempt(
     account_id: &AccountId,
     task: &crate::domain::entities::SendTask,
 ) -> Result<crate::domain::mail::SendResult, AppError> {
-    use crate::domain::mail::{SendOutcome, SendResult, SendStage};
-
     let (_account, transport, snapshot) = {
         let mut conn = db.acquire().await?;
         accounts::get(&mut conn, account_id)
@@ -123,7 +121,7 @@ pub async fn execute_claimed_attempt(
             )
             .await;
             match accepted {
-                Ok(()) => Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data)),
+                Ok(result) => Ok(result),
                 Err(err) => Err(classify_send_infra_error(err)),
             }
         }
