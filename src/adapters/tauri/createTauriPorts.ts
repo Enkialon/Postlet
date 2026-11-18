@@ -119,6 +119,11 @@ export function createTauriPorts(): AppPorts {
         invoke<CursorPage<MessageWithRecipients>>('list_session_messages', {
           query,
         }),
+      listPendingSends: (accountId: AccountId, sessionId: SessionId) =>
+        invoke<MessageWithRecipients[]>('list_pending_sends', {
+          accountId,
+          sessionId,
+        }),
       ensurePrivateSession: (cmd: EnsurePrivateSessionCommand) =>
         invoke<Session>('ensure_private_session', { cmd }),
       ensureGroupSession: (cmd: EnsureGroupSessionCommand) =>

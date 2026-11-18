@@ -38,6 +38,7 @@ const { preferences, setShowDeletedInThread } = usePreferences();
 const { selected, refreshSoft: refreshConversations } = useConversations();
 const {
   messageState,
+  pendingSends,
   bodyLoading,
   bodyErrors,
   loadMore,
@@ -271,7 +272,8 @@ const showEmptyThread = computed(
     Boolean(nav.sessionId.value) &&
     messageState.loading === 'idle' &&
     !messageState.error &&
-    displayMessages.value.length === 0,
+    displayMessages.value.length === 0 &&
+    pendingSends.value.length === 0,
 );
 
 async function loadDetail(): Promise<void> {
@@ -563,6 +565,31 @@ watch(
           <div
             class="@container/chat px-2.5 py-3 @[28rem]/chat:px-4 @[28rem]/chat:py-4 @[40rem]/chat:px-5 @[40rem]/chat:py-5"
           >
+            <section
+              v-if="pendingSends.length > 0"
+              class="mb-5 rounded-lg border border-border-subtle bg-surface-elevated p-3"
+              aria-label="发送状态"
+            >
+              <p
+                class="m-0 mb-2 text-[12px] font-medium tracking-wide text-text-tertiary uppercase"
+              >
+                发送状态
+              </p>
+              <div class="flex flex-col gap-3">
+                <MessageCard
+                  v-for="item in pendingSends"
+                  :key="item.message.id"
+                  :item="item"
+                  :selected="mailDetail?.message.id === item.message.id"
+                  :preferred-name="selected?.contact_display_name"
+                  @select="openMailReading(item)"
+                  @delete="requestDeleteMessage(item.message.id)"
+                  @reassign="openReassign"
+                  @mark-unread="markRead([item.message.id], false)"
+                  @reply="onReplyMessage(item)"
+                />
+              </div>
+            </section>
             <div
               class="relative w-full min-w-0"
               :style="{ height: `${messagesTotalSize}px` }"

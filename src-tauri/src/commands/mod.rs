@@ -160,6 +160,20 @@ pub async fn list_session_messages(
 }
 
 #[tauri::command]
+pub async fn list_pending_sends(
+    state: State<'_, AppState>,
+    account_id: String,
+    session_id: String,
+) -> Result<Vec<MessageWithRecipients>, AppError> {
+    session_use_case::list_pending_sends(
+        &state.db,
+        &crate::domain::value_objects::AccountId::new(account_id),
+        &crate::domain::value_objects::SessionId::new(session_id),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn hide_session(
     state: State<'_, AppState>,
     account_id: String,

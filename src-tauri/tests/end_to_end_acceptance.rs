@@ -5,7 +5,7 @@ use postlet_lib::domain::value_objects::{
     AccountId, EmailAddress, FolderId, MessageId, RemoteKey, SessionId,
 };
 use postlet_lib::infrastructure::db;
-use postlet_lib::infrastructure::repository::{accounts, messages, mutations, sessions};
+use postlet_lib::infrastructure::repository::{accounts, archive_tasks, messages, mutations, sessions};
 use std::collections::HashSet;
 use sqlx::SqlitePool;
 
@@ -273,4 +273,48 @@ async fn accepted_send_commits_result_and_archive_task_together() {
     assert_eq!(archive_state, "append_pending");
     assert_eq!(folder, "sent-uuid");
     assert_eq!(revision, 7);
+
+    // 普通列表只展示实际位置消息；无位置发送记录进入发送状态区。
+    let ordinary = sessions::list_messages(
+        &mut conn,
+        &AccountId::new("a"),
+        &SessionId::new("s1"),
+        None,
+        30,
+        postlet_lib::domain::value_objects::PageDirection::Older,
+    )
+    .await
+    .unwrap();
+    assert!(ordinary.items.is_empty());
+    let pending = messages::list_pending_sends(
+        &mut conn,
+        &AccountId::new("a"),
+        &SessionId::new("s1"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending.len(), 1);
+
+    // 同步在 Sent 发现同 Message-ID 的副本后，归档任务补上确定位置。
+    sqlx::query("UPDATE archive_tasks SET state='waiting_server_copy' WHERE account_id='a'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let confirmed = archive_tasks::confirm_by_internet_message_id(
+        &mut conn,
+        &AccountId::new("a"),
+        "<m@x>",
+        &MessageId::new("remote-sent-1"),
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(confirmed, 1);
+    let confirmed_id: String = sqlx::query_scalar(
+        "SELECT confirmed_message_id FROM archive_tasks WHERE account_id='a'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(confirmed_id, "remote-sent-1");
 }

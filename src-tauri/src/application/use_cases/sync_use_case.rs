@@ -207,6 +207,15 @@ async fn sync_graph_mail(
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
                     store_remote_attachments(&mut tx, paths, &cmd.account_id, &mid, &remote.attachments)
                         .await?;
+                    confirm_sent_archive(
+                        &mut tx,
+                        &cmd.account_id,
+                        current.role,
+                        &remote,
+                        &mid,
+                        now_ms(),
+                    )
+                    .await?;
                     changeset.message_ids.push(mid.clone());
                     if let Some(sid) = cid {
                         changeset.session_ids.push(sid);
@@ -482,6 +491,7 @@ async fn apply_imap_folder_batch(
                 let can_notify = remote.flags.is_draft == Some(false);
                 let (mid, cid, is_new) = upsert_remote_message(&mut tx, account_id, &remote).await?;
                 store_remote_attachments(&mut tx, paths, account_id, &mid, &remote.attachments).await?;
+                confirm_sent_archive(&mut tx, account_id, current.role, &remote, &mid, now).await?;
                 crate::infrastructure::repository::download_candidates::mark_downloaded(
                     &mut tx,
                     account_id,
@@ -538,6 +548,37 @@ async fn apply_imap_folder_batch(
     }
     tx.commit().await?;
     Ok(changes)
+}
+
+/// Sent 夹中的远端副本是服务器保存/APPEND 的确定位置证据：只收敛归档任务。
+async fn confirm_sent_archive(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    role: crate::domain::services::FolderRole,
+    remote: &RemoteMessage,
+    message_id: &MessageId,
+    now: TimestampMs,
+) -> Result<(), AppError> {
+    if role != crate::domain::services::FolderRole::Sent {
+        return Ok(());
+    }
+    let Some(internet_message_id) = remote.internet_message_id.as_deref() else {
+        return Ok(());
+    };
+    let trimmed = internet_message_id.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    crate::infrastructure::repository::archive_tasks::confirm_by_internet_message_id(
+        conn,
+        account_id,
+        trimmed,
+        message_id,
+        now,
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(())
 }
 
 async fn load_known_remote_messages(

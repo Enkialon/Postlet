@@ -70,6 +70,7 @@ async fn mail_transport_requires_explicit_configuration_and_can_switch_to_imap_s
         mail_sync_status: SyncStatus::Idle,
         mail_sync_error: None,
         include_in_all: true,
+        sent_archive_policy: postlet_lib::domain::entities::ArchivePolicy::NeedsConfiguration,
         created_at: now,
         updated_at: now,
     };

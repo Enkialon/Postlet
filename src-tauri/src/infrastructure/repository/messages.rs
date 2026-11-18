@@ -361,7 +361,7 @@ pub async fn list_ids_by_session(
 ) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
-         WHERE account_id = ? AND session_id = ? AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+         WHERE account_id = ? AND session_id = ? AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
          ORDER BY local_updated_at DESC",
     )
@@ -370,6 +370,45 @@ pub async fn list_ids_by_session(
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(MessageId::new).collect())
+}
+
+/// 发送状态区：尚无远端位置的本地发送记录（不混入普通邮件列表）。
+pub async fn list_pending_sends(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    session_id: &SessionId,
+) -> Result<Vec<MessageWithRecipients>, InfraError> {
+    let rows = sqlx::query(
+        "SELECT * FROM messages
+         WHERE account_id = ? AND session_id = ? AND location_status IS NULL
+           AND EXISTS (SELECT 1 FROM send_tasks st
+                       WHERE st.account_id = messages.account_id
+                         AND st.message_id = messages.id AND st.state <> 'cancelled')
+           AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm
+                           WHERE pm.account_id = messages.account_id
+                             AND pm.message_id = messages.id AND pm.kind = 'delete'
+                             AND pm.is_active = 1)
+         ORDER BY COALESCE(received_at, sent_at, 0) DESC, id DESC",
+    )
+    .bind(account_id.as_str())
+    .bind(session_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let message = super::rows::message(row)?;
+        let recipients = load_recipients(conn, account_id, &message.id).await?;
+        let (send_state, pending_delete, folder_role) =
+            load_projection(conn, account_id, &message.id).await?;
+        items.push(MessageWithRecipients {
+            message,
+            recipients,
+            send_state,
+            pending_delete,
+            folder_role,
+        });
+    }
+    Ok(items)
 }
 
 /// 发件人或收件人命中给定地址的邮件（别名曾被当成对端时的纠正范围）。
@@ -386,7 +425,7 @@ pub async fn list_ids_involving_addresses(
          WHERE m.account_id = ",
     );
     qb.push_bind(account_id.as_str());
-    qb.push(" AND (m.location_status = 'present' OR (m.location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = m.account_id AND st.message_id = m.id AND st.state <> 'cancelled')))
+    qb.push(" AND m.location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = m.account_id AND pm.message_id = m.id AND pm.kind = 'delete' AND pm.is_active = 1) AND (m.from_address IN (");
     {
         let mut separated = qb.separated(", ");

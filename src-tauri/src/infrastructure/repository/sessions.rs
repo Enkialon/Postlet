@@ -270,7 +270,7 @@ async fn enrich_item(
     };
     let last_message = if let Some(ref mid) = session.last_message_id {
         let row = sqlx::query(
-            "SELECT * FROM messages WHERE account_id = ? AND id = ? AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+            "SELECT * FROM messages WHERE account_id = ? AND id = ? AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)",
         )
         .bind(session.account_id.as_str())
@@ -430,7 +430,7 @@ pub async fn list_messages(
             sqlx::query(
                 "SELECT * FROM messages
                  WHERE account_id = ? AND session_id = ?
-                   AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+                   AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
                    AND (
                      ? IS NULL
@@ -454,7 +454,7 @@ pub async fn list_messages(
             sqlx::query(
                 "SELECT * FROM messages
                  WHERE account_id = ? AND session_id = ?
-                   AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+                   AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
                    AND (
                      ? IS NULL
@@ -568,7 +568,7 @@ pub async fn recompute_projection(
         "SELECT id, COALESCE(received_at, sent_at) AS at
          FROM messages
          WHERE account_id = ? AND session_id = ?
-           AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+           AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
          ORDER BY COALESCE(received_at, sent_at, 0) DESC, id DESC
          LIMIT 1",
@@ -592,7 +592,7 @@ pub async fn recompute_projection(
     let unread: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM messages
          WHERE account_id = ? AND session_id = ?
-           AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+           AND location_status = 'present'
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
          AND NOT EXISTS (
              SELECT 1 FROM mail_folder_sync_state f

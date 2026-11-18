@@ -176,6 +176,8 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
             include_in_all: true,
+            sent_archive_policy:
+                postlet_lib::domain::entities::ArchivePolicy::NeedsConfiguration,
             created_at: 1,
             updated_at: 1,
         },

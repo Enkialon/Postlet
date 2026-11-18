@@ -20,6 +20,11 @@ export interface SessionPort {
   listMessages(
     query: SessionMessagesQuery,
   ): Promise<CursorPage<MessageWithRecipients>>;
+  /** 尚无远端位置的本地发送记录（发送状态区；不混入普通列表） */
+  listPendingSends(
+    accountId: AccountId,
+    sessionId: SessionId,
+  ): Promise<MessageWithRecipients[]>;
   ensurePrivateSession(cmd: EnsurePrivateSessionCommand): Promise<Session>;
   ensureGroupSession(cmd: EnsureGroupSessionCommand): Promise<Session>;
   /** 本地隐藏会话（不删邮件）；有更新邮件后会再出现 */

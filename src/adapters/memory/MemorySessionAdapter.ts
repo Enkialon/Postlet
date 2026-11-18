@@ -91,7 +91,9 @@ export class MemorySessionAdapter implements SessionPort {
     if (!session || session.merged_into_id) {
       this.store.failNotFound('会话不存在');
     }
-    const messages = this.store.threadMessagesForSession(session);
+    const messages = this.store
+      .threadMessagesForSession(session)
+      .filter((m) => m.location_status !== null);
     const ordered =
       query.direction === 'newer' ? [...messages].reverse() : messages;
 
@@ -111,6 +113,37 @@ export class MemorySessionAdapter implements SessionPort {
         ],
       })),
     };
+  }
+
+  async listPendingSends(
+    accountId: AccountId,
+    sessionId: SessionId,
+  ): Promise<MessageWithRecipients[]> {
+    this.store.requireAccount(accountId);
+    const key = this.store.sessionKey(accountId, sessionId);
+    const session = this.store.sessions.get(key);
+    if (!session || session.merged_into_id) {
+      this.store.failNotFound('会话不存在');
+    }
+    return this.store
+      .threadMessagesForSession(session)
+      .filter(
+        (m) =>
+          m.location_status === null &&
+          (this.store.sendStates.get(this.store.messageKey(accountId, m.id)) ??
+            null) !== 'cancelled',
+      )
+      .map((m) => ({
+        message: { ...m },
+        recipients: [
+          ...(this.store.recipients.get(
+            this.store.messageKey(accountId, m.id),
+          ) ?? []),
+        ],
+        send_state:
+          this.store.sendStates.get(this.store.messageKey(accountId, m.id)) ??
+          null,
+      }));
   }
 
   async ensurePrivateSession(

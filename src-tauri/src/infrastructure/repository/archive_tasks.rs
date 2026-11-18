@@ -197,6 +197,36 @@ pub async fn confirm_location(
     Ok(result.rows_affected() == 1)
 }
 
+/// 同步在 Sent 夹发现同 Message-ID 的副本：为等待中的归档任务补上确定位置。
+///
+/// 只关联归档任务，不合并消息身份；不同账号/位置仍是独立实体。
+pub async fn confirm_by_internet_message_id(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    internet_message_id: &str,
+    message_id: &MessageId,
+    now: TimestampMs,
+) -> Result<u32, InfraError> {
+    let result = sqlx::query(
+        "UPDATE archive_tasks
+         SET state = 'confirmed', confirmed_message_id = ?, updated_at = ?
+         WHERE account_id = ?
+           AND state IN ('waiting_server_copy','uncertain')
+           AND snapshot_id IN (
+             SELECT os.snapshot_id FROM outbound_snapshots os
+             WHERE os.account_id = archive_tasks.account_id
+               AND os.internet_message_id = ?
+           )",
+    )
+    .bind(message_id.as_str())
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(internet_message_id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() as u32)
+}
+
 pub async fn record_failure(
     conn: &mut SqliteConnection,
     task: &ArchiveTask,

@@ -122,6 +122,7 @@ pub fn run() {
             commands::list_sessions,
             commands::get_session,
             commands::list_session_messages,
+            commands::list_pending_sends,
             commands::hide_session,
             commands::get_message,
             commands::ensure_message_body,

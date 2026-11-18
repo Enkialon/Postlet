@@ -98,13 +98,13 @@ async fn run_attempt(
     let now = now_ms();
     match result {
         Ok(Some(true)) => {
-            // APPEND 已确认写入；本地位置由后续同步发现并 confirm_location
+            // APPEND 已确认写入，但尚未得到确定位置：等同步在 Sent 夹发现副本后关联。
             archive_tasks::record_append_result(
                 &mut conn,
                 task,
-                ArchiveState::Confirmed,
+                ArchiveState::WaitingServerCopy,
                 None,
-                None,
+                Some("APPEND 已写入，等待同步确认位置"),
                 None,
                 now,
             )

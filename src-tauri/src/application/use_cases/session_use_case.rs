@@ -129,6 +129,23 @@ pub async fn list_messages(
     Ok(page)
 }
 
+/// 会话内尚无远端位置的发送记录；供发送状态区展示，不进入普通消息列表。
+pub async fn list_pending_sends(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    session_id: &SessionId,
+) -> Result<Vec<MessageWithRecipients>, AppError> {
+    let mut conn = db.acquire().await?;
+    let mut items = crate::infrastructure::repository::messages::list_pending_sends(&mut conn, account_id, session_id)
+        .await
+        .map_err(AppError::from)?;
+    let self_set = self_set_for(&mut conn, account_id).await?;
+    for bundle in &mut items {
+        apply_outbound_to_bundle(bundle, &self_set);
+    }
+    Ok(items)
+}
+
 /// 按账户及规范化地址取得或创建私聊 Session；无档案时建 observed 短名档（非通讯录）。
 pub async fn ensure_private_session(
     db: &SqlitePool,

@@ -14,6 +14,7 @@ const PAGE_SIZE = 30;
 const messageState = reactive<PageState<MessageWithRecipients>>(
   createEmptyPageState(),
 );
+const pendingSends = ref<MessageWithRecipients[]>([]);
 const expandedIds = ref<Set<MessageId>>(new Set());
 const bodyLoading = ref<Set<MessageId>>(new Set());
 const bodyErrors = ref<Map<MessageId, string>>(new Map());
@@ -50,6 +51,7 @@ export function useMessages() {
     const sessionId = nav.sessionId.value;
     if (!accountId || !sessionId) {
       Object.assign(messageState, createEmptyPageState());
+      pendingSends.value = [];
       expandedIds.value = new Set();
       return;
     }
@@ -76,6 +78,10 @@ export function useMessages() {
       }
       for (const item of page.items) upsertCache(accountId, item);
       messageState.items = [...page.items].reverse();
+      pendingSends.value = await ports.session.listPendingSends(
+        accountId,
+        sessionId,
+      );
       messageState.nextCursor = page.next_cursor;
       messageState.hasMore = page.has_more;
       if (page.has_more && !page.next_cursor) {
@@ -354,6 +360,7 @@ export function useMessages() {
         // 立刻清空旧线程；loading 保持 initial，避免短暂 EmptyState 把滚动容器卸掉
         // 版本号只在 loadInitial/loadMore 里递增，避免与软刷新双 ++ 把本次加载作废
         messageState.items = [];
+        pendingSends.value = [];
         messageState.nextCursor = null;
         messageState.hasMore = false;
         messageState.error = null;
@@ -370,6 +377,7 @@ export function useMessages() {
 
   return {
     messageState,
+    pendingSends,
     expandedIds,
     bodyLoading,
     bodyErrors,
