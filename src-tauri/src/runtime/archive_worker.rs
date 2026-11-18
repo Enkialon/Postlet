@@ -147,15 +147,34 @@ async fn run_attempt(
             .map_err(AppError::from)?;
         }
         Err(error) => {
-            archive_tasks::record_failure(
-                &mut conn,
-                task,
-                &error.message,
-                error.retryable.then(|| now + 60_000),
-                now,
-            )
-            .await
-            .map_err(AppError::from)?;
+            if matches!(
+                error.code,
+                crate::application::error::AppErrorCode::Validation
+                    | crate::application::error::AppErrorCode::Conflict
+            ) {
+                // 目标文件夹退役/修订不匹配：停止旧目标，等待重新配置。
+                archive_tasks::record_append_result(
+                    &mut conn,
+                    task,
+                    ArchiveState::NeedsConfiguration,
+                    None,
+                    Some(&error.message),
+                    None,
+                    now,
+                )
+                .await
+                .map_err(AppError::from)?;
+            } else {
+                archive_tasks::record_failure(
+                    &mut conn,
+                    task,
+                    &error.message,
+                    error.retryable.then(|| now + 60_000),
+                    now,
+                )
+                .await
+                .map_err(AppError::from)?;
+            }
         }
     }
     Ok(())
@@ -205,14 +224,73 @@ async fn append_once(
         .target_folder_id
         .as_ref()
         .ok_or_else(|| AppError::validation("缺少 Sent 归档文件夹"))?;
+    // 本地 FolderId 不是协议端点：执行时必须重新解析有效、未退役且修订一致的远端绑定。
+    let binding = {
+        let mut conn = db.acquire().await?;
+        let row: Option<(String, i64, bool)> = sqlx::query_as(
+            "SELECT remote_binding, binding_revision, is_retired
+             FROM mail_folder_sync_state
+             WHERE account_id = ? AND folder_id = ? AND protocol = 'imap'",
+        )
+        .bind(account_id.as_str())
+        .bind(destination.as_str())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(AppError::from)?;
+        resolve_remote_binding(row, task.target_binding_revision)?
+    };
     let (endpoint, auth) =
         crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
     let accepted = crate::infrastructure::imap::append_message_async(
         &endpoint,
         &auth,
-        destination.as_str(),
+        &binding,
         &mime,
     )
     .await?;
     Ok(accepted)
+}
+
+fn resolve_remote_binding(
+    row: Option<(String, i64, bool)>,
+    expected_revision: Option<i64>,
+) -> Result<String, AppError> {
+    match row {
+        Some((remote_binding, revision, false))
+            if Some(revision) == expected_revision =>
+        {
+            Ok(remote_binding)
+        }
+        Some(_) => Err(AppError::conflict(
+            "Sent 目标文件夹已退役或绑定修订已改变，已停止旧归档任务",
+        )),
+        None => Err(AppError::validation(
+            "Sent 目标文件夹不存在或协议不匹配，请重新配置归档策略",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_uses_remote_binding_only_when_revision_matches() {
+        assert_eq!(
+            resolve_remote_binding(Some(("Sent Items".into(), 3, false)), Some(3)).unwrap(),
+            "Sent Items"
+        );
+        assert!(matches!(
+            resolve_remote_binding(Some(("Sent Items".into(), 4, false)), Some(3)),
+            Err(AppError { code: crate::application::error::AppErrorCode::Conflict, .. })
+        ));
+        assert!(matches!(
+            resolve_remote_binding(Some(("Sent Items".into(), 3, true)), Some(3)),
+            Err(AppError { code: crate::application::error::AppErrorCode::Conflict, .. })
+        ));
+        assert!(matches!(
+            resolve_remote_binding(None, Some(3)),
+            Err(AppError { code: crate::application::error::AppErrorCode::Validation, .. })
+        ));
+    }
 }

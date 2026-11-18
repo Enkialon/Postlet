@@ -85,8 +85,8 @@ async fn enqueue_archive(
     };
     let state = crate::domain::entities::archive_initial_state(policy);
     let target = if policy == crate::domain::entities::ArchivePolicy::ClientAppend {
-        sqlx::query_scalar::<_, String>(
-            "SELECT folder_id FROM mail_folder_sync_state
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT folder_id, binding_revision FROM mail_folder_sync_state
              WHERE account_id = ? AND role = 'sent' AND is_retired = 0
              ORDER BY folder_id LIMIT 1",
         )
@@ -97,6 +97,12 @@ async fn enqueue_archive(
     } else {
         None
     };
+    // 客户端保存必须有已确认的有效 Sent 目标；否则停在可配置状态，不盲发 APPEND。
+    let state = if policy == crate::domain::entities::ArchivePolicy::ClientAppend && target.is_none() {
+        crate::domain::entities::ArchiveState::NeedsConfiguration
+    } else {
+        state
+    };
     let _ = db;
     crate::infrastructure::repository::archive_tasks::enqueue_after_acceptance(
         conn,
@@ -106,10 +112,10 @@ async fn enqueue_archive(
         &task.snapshot_id,
         state,
         target
-            .as_deref()
-            .map(crate::domain::value_objects::FolderId::new)
+            .as_ref()
+            .map(|(folder_id, _)| crate::domain::value_objects::FolderId::new(folder_id))
             .as_ref(),
-        target.as_ref().map(|_| 1_i64),
+        target.as_ref().map(|(_, revision)| *revision),
         now,
     )
     .await
