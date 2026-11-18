@@ -147,3 +147,122 @@ fn uid_gaps_are_downloaded_by_set_difference() {
     assert_eq!(downloaded, remote);
     assert!(!order.is_empty());
 }
+
+/// 接受确认与归档入队同事务；目标使用真实绑定修订而不是硬编码 1。
+#[tokio::test]
+async fn accepted_send_commits_result_and_archive_task_together() {
+    use postlet_lib::application::use_cases::outbound_use_case;
+    use postlet_lib::domain::entities::{next_state, SendState, SendTask};
+    use postlet_lib::domain::mail::{SendOutcome, SendStage};
+
+    let db = db::open_memory().await.unwrap();
+    sqlx::query(
+        "INSERT INTO accounts(id,email,created_at,updated_at,sent_archive_policy)
+         VALUES ('a','a@example.com',1,1,'client_append')",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO account_mail_transport(
+            account_id,receive_protocol,send_protocol,receive_credential_ref,send_credential_ref,
+            imap_host,imap_port,imap_tls,imap_username,
+            smtp_host,smtp_port,smtp_tls,smtp_username,updated_at)
+         VALUES ('a','imap','smtp','r1','s1','imap.example.com',993,'implicit','a@example.com',
+            'smtp.example.com',587,'starttls','a@example.com',1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mail_folder_sync_state(
+            account_id,folder_id,protocol,remote_binding,binding_revision,is_retired,
+            display_name,sync_enabled,sync_status,updated_at,role,role_source)
+         VALUES ('a','sent-uuid','imap','Sent Items',7,0,'Sent',0,'idle',1,'sent','server')",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions(account_id,id,kind,normalized_address,created_at,updated_at)
+         VALUES ('a','s1','private','peer@example.com',1,1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO messages(account_id,id,session_id,subject,body_preview,body_content_type,
+            from_name,is_read,is_draft,is_outbound,has_attachments,importance,local_updated_at)
+         VALUES ('a','m1','s1','s','','text','',0,0,1,0,'normal',1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO attachment_contents(content_id,account_id,storage_key,byte_length,digest,created_at)
+         VALUES ('c1','a','c1',1,'d',1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO outbound_snapshots(account_id,snapshot_id,content_version,internet_message_id,date,
+            mime_content_id,envelope_json,subject,text_body,created_at)
+         VALUES ('a','s1',1,'<m@x>','d','c1','{}','s','t',1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO send_tasks(task_id,account_id,message_id,content_version,snapshot_id,state,
+            attempt_id,claim_token,attempts,created_at,updated_at)
+         VALUES ('send-1','a','m1',1,'s1','sending','attempt','claim',1,1,1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let task = SendTask {
+        task_id: "send-1".into(),
+        account_id: AccountId::new("a"),
+        message_id: MessageId::new("m1"),
+        content_version: 1,
+        snapshot_id: "s1".into(),
+        state: SendState::Sending,
+        attempt_id: Some("attempt".into()),
+        claim_token: Some("claim".into()),
+        lease_until: None,
+        attempts: 1,
+        next_attempt_at: None,
+        last_error_code: None,
+        last_error: None,
+        accepted_at: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    assert_eq!(next_state(SendOutcome::Accepted, SendStage::Data), SendState::Accepted);
+    assert!(
+        outbound_use_case::complete_accepted_attempt(&db, &AccountId::new("a"), &task, 2)
+            .await
+            .unwrap()
+    );
+
+    let mut conn = db.acquire().await.unwrap();
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM send_tasks WHERE account_id='a' AND task_id='send-1'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(state, "accepted");
+    let (archive_state, folder, revision): (String, String, i64) = sqlx::query_as(
+        "SELECT state, target_folder_id, target_binding_revision FROM archive_tasks
+         WHERE account_id='a' AND send_task_id='send-1'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(archive_state, "append_pending");
+    assert_eq!(folder, "sent-uuid");
+    assert_eq!(revision, 7);
+}

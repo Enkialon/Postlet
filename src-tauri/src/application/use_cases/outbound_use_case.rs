@@ -128,6 +128,108 @@ pub async fn execute_claimed_attempt(
     }
 }
 
+/// 已接受结果的本地收尾：发送状态、归档入队和账号版本同一事务提交。
+///
+/// 网络已成功而本地提交失败时，调用方只能重试本步骤，不能重新发送邮件。
+pub async fn complete_accepted_attempt(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    task: &crate::domain::entities::SendTask,
+    now: i64,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+    let applied = crate::infrastructure::repository::send_tasks::record_result(
+        &mut tx,
+        account_id,
+        &task.task_id,
+        task.content_version,
+        task.attempt_id.as_deref().unwrap_or_default(),
+        task.claim_token.as_deref().unwrap_or_default(),
+        crate::domain::entities::SendState::Accepted,
+        Some(now),
+        None,
+        None,
+        None,
+        now,
+    )
+    .await
+    .map_err(AppError::from)?;
+    if !applied {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    enqueue_archive(&mut tx, account_id, task, now).await?;
+    crate::infrastructure::repository::accounts::bump_change_version(&mut tx, account_id)
+        .await
+        .map_err(AppError::from)?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// 按账号策略创建归档任务；与发送接受确认在同一事务内。
+async fn enqueue_archive(
+    conn: &mut sqlx::SqliteConnection,
+    account_id: &AccountId,
+    task: &crate::domain::entities::SendTask,
+    now: i64,
+) -> Result<(), AppError> {
+    let policy = {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT a.sent_archive_policy, t.receive_protocol
+             FROM accounts a
+             JOIN account_mail_transport t ON t.account_id = a.id
+             WHERE a.id = ?",
+        )
+        .bind(account_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(AppError::from)?;
+        let Some((policy, protocol)) = row else {
+            return Ok(());
+        };
+        crate::domain::entities::ArchivePolicy::parse(&policy).unwrap_or_else(|| {
+            let protocol = crate::domain::value_objects::ReceiveProtocol::parse(&protocol)
+                .unwrap_or(crate::domain::value_objects::ReceiveProtocol::Imap);
+            crate::domain::entities::ArchivePolicy::default_for(protocol)
+        })
+    };
+    let state = crate::domain::entities::archive_initial_state(policy);
+    let target = if policy == crate::domain::entities::ArchivePolicy::ClientAppend {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT folder_id, binding_revision FROM mail_folder_sync_state
+             WHERE account_id = ? AND role = 'sent' AND is_retired = 0
+             ORDER BY folder_id LIMIT 1",
+        )
+        .bind(account_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(AppError::from)?
+    } else {
+        None
+    };
+    let state = if policy == crate::domain::entities::ArchivePolicy::ClientAppend && target.is_none() {
+        crate::domain::entities::ArchiveState::NeedsConfiguration
+    } else {
+        state
+    };
+    crate::infrastructure::repository::archive_tasks::enqueue_after_acceptance(
+        conn,
+        &format!("archive-{}", uuid::Uuid::new_v4().as_hyphenated()),
+        account_id,
+        &task.task_id,
+        &task.snapshot_id,
+        state,
+        target
+            .as_ref()
+            .map(|(folder_id, _)| crate::domain::value_objects::FolderId::new(folder_id))
+            .as_ref(),
+        target.as_ref().map(|(_, revision)| *revision),
+        now,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
 /// InfraError → 发送结论；用于保留阶段/重试语义
 fn classify_send_infra_error(err: crate::infrastructure::error::InfraError) -> AppError {
     err.into()

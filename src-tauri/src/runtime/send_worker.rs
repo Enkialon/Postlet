@@ -55,73 +55,6 @@ async fn recover_interrupted(db: &SqlitePool) {
     }
 }
 
-/// 按账号策略创建归档任务
-async fn enqueue_archive(
-    db: &SqlitePool,
-    account_id: &AccountId,
-    task: &crate::domain::entities::SendTask,
-    conn: &mut sqlx::SqliteConnection,
-    now: i64,
-) -> Result<(), AppError> {
-    let policy = {
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT a.sent_archive_policy, t.receive_protocol
-             FROM accounts a
-             JOIN account_mail_transport t ON t.account_id = a.id
-             WHERE a.id = ?",
-        )
-        .bind(account_id.as_str())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(AppError::from)?;
-        let Some((policy, protocol)) = row else {
-            return Ok(());
-        };
-        crate::domain::entities::ArchivePolicy::parse(&policy).unwrap_or_else(|| {
-            let protocol = crate::domain::value_objects::ReceiveProtocol::parse(&protocol)
-                .unwrap_or(crate::domain::value_objects::ReceiveProtocol::Imap);
-            crate::domain::entities::ArchivePolicy::default_for(protocol)
-        })
-    };
-    let state = crate::domain::entities::archive_initial_state(policy);
-    let target = if policy == crate::domain::entities::ArchivePolicy::ClientAppend {
-        sqlx::query_as::<_, (String, i64)>(
-            "SELECT folder_id, binding_revision FROM mail_folder_sync_state
-             WHERE account_id = ? AND role = 'sent' AND is_retired = 0
-             ORDER BY folder_id LIMIT 1",
-        )
-        .bind(account_id.as_str())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(AppError::from)?
-    } else {
-        None
-    };
-    // 客户端保存必须有已确认的有效 Sent 目标；否则停在可配置状态，不盲发 APPEND。
-    let state = if policy == crate::domain::entities::ArchivePolicy::ClientAppend && target.is_none() {
-        crate::domain::entities::ArchiveState::NeedsConfiguration
-    } else {
-        state
-    };
-    let _ = db;
-    crate::infrastructure::repository::archive_tasks::enqueue_after_acceptance(
-        conn,
-        &format!("archive-{}", uuid::Uuid::new_v4().as_hyphenated()),
-        account_id,
-        &task.task_id,
-        &task.snapshot_id,
-        state,
-        target
-            .as_ref()
-            .map(|(folder_id, _)| crate::domain::value_objects::FolderId::new(folder_id))
-            .as_ref(),
-        target.as_ref().map(|(_, revision)| *revision),
-        now,
-    )
-    .await
-    .map_err(AppError::from)
-}
-
 async fn tick_once(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -217,14 +150,37 @@ async fn run_attempt(
     drop(permit);
 
     let now = now_ms();
-    let mut conn = db.acquire().await?;
     match result {
         Ok(outcome) => {
             let next = next_state(outcome.outcome, outcome.stage);
-            let accepted_at = (next == SendState::Accepted).then_some(now);
+            if next == SendState::Accepted {
+                // 只重试本地确认步骤，绝不因本地失败重新发送邮件。
+                let mut last_error = None;
+                for _ in 0..3 {
+                    match outbound_use_case::complete_accepted_attempt(db, account_id, task, now)
+                        .await
+                    {
+                        Ok(true) => {
+                            changes.dispatch(crate::application::dto::ChangeSet::empty(
+                                account_id.clone(),
+                                crate::application::dto::ChangeOrigin::UserAction,
+                            ));
+                            return Ok(());
+                        }
+                        Ok(false) => return Ok(()),
+                        Err(error) => {
+                            last_error = Some(error);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                return Err(last_error
+                    .unwrap_or_else(|| AppError::internal("发送确认落库失败")));
+            }
+            let mut conn = db.acquire().await?;
             let next_attempt = (next == SendState::Retryable)
                 .then(|| now + backoff_ms(task.attempts));
-            let applied = send_tasks::record_result(
+            send_tasks::record_result(
                 &mut conn,
                 account_id,
                 &task.task_id,
@@ -232,7 +188,7 @@ async fn run_attempt(
                 task.attempt_id.as_deref().unwrap_or_default(),
                 task.claim_token.as_deref().unwrap_or_default(),
                 next,
-                accepted_at,
+                None,
                 next_attempt,
                 None,
                 None,
@@ -240,14 +196,6 @@ async fn run_attempt(
             )
             .await
             .map_err(AppError::from)?;
-            if applied && next.shows_as_sent() {
-                // 接受确认与归档任务同事务：归档失败只重试归档，不重发邮件
-                enqueue_archive(db, account_id, task, &mut conn, now).await?;
-                changes.dispatch(crate::application::dto::ChangeSet::empty(
-                    account_id.clone(),
-                    crate::application::dto::ChangeOrigin::UserAction,
-                ));
-            }
             Ok(())
         }
         Err(error) => {
@@ -262,6 +210,7 @@ async fn run_attempt(
             };
             let next_attempt = (next == SendState::Retryable)
                 .then(|| now + backoff_ms(task.attempts));
+            let mut conn = db.acquire().await?;
             send_tasks::record_result(
                 &mut conn,
                 account_id,
