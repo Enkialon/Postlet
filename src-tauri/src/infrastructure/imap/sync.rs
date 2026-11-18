@@ -20,6 +20,8 @@ pub struct FolderSyncRequest {
     pub binding_revision: i64,
     pub stored_generation: Option<String>,
     pub known_messages: Vec<(crate::domain::value_objects::RemoteKey, bool)>,
+    /// 仍在失败退避中的候选位置；本轮不得占用下载页。
+    pub cooling_candidates: Vec<crate::domain::value_objects::RemoteKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,8 @@ pub struct FolderSyncResult {
     pub missing_remote_ids: Vec<String>,
     /// 本批解析/内容失败、需退避重试的 UID（不计为已下载）
     pub failed_uids: Vec<u32>,
+    /// 本轮远端发现到但本地尚未下载的位置；由 application 写入候选表。
+    pub discovered_remote_ids: Vec<String>,
     /// 该文件夹本轮不可用（无 UIDVALIDITY / SELECT 失败等）；不推进游标，但不影响其他夹
     pub folder_error: Option<String>,
 }
@@ -80,7 +84,16 @@ pub fn sync_folder(
         HashSet::new()
     };
     let remote_uids = search_uids(session, "ALL")?;
-    let page = missing_imap_page(&remote_uids, &known, page_limit);
+    let cooled: HashSet<u32> = request
+        .cooling_candidates
+        .iter()
+        .filter_map(|key| {
+            let (generation, uid) = decode_remote_key(key).ok()?;
+            (generation == uidvalidity).then_some(uid)
+        })
+        .collect();
+    let eligible: HashSet<u32> = remote_uids.difference(&cooled).copied().collect();
+    let page = missing_imap_page(&eligible, &known, page_limit);
     let fetched = fetch_uid_page(session, &request.folder_id, uidvalidity, &page, operation)?;
     if !page.is_empty() && fetched.ok_uids.is_empty() {
         // 整页不可读：保留失败事实交上层记录退避，不阻塞更旧候选
@@ -89,6 +102,10 @@ pub fn sync_folder(
             page.len()
         );
     }
+    let discovered_remote_ids: Vec<String> = remote_uids
+        .difference(&known)
+        .map(|uid| remote_id(uidvalidity, *uid).as_str().to_string())
+        .collect();
     let failed_uids: Vec<u32> = page
         .iter()
         .copied()
@@ -147,6 +164,7 @@ pub fn sync_folder(
         changes,
         missing_remote_ids,
         failed_uids,
+        discovered_remote_ids,
         folder_error: None,
     })
 }
@@ -164,6 +182,7 @@ impl FolderSyncResult {
             changes: Vec::new(),
             missing_remote_ids: Vec::new(),
             failed_uids: Vec::new(),
+            discovered_remote_ids: Vec::new(),
             folder_error: Some(message),
         }
     }
@@ -326,6 +345,7 @@ mod folder_isolation_tests {
             binding_revision: 3,
             stored_generation: None,
             known_messages: Vec::new(),
+            cooling_candidates: Vec::new(),
         }
     }
 

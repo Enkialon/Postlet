@@ -308,12 +308,22 @@ async fn sync_imap_mail(
                 is_initial = true;
             }
             let known = load_known_remote_messages(&mut conn, &cmd.account_id, &folder).await?;
+            let cooling_candidates =
+                crate::infrastructure::repository::download_candidates::list_cooling(
+                    &mut conn,
+                    &cmd.account_id,
+                    &folder_id,
+                    now_ms(),
+                )
+                .await
+                .map_err(AppError::from)?;
             requests.push(FolderSyncRequest {
                 folder_id,
                 remote_binding: prev.remote_binding,
                 binding_revision: prev.binding_revision,
                 stored_generation: prev.generation,
                 known_messages: known,
+                cooling_candidates,
             });
         }
     }
@@ -395,6 +405,21 @@ async fn apply_imap_folder_batch(
     if result.generation_changed {
         invalidate_folder_generation(&mut tx, account_id, &result.folder_id, &mut changes).await?;
     }
+    let now = now_ms();
+    let generation = result.uidvalidity.to_string();
+    for key in &result.discovered_remote_ids {
+        crate::infrastructure::repository::download_candidates::record_discovered(
+            &mut tx,
+            account_id,
+            &result.folder_id,
+            &crate::domain::value_objects::RemoteKey::new(key),
+            result.binding_revision,
+            Some(&generation),
+            now,
+        )
+        .await
+        .map_err(AppError::from)?;
+    }
     for uid in &result.failed_uids {
         let remote_key = crate::infrastructure::imap::imap_remote_id(result.uidvalidity, *uid);
         crate::infrastructure::repository::download_candidates::record_failure(
@@ -403,8 +428,8 @@ async fn apply_imap_folder_batch(
             &result.folder_id,
             &remote_key,
             "本批无法读取或解析正文",
-            Some(now_ms() + 60_000),
-            now_ms(),
+            Some(now + 60_000),
+            now,
         )
         .await
         .map_err(AppError::from)?;
@@ -415,6 +440,15 @@ async fn apply_imap_folder_batch(
                 let can_notify = remote.flags.is_draft == Some(false);
                 let (mid, cid, is_new) = upsert_remote_message(&mut tx, account_id, &remote).await?;
                 store_remote_attachments(&mut tx, paths, account_id, &mid, &remote.attachments).await?;
+                crate::infrastructure::repository::download_candidates::mark_downloaded(
+                    &mut tx,
+                    account_id,
+                    &result.folder_id,
+                    &remote.remote_key,
+                    now,
+                )
+                .await
+                .map_err(AppError::from)?;
                 changes.message_ids.push(mid.clone());
                 if let Some(sid) = cid {
                     changes.session_ids.push(sid);

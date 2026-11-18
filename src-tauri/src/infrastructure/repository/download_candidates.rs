@@ -121,6 +121,28 @@ pub async fn list_due(
     rows.iter().map(map_row).collect()
 }
 
+/// 仍在冷却中的候选：本轮选页必须跳过，以免坏信占满下载页。
+pub async fn list_cooling(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    now: TimestampMs,
+) -> Result<Vec<RemoteKey>, InfraError> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT remote_key FROM mail_download_candidates
+         WHERE account_id = ? AND folder_id = ?
+           AND state IN ('pending','failed')
+           AND next_attempt_at IS NOT NULL AND next_attempt_at > ?
+         ORDER BY remote_key",
+    )
+    .bind(account_id.as_str())
+    .bind(folder_id.as_str())
+    .bind(now)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(RemoteKey::new).collect())
+}
+
 pub async fn mark_downloaded(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -228,10 +250,13 @@ mod tests {
         let due = list_due(&mut conn, &account, &folder, 1_000, 10).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].remote_key, old, "cooling candidate must not block older ones");
+        let cooling = list_cooling(&mut conn, &account, &folder, 1_000).await.unwrap();
+        assert_eq!(cooling, vec![newer.clone()]);
 
         // 到期后重新进入候选
         let due_later = list_due(&mut conn, &account, &folder, 10_000, 10).await.unwrap();
         assert_eq!(due_later.len(), 2);
+        assert!(list_cooling(&mut conn, &account, &folder, 10_000).await.unwrap().is_empty());
 
         mark_downloaded(&mut conn, &account, &folder, &old, 2_000).await.unwrap();
         // 已下载不会被重新发现重置
