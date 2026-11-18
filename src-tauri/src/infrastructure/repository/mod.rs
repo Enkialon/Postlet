@@ -2,6 +2,7 @@
 pub mod accounts;
 pub mod attachments;
 pub mod contacts;
+pub mod download_candidates;
 pub mod folder_states;
 pub mod groups;
 pub mod jobs;

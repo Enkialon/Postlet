@@ -4,6 +4,7 @@ mod client;
 mod connection;
 mod idle;
 mod parse;
+pub use parse::remote_id as imap_remote_id;
 mod session_ops;
 mod sync;
 mod stream;

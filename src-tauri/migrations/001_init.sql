@@ -442,3 +442,23 @@ CREATE INDEX idx_send_tasks_due
 
 CREATE INDEX idx_send_tasks_message
     ON send_tasks(account_id, message_id);
+
+-- Task 13：下载候选与失败重试（位置唯一；远端键对流层不透明）
+CREATE TABLE mail_download_candidates (
+    account_id       TEXT NOT NULL,
+    folder_id        TEXT NOT NULL,
+    remote_key       TEXT NOT NULL,
+    binding_revision INTEGER NOT NULL,
+    generation       TEXT,
+    state            TEXT NOT NULL DEFAULT 'pending'
+        CHECK(state IN ('pending','downloaded','failed')),
+    attempts         INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+    next_attempt_at  INTEGER,
+    last_error       TEXT,
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY (account_id, folder_id, remote_key),
+    FOREIGN KEY (account_id, folder_id) REFERENCES mail_folder_sync_state(account_id, folder_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_download_candidates_due
+    ON mail_download_candidates(account_id, folder_id, state, next_attempt_at);

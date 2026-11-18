@@ -330,58 +330,24 @@ async fn sync_imap_mail(
 
     let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
 
+    let mut first_error: Option<AppError> = None;
+
+    // 逐夹提交：单夹失败不丢弃已提交批次，也不伪造 ChangeSet
     for result in batch.folders {
         operation.checkpoint()?;
-        let mut tx = db.begin().await?;
-        let current = folder_states::get(&mut tx, &cmd.account_id, &result.folder_id).await?
-            .filter(|state| !state.is_retired && state.binding_revision == result.binding_revision)
-            .ok_or_else(|| AppError::conflict("文件夹绑定已改变，丢弃旧同步结果"))?;
-        if result.generation_changed {
-            invalidate_folder_generation(&mut tx, &cmd.account_id, &result.folder_id, &mut changeset).await?;
-        }
-        for change in result.changes {
-            match change {
-                RemoteMessageChange::Upsert(remote) => {
-                    let can_notify = remote.flags.is_draft == Some(false);
-                    let (mid, cid, is_new) =
-                        upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
-                    store_remote_attachments(&mut tx, paths, &cmd.account_id, &mid, &remote.attachments)
-                        .await?;
-                    changeset.message_ids.push(mid.clone());
-                    if let Some(sid) = cid {
-                        changeset.session_ids.push(sid);
-                    }
-                    if is_new && can_notify {
-                        changeset.new_incoming_ids.push(mid);
-                    }
-                }
-                RemoteMessageChange::FlagsChanged { remote_key, flags } => {
-                    if let Some((mid, sid)) = apply_remote_flags(&mut tx, &cmd.account_id, &result.folder_id, &remote_key, flags).await? {
-                        changeset.message_ids.push(mid); changeset.session_ids.push(sid);
-                    }
-                }
-                RemoteMessageChange::Remove { remote_key } => {
-                    apply_location_removed(&mut tx, &cmd.account_id, &result.folder_id, &remote_key, &mut changeset).await?;
+        match apply_imap_folder_batch(db, paths, &cmd.account_id, result).await {
+            Ok(folder_changes) => merge_folder_changes(&mut changeset, folder_changes),
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
                 }
             }
         }
-        for key in result.missing_remote_ids {
-            apply_location_removed(&mut tx, &cmd.account_id, &result.folder_id, &crate::domain::value_objects::RemoteKey::new(key), &mut changeset).await?;
+    }
+    if changeset.is_empty() {
+        if let Some(error) = first_error {
+            return Err(error);
         }
-
-        let mut state = merge_folder_progress(&current,
-            Some(encode_uidvalidity(result.uidvalidity)),
-            Some(encode_uid_cursor(result.last_uid, result.low_uid)));
-        state.generation = Some(result.uidvalidity.to_string());
-        folder_states::upsert(&mut tx, &state)
-            .await
-            .map_err(AppError::from)?;
-        if !changeset.is_empty() {
-            changeset.account_version =
-                Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?);
-        }
-        operation.checkpoint()?;
-        tx.commit().await?;
     }
 
     if is_initial {
@@ -390,6 +356,96 @@ async fn sync_imap_mail(
     let mut seen = HashSet::new();
     changeset.session_ids.retain(|c| seen.insert(c.clone()));
     Ok(changeset)
+}
+
+/// 合并单个文件夹已提交的变更
+fn merge_folder_changes(total: &mut ChangeSet, folder: ChangeSet) {
+    total.session_ids.extend(folder.session_ids);
+    total.message_ids.extend(folder.message_ids);
+    total.new_incoming_ids.extend(folder.new_incoming_ids);
+    total.account_version = folder.account_version.or(total.account_version);
+}
+
+/// 单夹单批：成功返回该夹已提交的 ChangeSet；失败不提交任何内容。
+async fn apply_imap_folder_batch(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    result: crate::infrastructure::imap::FolderSyncResult,
+) -> Result<ChangeSet, AppError> {
+    let mut changes = ChangeSet::empty(account_id.clone(), ChangeOrigin::IncrementalSync);
+    let mut tx = db.begin().await?;
+    let current = folder_states::get(&mut tx, account_id, &result.folder_id)
+        .await?
+        .filter(|state| !state.is_retired && state.binding_revision == result.binding_revision)
+        .ok_or_else(|| AppError::conflict("文件夹绑定已改变，丢弃旧同步结果"))?;
+    if result.generation_changed {
+        invalidate_folder_generation(&mut tx, account_id, &result.folder_id, &mut changes).await?;
+    }
+    for uid in &result.failed_uids {
+        let remote_key = crate::infrastructure::imap::imap_remote_id(result.uidvalidity, *uid);
+        crate::infrastructure::repository::download_candidates::record_failure(
+            &mut tx,
+            account_id,
+            &result.folder_id,
+            &remote_key,
+            "本批无法读取或解析正文",
+            Some(now_ms() + 60_000),
+            now_ms(),
+        )
+        .await
+        .map_err(AppError::from)?;
+    }
+    for change in result.changes {
+        match change {
+            RemoteMessageChange::Upsert(remote) => {
+                let can_notify = remote.flags.is_draft == Some(false);
+                let (mid, cid, is_new) = upsert_remote_message(&mut tx, account_id, &remote).await?;
+                store_remote_attachments(&mut tx, paths, account_id, &mid, &remote.attachments).await?;
+                changes.message_ids.push(mid.clone());
+                if let Some(sid) = cid {
+                    changes.session_ids.push(sid);
+                }
+                if is_new && can_notify {
+                    changes.new_incoming_ids.push(mid);
+                }
+            }
+            RemoteMessageChange::FlagsChanged { remote_key, flags } => {
+                if let Some((mid, sid)) =
+                    apply_remote_flags(&mut tx, account_id, &result.folder_id, &remote_key, flags).await?
+                {
+                    changes.message_ids.push(mid);
+                    changes.session_ids.push(sid);
+                }
+            }
+            RemoteMessageChange::Remove { remote_key } => {
+                apply_location_removed(&mut tx, account_id, &result.folder_id, &remote_key, &mut changes).await?;
+            }
+        }
+    }
+    for key in result.missing_remote_ids {
+        apply_location_removed(
+            &mut tx,
+            account_id,
+            &result.folder_id,
+            &crate::domain::value_objects::RemoteKey::new(key),
+            &mut changes,
+        )
+        .await?;
+    }
+
+    let mut state = merge_folder_progress(
+        &current,
+        Some(encode_uidvalidity(result.uidvalidity)),
+        Some(encode_uid_cursor(result.last_uid, result.low_uid)),
+    );
+    state.generation = Some(result.uidvalidity.to_string());
+    folder_states::upsert(&mut tx, &state).await.map_err(AppError::from)?;
+    if !changes.is_empty() {
+        changes.account_version = Some(accounts::bump_change_version(&mut tx, account_id).await?);
+    }
+    tx.commit().await?;
+    Ok(changes)
 }
 
 async fn load_known_remote_messages(

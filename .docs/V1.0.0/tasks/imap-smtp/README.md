@@ -25,7 +25,7 @@
 | 10 | [恢复已读与删除意图并阻止旧结果覆盖](10-mutation-recovery.md)（已完成） | I-06、I-10、A-04 | 05、08（仅状态拆分）、09 |
 | 11 | [默认删除移入垃圾箱，永久删除保持单封安全](11-trash-delete.md)（已完成） | I-01、I-10 | 09、10 |
 | 12 | [完善 MIME、附件、地址组和日期解析](12-mime-ingestion.md)（已完成） | I-12、I-07 | 03、05 |
-| 13 | [按文件夹提交并隔离坏邮件重试](13-sync-batch-isolation.md) | I-13、A-03 | 05、12 |
+| 13 | [按文件夹提交并隔离坏邮件重试](13-sync-batch-isolation.md)（已完成） | I-13、A-03 | 05、12 |
 | 14 | [实现已发送副本归档和展示](14-sent-archive.md) | I-11、A-06 | 06、08、09 |
 | 15 | [统一所有后台任务的账号生命周期](15-account-lifecycle.md) | A-04、I-14 | 04、08、10、11、13、14 |
 | 16 | [在真实 Tauri WebView 验证 HTML 隔离](16-tauri-html-security.md) | I-19 | 01 |

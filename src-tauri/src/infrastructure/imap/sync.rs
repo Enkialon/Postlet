@@ -34,6 +34,8 @@ pub struct FolderSyncResult {
     pub low_uid: u32,
     pub changes: Vec<RemoteMessageChange>,
     pub missing_remote_ids: Vec<String>,
+    /// 本批解析/内容失败、需退避重试的 UID（不计为已下载）
+    pub failed_uids: Vec<u32>,
 }
 
 /// 同步单个邮箱（阻塞）。
@@ -70,14 +72,17 @@ pub fn sync_folder(
     let page = missing_imap_page(&remote_uids, &known, page_limit);
     let fetched = fetch_uid_page(session, &request.folder_id, uidvalidity, &page, operation)?;
     if !page.is_empty() && fetched.ok_uids.is_empty() {
-        return Err(InfraError::Remote {
-            message: format!(
-                "IMAP 文件夹 {folder} 请求 {} 封，但无法读取正文，稍后重试",
-                page.len()
-            ),
-            retryable: true,
-        });
+        // 整页不可读：保留失败事实交上层记录退避，不阻塞更旧候选
+        eprintln!(
+            "IMAP 同步 {folder}: 本批 {} 封均无法读取正文，已记录待重试",
+            page.len()
+        );
     }
+    let failed_uids: Vec<u32> = page
+        .iter()
+        .copied()
+        .filter(|uid| !fetched.ok_uids.contains(uid))
+        .collect();
     let mut downloaded = known;
     downloaded.extend(fetched.ok_uids);
     let high_uid = downloaded
@@ -130,6 +135,7 @@ pub fn sync_folder(
         low_uid,
         changes,
         missing_remote_ids,
+        failed_uids,
     })
 }
 
