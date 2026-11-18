@@ -257,6 +257,39 @@ pub async fn uid_delete_async(
     .await
 }
 
+/// APPEND 已持久化 MIME 到目标文件夹（如 Sent）。
+///
+/// 结果未知时返回 `None`（调用方记为 uncertain），不猜测是否已写入。
+pub fn append_message<T: std::io::Read + std::io::Write>(
+    session: &mut Session<T>,
+    folder: &str,
+    mime: &[u8],
+) -> Result<bool, InfraError> {
+    match session.append(folder, mime) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+pub async fn append_message_async(
+    endpoint: &ImapEndpoint,
+    auth: &ImapAuth,
+    folder: &str,
+    mime: &[u8],
+) -> Result<bool, InfraError> {
+    let operation = MailOperation::new(Duration::from_secs(180));
+    let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
+    let folder = folder.to_string();
+    let mime = mime.to_vec();
+    operation
+        .run_blocking(move || {
+            let out = append_message(&mut session, &folder, &mime);
+            let _ = session.logout();
+            out
+        })
+        .await
+}
+
 pub async fn uid_move_async(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,

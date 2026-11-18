@@ -55,6 +55,67 @@ async fn recover_interrupted(db: &SqlitePool) {
     }
 }
 
+/// 按账号策略创建归档任务
+async fn enqueue_archive(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    task: &crate::domain::entities::SendTask,
+    conn: &mut sqlx::SqliteConnection,
+    now: i64,
+) -> Result<(), AppError> {
+    let policy = {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT a.sent_archive_policy, t.receive_protocol
+             FROM accounts a
+             JOIN account_mail_transport t ON t.account_id = a.id
+             WHERE a.id = ?",
+        )
+        .bind(account_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(AppError::from)?;
+        let Some((policy, protocol)) = row else {
+            return Ok(());
+        };
+        crate::domain::entities::ArchivePolicy::parse(&policy).unwrap_or_else(|| {
+            let protocol = crate::domain::value_objects::ReceiveProtocol::parse(&protocol)
+                .unwrap_or(crate::domain::value_objects::ReceiveProtocol::Imap);
+            crate::domain::entities::ArchivePolicy::default_for(protocol)
+        })
+    };
+    let state = crate::domain::entities::archive_initial_state(policy);
+    let target = if policy == crate::domain::entities::ArchivePolicy::ClientAppend {
+        sqlx::query_scalar::<_, String>(
+            "SELECT folder_id FROM mail_folder_sync_state
+             WHERE account_id = ? AND role = 'sent' AND is_retired = 0
+             ORDER BY folder_id LIMIT 1",
+        )
+        .bind(account_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(AppError::from)?
+    } else {
+        None
+    };
+    let _ = db;
+    crate::infrastructure::repository::archive_tasks::enqueue_after_acceptance(
+        conn,
+        &format!("archive-{}", uuid::Uuid::new_v4().as_hyphenated()),
+        account_id,
+        &task.task_id,
+        &task.snapshot_id,
+        state,
+        target
+            .as_deref()
+            .map(crate::domain::value_objects::FolderId::new)
+            .as_ref(),
+        target.as_ref().map(|_| 1_i64),
+        now,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
 async fn tick_once(
     db: &SqlitePool,
     paths: &AppPaths,
@@ -174,6 +235,8 @@ async fn run_attempt(
             .await
             .map_err(AppError::from)?;
             if applied && next.shows_as_sent() {
+                // 接受确认与归档任务同事务：归档失败只重试归档，不重发邮件
+                enqueue_archive(db, account_id, task, &mut conn, now).await?;
                 changes.dispatch(crate::application::dto::ChangeSet::empty(
                     account_id.clone(),
                     crate::application::dto::ChangeOrigin::UserAction,

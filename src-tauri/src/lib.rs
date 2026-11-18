@@ -63,6 +63,11 @@ pub fn run() {
             )
             .ok();
             runtime::aggregate_scheduler::spawn(db.clone(), changes.clone());
+            runtime::archive_worker::spawn(
+                db.clone(),
+                paths.clone(),
+                mail_sync_gate.clone(),
+            );
             runtime::send_worker::spawn(
                 db.clone(),
                 paths.clone(),

@@ -3,6 +3,7 @@
 //! 调度与分发只依赖 Application DTO / 用例；不直接调用协议 SDK。
 
 pub mod aggregate_scheduler;
+pub mod archive_worker;
 pub mod change_dispatcher;
 pub mod mail_sync_gate;
 pub mod mail_sync;
