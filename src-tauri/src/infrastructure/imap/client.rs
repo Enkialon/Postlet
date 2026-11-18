@@ -257,17 +257,33 @@ pub async fn uid_delete_async(
     .await
 }
 
-/// APPEND 已持久化 MIME 到目标文件夹（如 Sent）。
-///
-/// 结果未知时返回 `None`（调用方记为 uncertain），不猜测是否已写入。
+/// APPEND 结果三态：成功 = Some(true)，服务器明确拒绝 = Some(false)，
+/// 连接/响应未知 = None（调用方记 uncertain，不重复 APPEND）。
 pub fn append_message<T: std::io::Read + std::io::Write>(
     session: &mut Session<T>,
     folder: &str,
     mime: &[u8],
-) -> Result<bool, InfraError> {
-    match session.append(folder, mime) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
+) -> Result<Option<bool>, InfraError> {
+    classify_append_result(session.append(folder, mime))
+}
+
+fn classify_append_result(
+    result: Result<(), imap::Error>,
+) -> Result<Option<bool>, InfraError> {
+    match result {
+        Ok(()) => Ok(Some(true)),
+        Err(imap::Error::No(message)) | Err(imap::Error::Bad(message)) => {
+            eprintln!("IMAP APPEND 被服务器拒绝: {message}");
+            Ok(Some(false))
+        }
+        Err(imap::Error::Append) => Ok(Some(false)),
+        Err(imap::Error::ConnectionLost) | Err(imap::Error::Io(_)) | Err(imap::Error::Parse(_)) => {
+            Ok(None)
+        }
+        Err(error) => Err(InfraError::Remote {
+            message: format!("IMAP APPEND 未确认: {error}"),
+            retryable: true,
+        }),
     }
 }
 
@@ -276,7 +292,7 @@ pub async fn append_message_async(
     auth: &ImapAuth,
     folder: &str,
     mime: &[u8],
-) -> Result<bool, InfraError> {
+) -> Result<Option<bool>, InfraError> {
     let operation = MailOperation::new(Duration::from_secs(180));
     let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
     let folder = folder.to_string();
@@ -350,6 +366,22 @@ mod tests {
         let result = uid_delete(&mut session, "INBOX", &super::super::parse::remote_id(1, 20));
         let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         (result, written)
+    }
+
+    #[test]
+    fn append_connection_loss_is_unknown_not_a_definite_rejection() {
+        assert_eq!(classify_append_result(Ok(())).unwrap(), Some(true));
+        assert_eq!(classify_append_result(Err(imap::Error::No("no".into()))).unwrap(), Some(false));
+        assert_eq!(classify_append_result(Err(imap::Error::Append)).unwrap(), Some(false));
+        assert_eq!(classify_append_result(Err(imap::Error::ConnectionLost)).unwrap(), None);
+        assert_eq!(
+            classify_append_result(Err(imap::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "lost"
+            ))))
+            .unwrap(),
+            None
+        );
     }
 
     #[test]

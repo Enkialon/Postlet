@@ -213,10 +213,6 @@ async fn append_once(
         destination.as_str(),
         &mime,
     )
-    .await;
-    match accepted {
-        Ok(true) => Ok(Some(true)),
-        Ok(false) => Ok(Some(false)),
-        Err(_) => Ok(None),
-    }
+    .await?;
+    Ok(accepted)
 }
