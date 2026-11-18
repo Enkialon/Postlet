@@ -213,7 +213,10 @@ export function useMessages() {
   }
 
   /** 删除邮件：先乐观标记本地删除意图，再等后端入队；远端确认前不伪造位置事实。 */
-  async function deleteMessages(messageIds: MessageId[]): Promise<void> {
+  async function deleteMessages(
+    messageIds: MessageId[],
+    permanent = false,
+  ): Promise<void> {
     const accountId = nav.accountId.value;
     if (!accountId || messageIds.length === 0) return;
 
@@ -246,6 +249,7 @@ export function useMessages() {
         await ports.message.deleteMessages({
           account_id: accountId,
           message_ids: messageIds,
+          permanent,
         });
       } catch (e) {
         for (const snap of rollback) {

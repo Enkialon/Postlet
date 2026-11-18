@@ -260,6 +260,26 @@ pub async fn delete_message(
     Ok(())
 }
 
+/// 将消息移动到当前账号内的目标文件夹（Graph move 为原子移动）
+pub async fn move_message(
+    access_token: &str,
+    remote_binding: &str,
+    remote_key: &RemoteKey,
+    destination_folder_id: &str,
+) -> Result<(), InfraError> {
+    let payload = json!({ "destinationId": destination_folder_id });
+    let response = client(access_token)
+        .me()
+        .mail_folder(remote_binding)
+        .messages_id(remote_key.as_str())
+        .move_message(&payload)
+        .send()
+        .await
+        .map_err(|e| map_http_err("Graph move message", e))?;
+    ensure_success(response, "Graph move message").await?;
+    Ok(())
+}
+
 pub async fn send_mail(access_token: &str, mail: &GraphOutgoing) -> Result<(), InfraError> {
     let content_type = match mail.body_content_type {
         BodyContentType::Html => "HTML",

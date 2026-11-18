@@ -34,6 +34,9 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> Result<PendingMessageMutation, Infr
             .try_get::<Option<String>, _>("execution_phase")?
             .and_then(|p| crate::domain::entities::MutationPhase::parse(&p)),
         last_error_code: row.try_get("last_error_code")?,
+        destination_folder_id: row
+            .try_get::<Option<String>, _>("destination_folder_id")?
+            .map(crate::domain::value_objects::FolderId::new),
     })
 }
 
@@ -211,6 +214,44 @@ pub async fn put_read(
     require_target_written(result.rows_affected())
 }
 
+/// 默认删除：移入已确认的 Trash；没有 Trash 角色时不写入（不扩大操作）。
+pub async fn put_trash(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<(), InfraError> {
+    let now = now_ms();
+    let result = sqlx::query(
+        "INSERT INTO pending_message_mutations (
+            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key, target_location_revision, target_binding_revision, destination_folder_id
+         ) SELECT m.account_id, m.id, 'trash', NULL, 1, 0, ?, NULL, m.folder_id, m.remote_key, m.location_revision, f.binding_revision, trash.folder_id
+           FROM messages m
+           JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+           JOIN mail_folder_sync_state trash ON trash.account_id = m.account_id
+                AND trash.role = 'trash' AND trash.is_retired = 0
+           WHERE m.account_id = ? AND m.id = ? AND m.location_status = 'present' AND f.is_retired = 0
+         ON CONFLICT(account_id, message_id) DO UPDATE SET
+            target_folder_id=excluded.target_folder_id,
+            target_remote_key=excluded.target_remote_key,
+            target_location_revision=excluded.target_location_revision,
+            target_binding_revision=excluded.target_binding_revision,
+            destination_folder_id=excluded.destination_folder_id,
+            kind='trash',
+            is_active=1,
+            desired_is_read=NULL,
+            version=pending_message_mutations.version + 1,
+            attempts=0,
+            available_at=excluded.available_at,
+            last_error=NULL",
+    )
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    require_target_written(result.rows_affected())
+}
+
 /// 写入待推删除（覆盖同消息上的已读待推）。
 pub async fn put_delete(
     conn: &mut SqliteConnection,
@@ -373,6 +414,7 @@ pub async fn validate_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::PendingMutationKind;
     use sqlx::SqlitePool;
 
     async fn seed(db: &SqlitePool) -> (AccountId, MessageId) {
@@ -416,6 +458,34 @@ mod tests {
             .unwrap();
         let err = put_read(&mut conn, &account, &message, true).await.unwrap_err();
         assert!(matches!(err, InfraError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn trash_intent_requires_a_confirmed_trash_folder() {
+        let db = crate::infrastructure::db::open_memory().await.unwrap();
+        let (account, message) = seed(&db).await;
+        let mut conn = db.acquire().await.unwrap();
+
+        // 只有 inbox 角色：默认删除不得扩大成永久删除，也不能静默成功
+        let err = put_trash(&mut conn, &account, &message).await.unwrap_err();
+        assert!(matches!(err, InfraError::Conflict { .. }));
+
+        sqlx::query(
+            "INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,binding_revision,is_retired,display_name,sync_enabled,sync_status,updated_at,role,role_source)
+             VALUES ('a','trash','imap','Trash',1,0,'Trash',1,'idle',1,'trash','server')",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        put_trash(&mut conn, &account, &message).await.unwrap();
+        let saved = get(&mut conn, &account, &message).await.unwrap().unwrap();
+        assert_eq!(saved.kind, PendingMutationKind::Trash);
+        assert_eq!(
+            saved.destination_folder_id.map(|f| f.to_string()),
+            Some("trash".to_string())
+        );
+        // 源位置仍被冻结
+        assert_eq!(saved.target_folder_id.to_string(), "inbox");
     }
 
     #[tokio::test]

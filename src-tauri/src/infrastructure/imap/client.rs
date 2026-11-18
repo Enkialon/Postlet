@@ -141,6 +141,68 @@ pub async fn uid_set_seen_async(
 }
 
 /// 仅清除指定 UID；没有 UIDPLUS 时不产生任何删除副作用。
+/// 移动到目标文件夹：优先 MOVE；不支持时 COPY + 单封 UID EXPUNGE。
+///
+/// 任何阶段未知都返回可重试错误，绝不回退整夹 EXPUNGE。
+pub fn uid_move<T: std::io::Read + std::io::Write>(
+    session: &mut Session<T>,
+    folder: &str,
+    remote_key: &RemoteKey,
+    destination: &str,
+) -> Result<(), InfraError> {
+    let capabilities = session.capabilities().map_err(|_| InfraError::Remote {
+        message: "IMAP 能力检查失败，尚未移动".into(),
+        retryable: true,
+    })?;
+    let (generation, uid) = decode_remote_key(remote_key)?;
+    let selected = session.select(folder).map_err(|_| InfraError::Remote {
+        message: "IMAP SELECT 失败".into(),
+        retryable: true,
+    })?;
+    if selected.uid_validity != Some(generation) {
+        return Err(InfraError::Conflict {
+            message: "IMAP UIDVALIDITY 已改变，旧移动已停止，请同步后重新操作".into(),
+        });
+    }
+    let seq = format!("{uid}");
+
+    if capabilities.has_str("MOVE") {
+        return session
+            .uid_mv(&seq, destination)
+            .map(|_| ())
+            .map_err(|e| InfraError::Remote {
+                message: format!("IMAP MOVE 未确认，结果未知: {e}"),
+                retryable: false,
+            });
+    }
+
+    if !capabilities.has_str("UIDPLUS") {
+        return Err(InfraError::Remote {
+            message: "服务器不支持 MOVE 或 UIDPLUS，无法安全移动单封邮件".into(),
+            retryable: false,
+        });
+    }
+    session
+        .uid_copy(&seq, destination)
+        .map_err(|e| InfraError::Remote {
+            message: format!("IMAP COPY 未确认，源邮件保留: {e}"),
+            retryable: true,
+        })?;
+    session
+        .uid_store(&seq, r"+FLAGS (\Deleted)")
+        .map_err(|e| InfraError::Remote {
+            message: format!("COPY 已完成但源邮件标记未确认，目标可能存在副本: {e}"),
+            retryable: false,
+        })?;
+    session
+        .uid_expunge(&seq)
+        .map_err(|e| InfraError::Remote {
+            message: format!("COPY 已完成但源邮件未清除，目标可能存在副本: {e}"),
+            retryable: false,
+        })?;
+    Ok(())
+}
+
 pub fn uid_delete<T: std::io::Read + std::io::Write>(
     session: &mut Session<T>,
     folder: &str,
@@ -193,6 +255,27 @@ pub async fn uid_delete_async(
         out
     })
     .await
+}
+
+pub async fn uid_move_async(
+    endpoint: &ImapEndpoint,
+    auth: &ImapAuth,
+    folder: &str,
+    remote_key: &RemoteKey,
+    destination: &str,
+) -> Result<(), InfraError> {
+    let operation = MailOperation::new(Duration::from_secs(180));
+    let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
+    let folder = folder.to_string();
+    let remote_key = remote_key.clone();
+    let destination = destination.to_string();
+    operation
+        .run_blocking(move || {
+            let out = uid_move(&mut session, &folder, &remote_key, &destination);
+            let _ = session.logout();
+            out
+        })
+        .await
 }
 
 #[cfg(test)]

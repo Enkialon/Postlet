@@ -13,7 +13,7 @@ use crate::domain::services::resolve_self_addresses;
 use crate::domain::value_objects::{AccountId, MessageId, ReceiveProtocol, TimestampMs};
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
-use crate::infrastructure::imap::{uid_delete_async, uid_set_seen_async};
+use crate::infrastructure::imap::{uid_delete_async, uid_move_async, uid_set_seen_async};
 use crate::infrastructure::paths::AppPaths;
 use crate::infrastructure::repository::{
     accounts, folder_states, mail_transports, messages, mutations, sessions,
@@ -174,10 +174,16 @@ pub async fn delete_messages(
         {
             continue;
         }
-        // 删除只是本地意图：不改位置事实，远端确认后由同步标记 missing
-        mutations::put_delete(&mut tx, &cmd.account_id, mid)
-            .await
-            .map_err(AppError::from)?;
+        // 默认删除移入 Trash；仅当用户显式选择永久删除时才用 delete 意图
+        if cmd.permanent {
+            mutations::put_delete(&mut tx, &cmd.account_id, mid)
+                .await
+                .map_err(AppError::from)?;
+        } else {
+            mutations::put_trash(&mut tx, &cmd.account_id, mid)
+                .await
+                .map_err(AppError::from)?;
+        }
         changed.push(mid.clone());
     }
 
@@ -267,6 +273,12 @@ pub async fn flush_due_mutations(
                 let is_read = mutation.desired_is_read.unwrap_or(true);
                 push_imap_read(paths, &transport, &binding, &mutation, is_read).await
             }
+            (PendingMutationKind::Trash, ReceiveProtocol::Graph) => {
+                push_graph_trash(paths, &transport, &binding, &mutation).await
+            }
+            (PendingMutationKind::Trash, ReceiveProtocol::Imap) => {
+                push_imap_trash(paths, &transport, &binding, &mutation).await
+            }
             (PendingMutationKind::Delete, ReceiveProtocol::Graph) => {
                 push_graph_delete(paths, &transport, &binding, &mutation).await
             }
@@ -337,6 +349,54 @@ async fn push_imap_read(
         remote_binding,
         &mutation.target_remote_key,
         is_read,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+async fn push_graph_trash(
+    paths: &AppPaths,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
+    mutation: &PendingMessageMutation,
+) -> Result<(), AppError> {
+    let ReceiveConfig::Graph(auth) = &transport.receive else {
+        return Err(AppError::validation("账号收信配置不是 Graph"));
+    };
+    let destination = mutation
+        .destination_folder_id
+        .as_ref()
+        .ok_or_else(|| AppError::validation("缺少目标 Trash 文件夹"))?;
+    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, auth)
+        .await
+        .map_err(AppError::from)?;
+    graph::mail::move_message(&token, remote_binding, &mutation.target_remote_key, destination.as_str())
+        .await
+        .map_err(AppError::from)
+}
+
+async fn push_imap_trash(
+    paths: &AppPaths,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
+    mutation: &PendingMessageMutation,
+) -> Result<(), AppError> {
+    let ReceiveConfig::Imap(config) = &transport.receive else {
+        return Err(AppError::validation("账号收信配置不是 IMAP"));
+    };
+    let destination = mutation
+        .destination_folder_id
+        .as_ref()
+        .ok_or_else(|| AppError::validation("缺少目标 Trash 文件夹"))?;
+    let (endpoint, auth) =
+        crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
+    uid_move_async(
+        &endpoint,
+        &auth,
+        remote_binding,
+        &mutation.target_remote_key,
+        destination.as_str(),
     )
     .await
     .map_err(AppError::from)

@@ -280,7 +280,7 @@ CREATE INDEX idx_session_aggregate_jobs_lease
 CREATE TABLE pending_message_mutations (
     account_id      TEXT NOT NULL,
     message_id      TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK(kind IN ('read', 'delete')),
+    kind            TEXT NOT NULL CHECK(kind IN ('read', 'trash', 'delete')),
     target_folder_id TEXT NOT NULL,
     target_remote_key TEXT NOT NULL,
     target_location_revision INTEGER NOT NULL CHECK(target_location_revision >= 1),
@@ -297,11 +297,14 @@ CREATE TABLE pending_message_mutations (
     lease_until     INTEGER,
     execution_phase TEXT CHECK(execution_phase IS NULL OR execution_phase IN ('started','sent','confirmed')),
     last_error_code TEXT,
+    -- kind='trash' 时的目标 Trash 文件夹（源位置仍在 target_folder_id）
+    destination_folder_id TEXT,
     PRIMARY KEY (account_id, message_id),
     FOREIGN KEY (account_id, message_id) REFERENCES messages(account_id, id) ON DELETE CASCADE,
+    -- trash/delete 的目标文件夹由 target_folder_id 表达（trash 时为目标 Trash）
     CHECK (
         (kind = 'read' AND desired_is_read IS NOT NULL)
-        OR (kind = 'delete' AND desired_is_read IS NULL)
+        OR (kind IN ('trash', 'delete') AND desired_is_read IS NULL)
     )
 );
 

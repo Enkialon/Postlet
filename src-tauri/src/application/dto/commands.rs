@@ -66,6 +66,9 @@ pub struct MarkMessagesReadCommand {
 pub struct DeleteMessagesCommand {
     pub account_id: AccountId,
     pub message_ids: Vec<MessageId>,
+    /// true 仅用于用户显式选择的永久删除；默认移入 Trash
+    #[serde(default)]
+    pub permanent: bool,
 }
 
 /// 用户空手创建群组

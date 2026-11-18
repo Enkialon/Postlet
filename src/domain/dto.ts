@@ -145,6 +145,8 @@ export interface MarkMessagesReadCommand {
 export interface DeleteMessagesCommand {
   account_id: AccountId;
   message_ids: MessageId[];
+  /** true 仅用于用户显式选择的永久删除；默认移入 Trash */
+  permanent?: boolean;
 }
 
 /** 用户空手创建群组 */

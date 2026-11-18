@@ -4,6 +4,9 @@ use crate::domain::value_objects::{AccountId, FolderId, RemoteKey, MessageId, Ti
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingMutationKind {
     Read,
+    /// 默认删除语义：移入 Trash（目标必须是已确认的 trash 角色）
+    Trash,
+    /// 用户明确选择的永久删除
     Delete,
 }
 
@@ -11,6 +14,7 @@ impl PendingMutationKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::Trash => "trash",
             Self::Delete => "delete",
         }
     }
@@ -18,6 +22,7 @@ impl PendingMutationKind {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "read" => Some(Self::Read),
+            "trash" => Some(Self::Trash),
             "delete" => Some(Self::Delete),
             _ => None,
         }
@@ -51,6 +56,8 @@ pub struct PendingMessageMutation {
     /// 执行阶段：started（已开始网络写）/ sent（已发送待确认）
     pub execution_phase: Option<MutationPhase>,
     pub last_error_code: Option<String>,
+    /// kind=Trash 时的目标文件夹（源位置仍是 target_folder_id）
+    pub destination_folder_id: Option<FolderId>,
 }
 
 /// 一次远端写尝试的阶段
