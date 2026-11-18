@@ -587,6 +587,7 @@ fn map_remote_message(value: &Value, folder_hint: FolderId) -> Result<RemoteMess
         });
 
     Ok(RemoteMessage {
+        attachments: Vec::new(),
         remote_key: RemoteKey::new(id.to_string()),
         internet_message_id: value
             .get("internetMessageId")

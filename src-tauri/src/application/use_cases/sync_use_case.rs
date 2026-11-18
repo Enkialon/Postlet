@@ -202,6 +202,8 @@ async fn sync_graph_mail(
                     let can_notify = remote.flags.is_draft == Some(false);
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
+                    store_remote_attachments(&mut tx, paths, &cmd.account_id, &mid, &remote.attachments)
+                        .await?;
                     changeset.message_ids.push(mid.clone());
                     if let Some(sid) = cid {
                         changeset.session_ids.push(sid);
@@ -343,6 +345,8 @@ async fn sync_imap_mail(
                     let can_notify = remote.flags.is_draft == Some(false);
                     let (mid, cid, is_new) =
                         upsert_remote_message(&mut tx, &cmd.account_id, &remote).await?;
+                    store_remote_attachments(&mut tx, paths, &cmd.account_id, &mid, &remote.attachments)
+                        .await?;
                     changeset.message_ids.push(mid.clone());
                     if let Some(sid) = cid {
                         changeset.session_ids.push(sid);
@@ -516,6 +520,7 @@ async fn upsert_remote_message(
     .await
     .map_err(AppError::from)?;
 
+
     // 投影交由聚合 Worker；同事务入队避免丢任务
     if !message.is_draft {
         jobs::enqueue_or_reset(conn, account_id, &local_id, now)
@@ -524,6 +529,72 @@ async fn upsert_remote_message(
     }
 
     Ok((local_id, Some(session_id), is_new))
+}
+
+/// 将远端附件写入受管理内容存储并建立消息引用。
+///
+/// 任一附件写入失败时返回错误并中止本封邮件的附件引用，不留下悬空引用。
+async fn store_remote_attachments(
+    conn: &mut sqlx::SqliteConnection,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    message_id: &crate::domain::value_objects::MessageId,
+    attachments: &[crate::domain::mail::RemoteAttachment],
+) -> Result<(), AppError> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    for (index, att) in attachments.iter().enumerate() {
+        let (temp_path, digest) = crate::infrastructure::attachment_store::write_temp(
+            &paths.attachments_dir,
+            account_id,
+            &att.bytes,
+        )
+        .map_err(AppError::from)?;
+        let content_id = format!("att-{}", uuid::Uuid::new_v4().as_hyphenated());
+        let installed = crate::infrastructure::attachment_store::install_from_temp(
+            &paths.attachments_dir,
+            account_id,
+            &temp_path,
+            &content_id,
+            att.bytes.len() as u64,
+            &digest,
+        )
+        .map_err(AppError::from)?;
+        let storage_key = installed
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&content_id)
+            .to_string();
+        crate::infrastructure::repository::attachments::insert_content(
+            conn,
+            &crate::infrastructure::repository::attachments::AttachmentContentRow {
+                content_id: content_id.clone(),
+                account_id: account_id.clone(),
+                storage_key,
+                byte_length: att.bytes.len() as i64,
+                digest,
+                created_at: now_ms(),
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+        crate::infrastructure::repository::attachments::insert_message_attachment(
+            conn,
+            account_id,
+            message_id,
+            &crate::infrastructure::repository::attachments::AttachmentRefRow {
+                content_id,
+                name: att.name.clone(),
+                mime: att.mime.clone(),
+                sort_order: index as i32,
+                byte_length: att.bytes.len() as i64,
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+    }
+    Ok(())
 }
 
 /// 显式稀疏 FLAGS 只改变观测和展示缓存，不触碰正文或会话归属。
@@ -938,6 +1009,7 @@ mod location_tests {
 
     fn remote(folder: &str) -> RemoteMessage {
         RemoteMessage {
+            attachments: Vec::new(),
             remote_key: RemoteKey::new("same-ordinary-api-id"),
             internet_message_id: Some("<same-rfc-id@example.com>".into()),
             in_reply_to: None, subject: "same subject".into(), body_preview: "same body".into(),

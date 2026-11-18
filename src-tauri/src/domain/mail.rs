@@ -61,10 +61,22 @@ pub struct RemoteMessage {
     pub sent_at: Option<TimestampMs>,
     pub flags: RemoteFlags,
     pub has_attachments: bool,
+    /// 可下载附件（正文 part 与 CID inline 不在此列）
+    pub attachments: Vec<RemoteAttachment>,
     pub importance: Importance,
     pub folder_id: Option<FolderId>,
     pub parent_folder_name: Option<String>,
     pub remote_updated_at: Option<TimestampMs>,
+}
+
+/// 可下载附件内容（协议无关）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAttachment {
+    pub name: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub inline: bool,
+    pub content_id: Option<String>,
 }
 
 /// 统一位置邮件变更
