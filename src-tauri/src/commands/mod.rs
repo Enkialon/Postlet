@@ -9,6 +9,7 @@ use crate::application::dto::{
     SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem, SessionListQuery,
     SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
     TriggerMailSyncCommand, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
+    UpdateSentArchivePolicyCommand,
     UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
@@ -64,6 +65,14 @@ pub async fn update_display_settings(
     cmd: UpdateAccountDisplaySettingsCommand,
 ) -> Result<Account, AppError> {
     account_use_case::update_display_settings(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn update_sent_archive_policy(
+    state: State<'_, AppState>,
+    cmd: UpdateSentArchivePolicyCommand,
+) -> Result<Account, AppError> {
+    account_use_case::update_sent_archive_policy(&state.db, cmd).await
 }
 
 #[tauri::command]

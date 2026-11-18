@@ -250,6 +250,27 @@ export function useSettings() {
     }
   }
 
+  async function updateSentArchivePolicy(
+    accountId: AccountId,
+    policy: 'server_saved' | 'client_append',
+  ): Promise<void> {
+    const account = accountList.value.find((a) => a.id === accountId);
+    if (!account || savingId.value) return;
+    savingId.value = accountId;
+    error.value = null;
+    try {
+      const updated = await ports.account.updateSentArchivePolicy({
+        account_id: accountId,
+        policy,
+      });
+      patchAccount(updated);
+    } catch (e) {
+      error.value = asAppError(e).message;
+    } finally {
+      savingId.value = null;
+    }
+  }
+
   async function updateAccountAliases(
     accountId: AccountId,
     aliases: string[],
@@ -414,6 +435,7 @@ export function useSettings() {
     folderToggleKey,
     updateAccountSettings,
     updateAccountAliases,
+  updateSentArchivePolicy,
     signOutAccount,
     clearLocalData,
     setLocale,

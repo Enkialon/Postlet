@@ -47,6 +47,12 @@ export type SendState =
   | 'uncertain'
   | 'cancelled';
 
+/** 已发送副本归档策略（与 Rust ArchivePolicy 对齐） */
+export type ArchivePolicy =
+  | 'server_saved'
+  | 'client_append'
+  | 'needs_configuration';
+
 /** 文件夹角色（IMAP SPECIAL-USE 对齐） */
 export type FolderRole =
   | 'inbox'

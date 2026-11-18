@@ -67,6 +67,30 @@ pub async fn enqueue_after_acceptance(
     Ok(())
 }
 
+/// 用户确认归档策略后推进此前阻塞的待配置任务；不确定任务保持不变。
+pub async fn advance_needs_configuration(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    state: ArchiveState,
+    target_folder_id: Option<&FolderId>,
+    target_binding_revision: Option<i64>,
+    now: TimestampMs,
+) -> Result<u32, InfraError> {
+    let result = sqlx::query(
+        "UPDATE archive_tasks
+         SET state = ?, target_folder_id = ?, target_binding_revision = ?, updated_at = ?
+         WHERE account_id = ? AND state = 'needs_configuration'",
+    )
+    .bind(state.as_str())
+    .bind(target_folder_id.map(|f| f.as_str()))
+    .bind(target_binding_revision)
+    .bind(now)
+    .bind(account_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() as u32)
+}
+
 /// 认领到期归档：写 attempt 与租约后才允许网络写。
 pub async fn claim_due(
     conn: &mut SqliteConnection,

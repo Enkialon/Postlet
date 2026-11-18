@@ -19,6 +19,7 @@ import type {
   SessionKind,
   SyncStatus,
   TimestampMs,
+  ArchivePolicy,
 } from './types';
 
 /** 邮件账户（租户根；协议由 transport 配置） */
@@ -40,6 +41,8 @@ export interface Account {
   mail_sync_error: string | null;
   /** 是否纳入「全部账号」列表查询（默认是；未退出也可关掉） */
   include_in_all: boolean;
+  /** 已发送副本归档策略；needs_configuration 时不做任何归档 */
+  sent_archive_policy: ArchivePolicy;
   created_at: TimestampMs;
   updated_at: TimestampMs;
 }

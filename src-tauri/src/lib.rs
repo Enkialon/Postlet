@@ -114,6 +114,7 @@ pub fn run() {
             commands::upsert_imap_smtp_account,
             commands::update_display_settings,
             commands::update_account_aliases,
+            commands::update_sent_archive_policy,
             commands::get_account_change_version,
             commands::list_contacts,
             commands::get_contact,

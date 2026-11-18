@@ -141,6 +141,7 @@ async fn persist_account(
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
             include_in_all: true,
+            sent_archive_policy: crate::domain::entities::ArchivePolicy::NeedsConfiguration,
             created_at: now,
             updated_at: now,
         };

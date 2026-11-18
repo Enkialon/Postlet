@@ -101,6 +101,12 @@ export interface UpdateAccountDisplaySettingsCommand {
   include_in_all: boolean;
 }
 
+/** 确认已发送副本归档策略 */
+export interface UpdateSentArchivePolicyCommand {
+  account_id: AccountId;
+  policy: 'server_saved' | 'client_append';
+}
+
 /** 手动维护账户别名（self 额外身份；不做 Send-As） */
 export interface UpdateAccountAliasesCommand {
   account_id: AccountId;

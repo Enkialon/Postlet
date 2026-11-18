@@ -3,6 +3,7 @@ import type { Account } from '../../domain/entities';
 import type {
   UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
+  UpdateSentArchivePolicyCommand,
   UpsertImapSmtpAccountCommand,
 } from '../../domain/dto';
 import type { AccountId } from '../../domain/types';
@@ -35,6 +36,7 @@ export class MemoryAccountAdapter implements AccountPort {
       mail_sync_status: 'idle',
       mail_sync_error: null,
       include_in_all: true,
+      sent_archive_policy: 'needs_configuration',
       created_at: t,
       updated_at: t,
     };
@@ -88,6 +90,7 @@ export class MemoryAccountAdapter implements AccountPort {
       mail_sync_status: 'idle',
       mail_sync_error: null,
       include_in_all: true,
+      sent_archive_policy: 'needs_configuration',
       created_at: t,
       updated_at: t,
     };
@@ -152,6 +155,16 @@ export class MemoryAccountAdapter implements AccountPort {
   ): Promise<Account> {
     const account = this.store.requireAccount(cmd.account_id);
     account.include_in_all = cmd.include_in_all;
+    account.updated_at = Date.now();
+    this.store.accounts.set(account.id, account);
+    return { ...account };
+  }
+
+  async updateSentArchivePolicy(
+    cmd: UpdateSentArchivePolicyCommand,
+  ): Promise<Account> {
+    const account = this.store.requireAccount(cmd.account_id);
+    account.sent_archive_policy = cmd.policy;
     account.updated_at = Date.now();
     this.store.accounts.set(account.id, account);
     return { ...account };

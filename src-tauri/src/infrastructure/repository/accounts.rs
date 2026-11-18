@@ -141,8 +141,8 @@ pub async fn upsert_identity(
         "INSERT INTO accounts (
             id, email, display_name, aliases_json,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+            mail_sync_error, is_signed_in, include_in_all, sent_archive_policy, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
@@ -159,6 +159,7 @@ pub async fn upsert_identity(
     .bind(account.contact_synced_at)
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
+    .bind(account.sent_archive_policy.as_str())
     .bind(account.created_at)
     .bind(account.updated_at)
     .execute(&mut *conn)
@@ -181,8 +182,8 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
         "INSERT INTO accounts (
             id, email, display_name, aliases_json,
             contact_delta_link, mail_sync_triggered_at, contact_synced_at, mail_sync_status,
-            mail_sync_error, is_signed_in, include_in_all, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            mail_sync_error, is_signed_in, include_in_all, sent_archive_policy, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             email=excluded.email,
             display_name=excluded.display_name,
@@ -194,6 +195,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
             mail_sync_error=excluded.mail_sync_error,
             is_signed_in=1,
             include_in_all=excluded.include_in_all,
+            sent_archive_policy=excluded.sent_archive_policy,
             updated_at=excluded.updated_at",
     )
     .bind(account.id.as_str())
@@ -206,6 +208,7 @@ pub async fn upsert(conn: &mut SqliteConnection, account: &Account) -> Result<()
     .bind(account.mail_sync_status.as_str())
     .bind(&account.mail_sync_error)
     .bind(account.include_in_all)
+    .bind(account.sent_archive_policy.as_str())
     .bind(account.created_at)
     .bind(account.updated_at)
     .execute(&mut *conn)
@@ -322,6 +325,31 @@ pub async fn update_display_settings(
         "UPDATE accounts SET include_in_all = ?, updated_at = ? WHERE id = ?",
     )
     .bind(include_in_all)
+    .bind(now)
+    .bind(account_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(InfraError::Conflict {
+            message: format!("账户不存在: {account_id}"),
+        });
+    }
+    Ok(())
+}
+
+pub async fn update_sent_archive_policy(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    policy: crate::domain::entities::ArchivePolicy,
+) -> Result<(), InfraError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let result = sqlx::query(
+        "UPDATE accounts SET sent_archive_policy = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(policy.as_str())
     .bind(now)
     .bind(account_id.as_str())
     .execute(&mut *conn)

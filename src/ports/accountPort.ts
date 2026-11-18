@@ -2,6 +2,7 @@ import type { Account } from '../domain/entities';
 import type {
   UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
+  UpdateSentArchivePolicyCommand,
   UpsertImapSmtpAccountCommand,
 } from '../domain/dto';
 import type { AccountId } from '../domain/types';
@@ -23,6 +24,10 @@ export interface AccountPort {
   ): Promise<Account>;
   /** 手动维护别名（视为本账号；不做 Send-As） */
   updateAliases(cmd: UpdateAccountAliasesCommand): Promise<Account>;
+  /** 确认已发送副本归档策略；客户端保存要求有效 Sent 目标 */
+  updateSentArchivePolicy(
+    cmd: UpdateSentArchivePolicyCommand,
+  ): Promise<Account>;
   /** 账号当前持久变更版本；用于校验前端快照新鲜度 */
   getChangeVersion(accountId: AccountId): Promise<number>;
 }
