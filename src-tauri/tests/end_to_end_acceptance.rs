@@ -241,13 +241,21 @@ async fn accepted_send_commits_result_and_archive_task_together() {
         updated_at: 1,
     };
     assert_eq!(next_state(SendOutcome::Accepted, SendStage::Data), SendState::Accepted);
-    assert!(
+    assert_eq!(
         outbound_use_case::complete_accepted_attempt(&db, &AccountId::new("a"), &task, 2)
             .await
-            .unwrap()
+            .unwrap(),
+        Some(1)
     );
 
     let mut conn = db.acquire().await.unwrap();
+    let version: i64 = sqlx::query_scalar(
+        "SELECT change_version FROM accounts WHERE id='a'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(version, 1, "accepted result must bump the account version");
     let state: String = sqlx::query_scalar(
         "SELECT state FROM send_tasks WHERE account_id='a' AND task_id='send-1'",
     )

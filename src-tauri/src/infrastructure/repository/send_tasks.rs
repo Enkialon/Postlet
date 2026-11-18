@@ -154,21 +154,33 @@ pub async fn record_result(
 }
 
 /// 启动恢复：残留 sending 按接受证据决定 accepted / uncertain，绝不自动重发。
+/// 返回受影响的 (account, message)，供 runtime 递增版本并通知 UI。
 pub async fn recover_interrupted(
     conn: &mut SqliteConnection,
     now: TimestampMs,
-) -> Result<u32, InfraError> {
-    let accepted = sqlx::query(
+) -> Result<Vec<(AccountId, MessageId)>, InfraError> {
+    let rows = sqlx::query(
+        "SELECT account_id, message_id FROM send_tasks WHERE state = 'sending'",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut affected = Vec::with_capacity(rows.len());
+    for row in rows {
+        affected.push((
+            AccountId::new(row.try_get::<String, _>("account_id")?),
+            MessageId::new(row.try_get::<String, _>("message_id")?),
+        ));
+    }
+    sqlx::query(
         "UPDATE send_tasks
          SET state = 'accepted', claim_token = NULL, lease_until = NULL, updated_at = ?
          WHERE state = 'sending' AND accepted_at IS NOT NULL",
     )
     .bind(now)
     .execute(&mut *conn)
-    .await?
-    .rows_affected();
+    .await?;
 
-    let uncertain = sqlx::query(
+    sqlx::query(
         "UPDATE send_tasks
          SET state = 'uncertain', claim_token = NULL, lease_until = NULL,
              last_error_code = COALESCE(last_error_code, 'interrupted'),
@@ -178,10 +190,9 @@ pub async fn recover_interrupted(
     )
     .bind(now)
     .execute(&mut *conn)
-    .await?
-    .rows_affected();
+    .await?;
 
-    Ok((accepted + uncertain) as u32)
+    Ok(affected)
 }
 
 /// 账号下可展示的发送任务（按消息）

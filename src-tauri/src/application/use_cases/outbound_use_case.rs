@@ -136,7 +136,7 @@ pub async fn complete_accepted_attempt(
     account_id: &AccountId,
     task: &crate::domain::entities::SendTask,
     now: i64,
-) -> Result<bool, AppError> {
+) -> Result<Option<i64>, AppError> {
     let mut tx = db.begin().await?;
     let applied = crate::infrastructure::repository::send_tasks::record_result(
         &mut tx,
@@ -156,14 +156,16 @@ pub async fn complete_accepted_attempt(
     .map_err(AppError::from)?;
     if !applied {
         tx.rollback().await?;
-        return Ok(false);
+        return Ok(None);
     }
     enqueue_archive(&mut tx, account_id, task, now).await?;
-    crate::infrastructure::repository::accounts::bump_change_version(&mut tx, account_id)
-        .await
-        .map_err(AppError::from)?;
+    let version = crate::infrastructure::repository::accounts::bump_change_version(
+        &mut tx, account_id,
+    )
+    .await
+    .map_err(AppError::from)?;
     tx.commit().await?;
-    Ok(true)
+    Ok(Some(version))
 }
 
 /// 按账号策略创建归档任务；与发送接受确认在同一事务内。

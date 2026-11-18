@@ -23,6 +23,7 @@ const markQueue = ref<Promise<void>>(Promise.resolve());
 
 const entityCache = new Map<string, MessageWithRecipients>();
 let watchBound = false;
+let mailChangedBound = false;
 
 function cacheKey(accountId: string, messageId: string): string {
   return `${accountId}:${messageId}`;
@@ -296,8 +297,53 @@ export function useMessages() {
     await openMessage(messageId);
   }
 
+  /** 发送状态事件：直接按 message_id 重读状态，不依赖其他同步事件。 */
+  async function applySendStates(
+    accountId: string,
+    messageIds: MessageId[],
+  ): Promise<void> {
+    let changed = false;
+    for (const id of messageIds) {
+      const key = cacheKey(accountId, id);
+      const item = entityCache.get(key);
+      if (!item) continue;
+      try {
+        const state = await ports.compose.getSendState(accountId, id);
+        if (item.send_state !== state) {
+          item.send_state = state;
+          entityCache.set(key, item);
+          changed = true;
+        }
+      } catch {
+        // 单封查询失败不阻碍其他状态刷新
+      }
+    }
+    if (changed) applyCacheToList(accountId);
+  }
+
+  async function bindMailChanged(): Promise<void> {
+    if (mailChangedBound) return;
+    mailChangedBound = true;
+    await ports.changeEvents.subscribeMailChanged((event) => {
+      const accountId = nav.accountId.value;
+      const sessionId = nav.sessionId.value;
+      if (!accountId || !sessionId || event.account_id !== accountId) return;
+      const touchesSession = event.session_ids.includes(sessionId);
+      const touchesMessage = event.message_ids.some((id) =>
+        entityCache.has(cacheKey(accountId, id)),
+      );
+      if (!touchesSession && !touchesMessage) return;
+      if (event.origin === 'user_action' && event.message_ids.length > 0) {
+        void applySendStates(accountId, event.message_ids);
+        return;
+      }
+      void loadInitial();
+    });
+  }
+
   if (!watchBound) {
     watchBound = true;
+    void bindMailChanged();
     watch(
       () => [
         nav.accountId.value,

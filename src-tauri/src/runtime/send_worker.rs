@@ -9,7 +9,7 @@ use crate::domain::entities::{backoff_ms, next_state, SendState};
 use crate::domain::value_objects::AccountId;
 use crate::infrastructure::mail::operation::MailOperation;
 use crate::infrastructure::paths::AppPaths;
-use crate::infrastructure::repository::{accounts, send_tasks};
+use crate::infrastructure::repository::{accounts, messages, send_tasks};
 use crate::runtime::{ChangeDispatcher, MailSyncGate};
 use sqlx::SqlitePool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,7 +39,7 @@ pub fn spawn(
     gate: MailSyncGate,
 ) {
     tauri::async_runtime::spawn(async move {
-        recover_interrupted(&db).await;
+        recover_interrupted(&db, &changes).await;
         loop {
             if let Err(error) = tick_once(&db, &paths, &changes, &gate).await {
                 eprintln!("发送队列派发失败: {}", error.message);
@@ -49,10 +49,43 @@ pub fn spawn(
     });
 }
 
-async fn recover_interrupted(db: &SqlitePool) {
-    if let Ok(mut conn) = db.acquire().await {
-        let _ = send_tasks::recover_interrupted(&mut conn, now_ms()).await;
+async fn recover_interrupted(db: &SqlitePool, changes: &ChangeDispatcher) {
+    let Ok(mut conn) = db.acquire().await else {
+        return;
+    };
+    let Ok(affected) = send_tasks::recover_interrupted(&mut conn, now_ms()).await else {
+        return;
+    };
+    for (account_id, message_id) in affected {
+        let Ok(version) = accounts::bump_change_version(&mut conn, &account_id).await else {
+            continue;
+        };
+        dispatch_send_change(db, changes, &account_id, &message_id, version).await;
     }
+}
+
+/// 发送状态变化的统一通知：持久版本与真实 ChangeSet 一起发出。
+async fn dispatch_send_change(
+    db: &SqlitePool,
+    changes: &ChangeDispatcher,
+    account_id: &AccountId,
+    message_id: &crate::domain::value_objects::MessageId,
+    version: i64,
+) {
+    let mut set = crate::application::dto::ChangeSet::empty(
+        account_id.clone(),
+        crate::application::dto::ChangeOrigin::UserAction,
+    );
+    set.message_ids.push(message_id.clone());
+    set.account_version = Some(version);
+    if let Ok(mut conn) = db.acquire().await {
+        if let Ok(session_ids) =
+            messages::list_session_ids(&mut conn, account_id, std::slice::from_ref(message_id)).await
+        {
+            set.session_ids = session_ids;
+        }
+    }
+    changes.dispatch(set);
 }
 
 async fn tick_once(
@@ -79,13 +112,13 @@ async fn tick_once(
         else {
             continue;
         };
-        let claimed = {
-            let mut conn = db.acquire().await?;
+        let (claimed, claimed_version) = {
+            let mut tx = db.begin().await?;
             let attempt_id = uuid::Uuid::new_v4().to_string();
             let claim_token = uuid::Uuid::new_v4().to_string();
             let now = now_ms();
-            send_tasks::claim_due(
-                &mut conn,
+            let claimed = send_tasks::claim_due(
+                &mut tx,
                 &account_id,
                 now,
                 now + LEASE.as_millis() as i64,
@@ -94,10 +127,26 @@ async fn tick_once(
                 4,
             )
             .await
-            .map_err(AppError::from)?
+            .map_err(AppError::from)?;
+            let version = if claimed.is_empty() {
+                None
+            } else {
+                Some(
+                    accounts::bump_change_version(&mut tx, &account_id)
+                        .await
+                        .map_err(AppError::from)?,
+                )
+            };
+            tx.commit().await?;
+            (claimed, version)
         };
         if claimed.is_empty() {
             continue;
+        }
+        if let Some(version) = claimed_version {
+            for task in &claimed {
+                dispatch_send_change(db, changes, &account_id, &task.message_id, version).await;
+            }
         }
         let db2 = db.clone();
         let paths2 = paths.clone();
@@ -138,14 +187,12 @@ async fn run_attempt(
                     match outbound_use_case::complete_accepted_attempt(db, account_id, task, now)
                         .await
                     {
-                        Ok(true) => {
-                            changes.dispatch(crate::application::dto::ChangeSet::empty(
-                                account_id.clone(),
-                                crate::application::dto::ChangeOrigin::UserAction,
-                            ));
+                        Ok(Some(version)) => {
+                            dispatch_send_change(db, changes, account_id, &task.message_id, version)
+                                .await;
                             return Ok(());
                         }
-                        Ok(false) => return Ok(()),
+                        Ok(None) => return Ok(()),
                         Err(error) => {
                             last_error = Some(error);
                             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -155,11 +202,11 @@ async fn run_attempt(
                 return Err(last_error
                     .unwrap_or_else(|| AppError::internal("发送确认落库失败")));
             }
-            let mut conn = db.acquire().await?;
             let next_attempt = (next == SendState::Retryable)
                 .then(|| now + backoff_ms(task.attempts));
-            send_tasks::record_result(
-                &mut conn,
+            let mut tx = db.begin().await?;
+            let applied = send_tasks::record_result(
+                &mut tx,
                 account_id,
                 &task.task_id,
                 task.content_version,
@@ -174,6 +221,19 @@ async fn run_attempt(
             )
             .await
             .map_err(AppError::from)?;
+            let version = if applied {
+                Some(
+                    accounts::bump_change_version(&mut tx, account_id)
+                        .await
+                        .map_err(AppError::from)?,
+                )
+            } else {
+                None
+            };
+            tx.commit().await?;
+            if let Some(version) = version {
+                dispatch_send_change(db, changes, account_id, &task.message_id, version).await;
+            }
             Ok(())
         }
         Err(error) => {
@@ -188,9 +248,9 @@ async fn run_attempt(
             };
             let next_attempt = (next == SendState::Retryable)
                 .then(|| now + backoff_ms(task.attempts));
-            let mut conn = db.acquire().await?;
-            send_tasks::record_result(
-                &mut conn,
+            let mut tx = db.begin().await?;
+            let applied = send_tasks::record_result(
+                &mut tx,
                 account_id,
                 &task.task_id,
                 task.content_version,
@@ -205,6 +265,19 @@ async fn run_attempt(
             )
             .await
             .map_err(AppError::from)?;
+            let version = if applied {
+                Some(
+                    accounts::bump_change_version(&mut tx, account_id)
+                        .await
+                        .map_err(AppError::from)?,
+                )
+            } else {
+                None
+            };
+            tx.commit().await?;
+            if let Some(version) = version {
+                dispatch_send_change(db, changes, account_id, &task.message_id, version).await;
+            }
             Ok(())
         }
     }
