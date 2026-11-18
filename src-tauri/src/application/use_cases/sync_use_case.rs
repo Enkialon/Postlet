@@ -87,6 +87,7 @@ pub async fn trigger_mail_sync(
     paths: &AppPaths,
     operation: &MailOperation,
     cmd: TriggerMailSyncCommand,
+    on_committed: &(dyn Fn(ChangeSet) + Send + Sync),
 ) -> Result<Option<ChangeSet>, AppError> {
     operation.checkpoint()?;
     let cmd = &cmd;
@@ -116,7 +117,9 @@ pub async fn trigger_mail_sync(
 
     let result = match &transport.receive {
         ReceiveConfig::Graph(auth) => sync_graph_mail(db, paths, operation, cmd, auth).await,
-        ReceiveConfig::Imap(_) => sync_imap_mail(db, paths, operation, cmd, &transport).await,
+        ReceiveConfig::Imap(_) => {
+            sync_imap_mail(db, paths, operation, cmd, &transport, on_committed).await
+        }
     };
 
     match result {
@@ -283,6 +286,7 @@ async fn sync_imap_mail(
     operation: &MailOperation,
     cmd: &TriggerMailSyncCommand,
     transport: &crate::domain::entities::AccountMailTransport,
+    on_committed: &(dyn Fn(ChangeSet) + Send + Sync),
 ) -> Result<ChangeSet, AppError> {
     let ReceiveConfig::Imap(config) = &transport.receive else { return Err(AppError::validation("账号收信配置不是 IMAP")); };
     let (endpoint, auth) = crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
@@ -330,9 +334,39 @@ async fn sync_imap_mail(
 
     let session = session_login(&endpoint, &auth, operation).await.map_err(AppError::from)?;
     let control = operation.clone();
-    let batch = operation.run_blocking(move || {
-        sync_account_blocking(session, &requests, 200, &control)
-    }).await.map_err(AppError::from)?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut sync = Box::pin(operation.run_blocking(move || {
+        sync_account_blocking(session, &requests, 200, &control, |result| {
+            let _ = tx.send(result);
+        })
+    }));
+
+    let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
+    let mut first_error: Option<AppError> = None;
+    let mut receiving = true;
+    // 每个文件夹完成即提交并通知；后一夹失败不会丢弃前面已交付的批次。
+    let batch_result = loop {
+        tokio::select! {
+            result = &mut sync => break result,
+            maybe = rx.recv(), if receiving => {
+                match maybe {
+                    Some(result) => {
+                        commit_imap_folder_batch(
+                            db, paths, &cmd.account_id, result, &mut changeset, &mut first_error,
+                            on_committed,
+                        ).await;
+                    }
+                    None => receiving = false,
+                }
+            }
+        }
+    };
+    while let Ok(result) = rx.try_recv() {
+        commit_imap_folder_batch(
+            db, paths, &cmd.account_id, result, &mut changeset, &mut first_error, on_committed,
+        ).await;
+    }
+    let batch = batch_result.map_err(AppError::from)?;
 
     {
         let mut conn = db.acquire().await?;
@@ -342,22 +376,6 @@ async fn sync_imap_mail(
             .map_err(AppError::from)?;
     }
 
-    let mut changeset = ChangeSet::empty(cmd.account_id.clone(), ChangeOrigin::IncrementalSync);
-
-    let mut first_error: Option<AppError> = None;
-
-    // 逐夹提交：单夹失败不丢弃已提交批次，也不伪造 ChangeSet
-    for result in batch.folders {
-        operation.checkpoint()?;
-        match apply_imap_folder_batch(db, paths, &cmd.account_id, result).await {
-            Ok(folder_changes) => merge_folder_changes(&mut changeset, folder_changes),
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-        }
-    }
     if changeset.is_empty() {
         if let Some(error) = first_error {
             return Err(error);
@@ -370,6 +388,30 @@ async fn sync_imap_mail(
     let mut seen = HashSet::new();
     changeset.session_ids.retain(|c| seen.insert(c.clone()));
     Ok(changeset)
+}
+
+async fn commit_imap_folder_batch(
+    db: &SqlitePool,
+    paths: &AppPaths,
+    account_id: &AccountId,
+    result: crate::infrastructure::imap::FolderSyncResult,
+    changeset: &mut ChangeSet,
+    first_error: &mut Option<AppError>,
+    on_committed: &(dyn Fn(ChangeSet) + Send + Sync),
+) {
+    match apply_imap_folder_batch(db, paths, account_id, result).await {
+        Ok(folder_changes) => {
+            if !folder_changes.is_empty() {
+                on_committed(folder_changes.clone());
+            }
+            merge_folder_changes(changeset, folder_changes)
+        }
+        Err(error) => {
+            if first_error.is_none() {
+                *first_error = Some(error);
+            }
+        }
+    }
 }
 
 /// 合并单个文件夹已提交的变更

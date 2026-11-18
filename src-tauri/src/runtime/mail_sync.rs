@@ -48,6 +48,7 @@ pub async fn trigger_mail_sync(
     let result = trigger_mail_sync_controlled(
         db,
         paths,
+        changes,
         gate,
         cmd,
         MailOperation::new(Duration::from_secs(10 * 60)),
@@ -62,6 +63,7 @@ pub async fn trigger_mail_sync(
 pub(crate) async fn trigger_mail_sync_controlled(
     db: &SqlitePool,
     paths: &AppPaths,
+    changes: &ChangeDispatcher,
     gate: &MailSyncGate,
     cmd: TriggerMailSyncCommand,
     operation: MailOperation,
@@ -69,8 +71,10 @@ pub(crate) async fn trigger_mail_sync_controlled(
     let account_id = cmd.account_id.to_string();
     let db = db.clone();
     let paths = paths.clone();
+    let changes = changes.clone();
     run_owned(gate, &account_id, operation, move |operation| async move {
-        sync_use_case::trigger_mail_sync(&db, &paths, &operation, cmd).await
+        let on_committed = move |committed: ChangeSet| changes.dispatch(committed);
+        sync_use_case::trigger_mail_sync(&db, &paths, &operation, cmd, &on_committed).await
     })
     .await?
     .ok_or_else(|| AppError::conflict("邮件同步进行中，请稍后重试"))

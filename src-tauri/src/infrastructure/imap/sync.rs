@@ -171,7 +171,7 @@ pub fn sync_folder(
 
 impl FolderSyncResult {
     /// 文件夹本轮不可用：保留既有游标与下载事实，不产生变更
-    fn unavailable(request: &FolderSyncRequest, message: String) -> Self {
+    pub(super) fn unavailable(request: &FolderSyncRequest, message: String) -> Self {
         Self {
             folder_id: request.folder_id.clone(),
             binding_revision: request.binding_revision,

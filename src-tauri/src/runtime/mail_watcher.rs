@@ -85,6 +85,7 @@ async fn run_cycle(
     match crate::runtime::mail_sync::trigger_mail_sync_controlled(
         db,
         paths,
+        changes,
         gate,
         TriggerMailSyncCommand {
             account_id: account_id.clone(),
