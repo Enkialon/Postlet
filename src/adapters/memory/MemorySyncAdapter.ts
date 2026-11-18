@@ -102,7 +102,6 @@ export class MemorySyncAdapter implements SyncPort {
       importance: 'normal',
       folder_id: 'inbox',
       parent_folder_name: '收件箱',
-      sync_status: 'synced',
       local_updated_at: t,
       remote_updated_at: t,
     };

@@ -2,7 +2,7 @@
 
 use crate::domain::value_objects::{
     AccountId, BodyContentType, EmailAddress, FolderId, RemoteKey, Importance, MessageId,
-    MessageSyncStatus, RecipientRole, SessionId, TimestampMs,
+    RecipientRole, SessionId, TimestampMs,
 };
 
 /// 邮件真相；归属唯一 Session（session_id）
@@ -40,7 +40,6 @@ pub struct Message {
     /// 当前位置文件夹；非主导航
     pub folder_id: Option<FolderId>,
     pub parent_folder_name: Option<String>,
-    pub sync_status: MessageSyncStatus,
     pub local_updated_at: TimestampMs,
     pub remote_updated_at: Option<TimestampMs>,
 }
@@ -62,4 +61,10 @@ pub struct MessageRecipient {
 pub struct MessageWithRecipients {
     pub message: Message,
     pub recipients: Vec<MessageRecipient>,
+    /// 读模型投影：发送队列状态（None 表示不是本次本地发送）
+    #[serde(default)]
+    pub send_state: Option<crate::domain::entities::SendState>,
+    /// 读模型投影：本地删除意图待远端确认（来自 mutation）
+    #[serde(default)]
+    pub pending_delete: bool,
 }

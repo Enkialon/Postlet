@@ -1,8 +1,8 @@
 # Task 08：持久化发送队列及前端状态
 
-- 状态：进行中（发送队列已落地；消息状态解耦待完成）
+- 状态：已完成
 - 已完成：`send_tasks` 表与仓储、`SendState` 状态机、`runtime/send_worker`（认领→尝试→落库、启动恢复 sending→uncertain）、compose 同事务入队并返回 `queued`、SMTP 按快照字节 `send_raw`、Graph 按快照 envelope 发送、IPC `get_send_state`、前端 `ComposeSendResult`/`SendState`。
-- 待完成：按任务卡拆除 `MessageSyncStatus` 的发送/删除混用（消息可见性 SQL、乐观已读/删除意图与前端过滤）。
+- 状态解耦已完成：删除 `MessageSyncStatus` 与 `messages.sync_status`；发送状态在 `send_tasks`，删除意图在 mutation（读模型投影 `pending_delete`），定位继续用 `location_status`；可见性 SQL 与前端过滤已同步。
 - 对应问题：I-08、I-07、A-06
 - 前置任务：05、06、07
 

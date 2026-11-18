@@ -9,7 +9,7 @@ pub use credential_ref::CredentialRef;
 pub use email::{EmailAddress, SelfAddressSet};
 pub use enums::{
     AggregateJobStatus, AggregationOutcome, BodyContentType, ContactSource, GroupSource, Importance,
-    MailAuthKind, MailTlsMode, MessageSyncStatus, PageDirection, ReceiveProtocol, RecipientRole,
+    MailAuthKind, MailTlsMode, PageDirection, ReceiveProtocol, RecipientRole,
     SendProtocol, SessionKind, SyncStatus, TimestampMs,
 };
 pub use ids::{

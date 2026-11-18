@@ -23,24 +23,6 @@ impl SyncStatus {
 }
 
 /// 单封邮件相对远端的同步状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageSyncStatus {
-    Synced,
-    PendingLocal,
-    DeletedRemote,
-}
-
-impl MessageSyncStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Synced => "synced",
-            Self::PendingLocal => "pending_local",
-            Self::DeletedRemote => "deleted_remote",
-        }
-    }
-}
-
 /// 邮件正文类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

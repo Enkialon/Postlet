@@ -42,7 +42,7 @@ const menuItems = computed<ContextMenuItem[]>(() => {
     },
     { id: 'reassign', label: '改到其他会话' },
   ];
-  if (props.item.message.sync_status !== 'deleted_remote') {
+  if (!props.item.pending_delete) {
     items.push({ id: 'delete', label: '删除邮件', danger: true });
   }
   return items;
@@ -200,20 +200,25 @@ function onMenuSelect(id: string): void {
         <p
           v-if="
             item.message.has_attachments ||
-            item.message.sync_status === 'pending_local' ||
-            item.message.sync_status === 'deleted_remote'
+            (item.send_state && item.send_state !== 'accepted') ||
+            item.pending_delete
           "
           class="mt-1.5 mb-0 flex gap-2 text-[11px] text-text-tertiary"
         >
           <span v-if="item.message.has_attachments">含附件</span>
-          <span v-if="item.message.sync_status === 'pending_local'"
-            >发送中</span
+          <span v-if="item.send_state === 'queued'">排队发送</span>
+          <span v-else-if="item.send_state === 'sending'">发送中</span>
+          <span v-else-if="item.send_state === 'retryable'"
+            class="text-text-tertiary"
+            >稍后重试</span
           >
-          <span
-            v-if="item.message.sync_status === 'deleted_remote'"
-            class="text-danger"
-            >已删除</span
+          <span v-else-if="item.send_state === 'failed'" class="text-danger"
+            >发送失败</span
           >
+          <span v-else-if="item.send_state === 'uncertain'" class="text-danger"
+            >结果未确认</span
+          >
+          <span v-if="item.pending_delete" class="text-danger">删除待确认</span>
         </p>
       </button>
     </div>

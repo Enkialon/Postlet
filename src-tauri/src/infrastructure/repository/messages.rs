@@ -22,9 +22,12 @@ pub async fn get(
     };
     let message = super::rows::message(&row)?;
     let recipients = load_recipients(conn, account_id, &message.id).await?;
+    let (send_state, pending_delete) = load_projection(conn, account_id, &message.id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
+        send_state,
+        pending_delete,
     }))
 }
 
@@ -46,9 +49,12 @@ pub async fn get_by_location(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
+    let (send_state, pending_delete) = load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
+        send_state,
+        pending_delete,
     }))
 }
 
@@ -74,10 +80,40 @@ pub async fn find_by_internet_message_id(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
+    let (send_state, pending_delete) = load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
         recipients,
+        send_state,
+        pending_delete,
     }))
+}
+
+async fn load_projection(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<(Option<crate::domain::entities::SendState>, bool), InfraError> {
+    let send_state: Option<String> = sqlx::query_scalar(
+        "SELECT state FROM send_tasks WHERE account_id = ? AND message_id = ?
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let pending_delete: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pending_message_mutations
+         WHERE account_id = ? AND message_id = ? AND kind = 'delete' AND is_active = 1)",
+    )
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok((
+        send_state.and_then(|s| crate::domain::entities::SendState::parse(&s)),
+        pending_delete,
+    ))
 }
 
 async fn load_recipients(
@@ -104,8 +140,8 @@ pub async fn upsert_with_recipients(
 ) -> Result<(), InfraError> {
     let m = &bundle.message;
     sqlx::query(
-        "INSERT INTO messages (id, account_id, session_id, remote_key, location_status, location_revision, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, remote_is_read, remote_is_draft, remote_is_deleted, is_outbound, has_attachments, importance, folder_id, parent_folder_name, sync_status, local_updated_at, remote_updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO messages (id, account_id, session_id, remote_key, location_status, location_revision, internet_message_id, in_reply_to, subject, body_preview, body_content_type, body_content, from_address, from_name, received_at, sent_at, is_read, is_draft, remote_is_read, remote_is_draft, remote_is_deleted, is_outbound, has_attachments, importance, folder_id, parent_folder_name, local_updated_at, remote_updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             session_id=excluded.session_id,
             remote_key=excluded.remote_key,
@@ -131,7 +167,6 @@ pub async fn upsert_with_recipients(
             importance=excluded.importance,
             folder_id=excluded.folder_id,
             parent_folder_name=excluded.parent_folder_name,
-            sync_status=excluded.sync_status,
             local_updated_at=excluded.local_updated_at,
             remote_updated_at=excluded.remote_updated_at",
     )
@@ -161,7 +196,6 @@ pub async fn upsert_with_recipients(
     .bind(m.importance.as_str())
     .bind(m.folder_id.as_ref().map(|f| f.as_str()))
     .bind(&m.parent_folder_name)
-    .bind(m.sync_status.as_str())
     .bind(m.local_updated_at)
     .bind(m.remote_updated_at)
     .execute(&mut *conn)
@@ -244,29 +278,6 @@ pub async fn mark_read(
     Ok(changed)
 }
 
-pub async fn mark_deleted_remote(
-    conn: &mut SqliteConnection,
-    account_id: &AccountId,
-    message_ids: &[MessageId],
-) -> Result<(), InfraError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    for id in message_ids {
-        sqlx::query(
-            "UPDATE messages SET sync_status = 'deleted_remote', local_updated_at = ?
-             WHERE account_id = ? AND id = ?",
-        )
-        .bind(now)
-        .bind(account_id.as_str())
-        .bind(id.as_str())
-        .execute(&mut *conn)
-        .await?;
-    }
-    Ok(())
-}
-
 /// 位置有效性与用户删除意图分开；失效后保留旧唯一键及全部内容。
 pub async fn set_location_status(
     conn: &mut SqliteConnection, account_id: &AccountId, message_id: &MessageId,
@@ -325,7 +336,8 @@ pub async fn list_ids_by_session(
 ) -> Result<Vec<MessageId>, InfraError> {
     let rows = sqlx::query_scalar::<_, String>(
         "SELECT id FROM messages
-         WHERE account_id = ? AND session_id = ? AND sync_status != 'deleted_remote' AND (location_status = 'present' OR (location_status IS NULL AND sync_status = 'pending_local'))
+         WHERE account_id = ? AND session_id = ? AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = messages.account_id AND st.message_id = messages.id AND st.state <> 'cancelled')))
+         AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
          ORDER BY local_updated_at DESC",
     )
     .bind(account_id.as_str())
@@ -349,7 +361,8 @@ pub async fn list_ids_involving_addresses(
          WHERE m.account_id = ",
     );
     qb.push_bind(account_id.as_str());
-    qb.push(" AND m.sync_status != 'deleted_remote' AND (m.location_status = 'present' OR (m.location_status IS NULL AND m.sync_status = 'pending_local')) AND (m.from_address IN (");
+    qb.push(" AND (m.location_status = 'present' OR (m.location_status IS NULL AND EXISTS (SELECT 1 FROM send_tasks st WHERE st.account_id = m.account_id AND st.message_id = m.id AND st.state <> 'cancelled')))
+         AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = m.account_id AND pm.message_id = m.id AND pm.kind = 'delete' AND pm.is_active = 1) AND (m.from_address IN (");
     {
         let mut separated = qb.separated(", ");
         for addr in addresses {

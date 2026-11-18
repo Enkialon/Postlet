@@ -8,7 +8,7 @@ use postlet_lib::application::use_cases::{attachment_use_case, compose_use_case}
 use postlet_lib::application::AppErrorCode;
 use postlet_lib::domain::entities::{Message, MessageWithRecipients};
 use postlet_lib::domain::value_objects::{
-    AccountId, BodyContentType, Importance, MessageId, MessageSyncStatus, SessionId, SessionKind,
+    AccountId, BodyContentType, Importance, MessageId, SessionId, SessionKind,
 };
 use postlet_lib::infrastructure::attachment_store;
 use postlet_lib::infrastructure::db;
@@ -113,6 +113,8 @@ async fn shared_content_ref_survives_when_one_owner_deleted() {
     messages::upsert_with_recipients(
         &mut tx,
         &MessageWithRecipients {
+            send_state: None,
+            pending_delete: false,
             message: Message {
                 id: message_id.clone(),
                 account_id: account.clone(),
@@ -140,7 +142,6 @@ async fn shared_content_ref_survives_when_one_owner_deleted() {
                 importance: Importance::Normal,
                 folder_id: None,
                 parent_folder_name: None,
-                sync_status: MessageSyncStatus::PendingLocal,
                 local_updated_at: 1,
                 remote_updated_at: None,
             },

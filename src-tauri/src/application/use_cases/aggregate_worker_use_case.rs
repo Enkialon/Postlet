@@ -10,7 +10,7 @@ use crate::domain::services::{
 };
 use crate::domain::value_objects::{
     AccountId, AggregateJobStatus, AggregationOutcome, ContactId, ContactSource, EmailAddress,
-    GroupId, GroupSource, MessageSyncStatus, SessionId, SessionKind, TimestampMs,
+    GroupId, GroupSource, SessionId, SessionKind, TimestampMs,
 };
 use crate::infrastructure::repository::{
     accounts, contacts, groups, jobs, messages, sessions,
@@ -179,8 +179,11 @@ pub async fn aggregate_message(
         return Ok((AggregationOutcome::Skipped, None));
     };
 
-    if bundle.message.sync_status == MessageSyncStatus::DeletedRemote
-        || bundle.message.location_status.is_some_and(|status| status != crate::domain::mail::LocationStatus::Present) {
+    if bundle
+        .message
+        .location_status
+        .is_some_and(|status| status != crate::domain::mail::LocationStatus::Present)
+    {
         jobs::complete(
             &mut tx,
             &claim.account_id,
@@ -774,7 +777,11 @@ pub async fn relocate_self_keyed_private_sessions(
             tx.rollback().await.ok();
             continue;
         };
-        if bundle.message.sync_status == MessageSyncStatus::DeletedRemote {
+        if bundle
+            .message
+            .location_status
+            .is_some_and(|status| status != crate::domain::mail::LocationStatus::Present)
+        {
             tx.rollback().await.ok();
             continue;
         }

@@ -15,6 +15,7 @@ import type {
   EmailAddress,
   GroupId,
   MessageId,
+  SendState,
   SessionId,
 } from '../../domain/types';
 import type { AppError } from '../../domain/errors';
@@ -175,14 +176,23 @@ export class MemoryStore {
     messageId: MessageId,
   ): MessageWithRecipients {
     const message = this.messages.get(this.messageKey(accountId, messageId));
-    if (!message || message.sync_status === 'deleted_remote') {
+    if (!message) {
       this.failNotFound('邮件不存在');
     }
     return {
       message,
       recipients: this.recipients.get(this.messageKey(accountId, messageId)) ?? [],
+      send_state: this.sendStates.get(this.messageKey(accountId, messageId)) ?? null,
+      pending_delete: this.pendingDeletes.has(
+        this.messageKey(accountId, messageId),
+      ),
     };
   }
+
+  /** 本地删除意图（待远端确认）；内存适配器用集合表达 */
+  readonly pendingDeletes = new Set<string>();
+  /** 发送队列状态（内存适配器） */
+  readonly sendStates = new Map<string, SendState>();
 
   /** 列表预览：仅本 Session 非软删消息 */
   effectiveMessagesForSession(session: Session): Message[] {
@@ -202,7 +212,12 @@ export class MemoryStore {
     const live: Message[] = [];
     for (const msg of this.messages.values()) {
       if (msg.account_id !== accountId || msg.session_id !== sessionId) continue;
-      if (!includeDeleted && msg.sync_status === 'deleted_remote') continue;
+      if (
+        !includeDeleted &&
+        this.pendingDeletes.has(this.messageKey(accountId, msg.id))
+      ) {
+        continue;
+      }
       live.push(msg);
     }
     live.sort((a, b) => {

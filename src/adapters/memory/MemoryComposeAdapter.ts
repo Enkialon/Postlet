@@ -253,7 +253,7 @@ export class MemoryComposeAdapter implements ComposePort {
         cmd.reply_to_message_id,
       );
       const replyMsg = this.store.messages.get(replyKey);
-      if (!replyMsg || replyMsg.sync_status === 'deleted_remote') {
+      if (!replyMsg) {
         this.store.failNotFound('回复目标邮件不存在');
       }
       inReplyTo =
@@ -291,7 +291,6 @@ export class MemoryComposeAdapter implements ComposePort {
       importance: 'normal',
       folder_id: null,
       parent_folder_name: '已发送',
-      sync_status: 'pending_local',
       local_updated_at: t,
       remote_updated_at: null,
     };
@@ -324,6 +323,10 @@ export class MemoryComposeAdapter implements ComposePort {
     this.drafts.delete(this.draftKey(cmd.account_id, cmd.session_id));
 
     this.sendStates.set(`${cmd.account_id}:${messageId}`, 'queued');
+    this.store.sendStates.set(
+      this.store.messageKey(cmd.account_id, messageId),
+      'queued',
+    );
     return {
       message: { message, recipients },
       send_state: 'queued',

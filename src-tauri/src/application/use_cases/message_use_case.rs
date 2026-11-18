@@ -167,14 +167,14 @@ pub async fn delete_messages(
         else {
             continue;
         };
-        if bundle.message.sync_status
-            == crate::domain::value_objects::MessageSyncStatus::DeletedRemote
+        if bundle
+            .message
+            .location_status
+            .is_some_and(|status| status != crate::domain::mail::LocationStatus::Present)
         {
             continue;
         }
-        messages::mark_deleted_remote(&mut tx, &cmd.account_id, &[mid.clone()])
-            .await
-            .map_err(AppError::from)?;
+        // 删除只是本地意图：不改位置事实，远端确认后由同步标记 missing
         mutations::put_delete(&mut tx, &cmd.account_id, mid)
             .await
             .map_err(AppError::from)?;

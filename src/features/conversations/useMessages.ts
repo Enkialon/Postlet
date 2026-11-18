@@ -194,8 +194,8 @@ export function useMessages() {
         const key = cacheKey(accountId, id);
         const item = entityCache.get(key);
         if (item) {
+          // 乐观只改展示；真实状态由后端 mutation 确认
           item.message.is_read = isRead;
-          item.message.sync_status = 'pending_local';
           entityCache.set(key, item);
         }
         if (!isRead) {
@@ -212,7 +212,7 @@ export function useMessages() {
     await markQueue.value;
   }
 
-  /** 删除邮件：先乐观标 deleted_remote，再等本地入队；远端由后端后台 flush。 */
+  /** 删除邮件：先乐观标记本地删除意图，再等后端入队；远端确认前不伪造位置事实。 */
   async function deleteMessages(messageIds: MessageId[]): Promise<void> {
     const accountId = nav.accountId.value;
     if (!accountId || messageIds.length === 0) return;
@@ -221,7 +221,7 @@ export function useMessages() {
       const now = Date.now();
       const rollback: Array<{
         key: string;
-        status: MessageWithRecipients['message']['sync_status'];
+        pendingDelete: boolean;
         local_updated_at: number;
       }> = [];
       for (const id of messageIds) {
@@ -230,10 +230,10 @@ export function useMessages() {
         if (!item) continue;
         rollback.push({
           key,
-          status: item.message.sync_status,
+          pendingDelete: item.pending_delete ?? false,
           local_updated_at: item.message.local_updated_at,
         });
-        item.message.sync_status = 'deleted_remote';
+        item.pending_delete = true;
         item.message.local_updated_at = now;
         entityCache.set(key, item);
       }
@@ -251,7 +251,7 @@ export function useMessages() {
         for (const snap of rollback) {
           const item = entityCache.get(snap.key);
           if (!item) continue;
-          item.message.sync_status = snap.status;
+          item.pending_delete = snap.pendingDelete;
           item.message.local_updated_at = snap.local_updated_at;
           entityCache.set(snap.key, item);
         }

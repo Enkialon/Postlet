@@ -11,7 +11,7 @@ use crate::domain::entities::{
 };
 use crate::domain::services::resolve_self_addresses;
 use crate::domain::value_objects::{
-    AccountId, ContactId, ContactSource, EmailAddress, FolderId, MessageId, MessageSyncStatus,
+    AccountId, ContactId, ContactSource, EmailAddress, FolderId, MessageId,
     ReceiveProtocol, SessionId, SyncStatus, TimestampMs,
 };
 use crate::infrastructure::config::load_azure_auth_config;
@@ -488,7 +488,6 @@ async fn upsert_remote_message(
         importance: remote.importance,
         folder_id: remote.folder_id.clone(),
         parent_folder_name: Some(folder.display_name.clone()),
-        sync_status: if pending_delete { MessageSyncStatus::DeletedRemote } else { MessageSyncStatus::Synced },
         local_updated_at: now,
         remote_updated_at: remote.remote_updated_at,
     };
@@ -509,6 +508,8 @@ async fn upsert_remote_message(
         &MessageWithRecipients {
             message: message.clone(),
             recipients,
+            send_state: None,
+            pending_delete: false,
         },
     )
     .await
@@ -963,7 +964,6 @@ mod location_tests {
         assert!(is_new); assert_ne!(old_id, new_id);
         let fresh = messages::get(&mut tx, &a, &new_id).await.unwrap().unwrap();
         assert!(!fresh.message.is_read);
-        assert_eq!(fresh.message.sync_status, MessageSyncStatus::Synced);
         let old = messages::get(&mut tx, &a, &old_id).await.unwrap().unwrap();
         assert_eq!(old.message.body_content, first.body_content);
         assert_eq!(old.message.location_status, Some(LocationStatus::Invalidated));
@@ -988,7 +988,6 @@ mod location_tests {
         assert!(updated.message.is_read);
         assert_eq!(updated.message.remote_is_read, Some(false));
         assert_eq!(updated.message.remote_is_deleted, Some(true));
-        assert_eq!(updated.message.sync_status, MessageSyncStatus::Synced);
         assert_eq!(updated.message.subject, before.message.subject);
         assert_eq!(updated.message.body_content, before.message.body_content);
         assert_eq!(updated.message.session_id, before.message.session_id);
@@ -1033,12 +1032,10 @@ mod location_tests {
         let destination = messages::get(&mut tx, &a, &other_folder).await.unwrap().unwrap();
         assert_eq!(old.message.body_content.as_deref(), Some("same body"));
         assert_eq!(old.message.location_status, Some(LocationStatus::Missing));
-        assert_eq!(destination.message.sync_status, MessageSyncStatus::Synced);
         assert_eq!(destination.message.folder_id, Some(FolderId::new("archive")));
         // A source-location removal cannot follow the same key into a new folder.
         assert_eq!(changes.message_ids, vec![original.clone()]);
         let unaffected = messages::get(&mut tx, &b, &other_account).await.unwrap().unwrap();
-        assert_eq!(unaffected.message.sync_status, MessageSyncStatus::Synced);
         // Authoritatively rediscovered same-generation location uses its original entity.
         let (reappeared, _, is_new) = upsert_remote_message(&mut tx, &a, &inbox).await.unwrap();
         assert_eq!(reappeared, original); assert!(!is_new);
@@ -1152,7 +1149,6 @@ mod location_tests {
         let mut local = retained.clone(); local.message.id = MessageId::new("local-outbound");
         local.message.remote_key = None; local.message.folder_id = None;
         local.message.location_status = None; local.message.location_revision = 0;
-        local.message.sync_status = MessageSyncStatus::PendingLocal;
         messages::upsert_with_recipients(&mut tx, &local).await.unwrap();
         local.message.remote_key = Some(crate::domain::value_objects::RemoteKey::new("sent-operation-key"));
         local.message.folder_id = Some(FolderId::new("archive"));

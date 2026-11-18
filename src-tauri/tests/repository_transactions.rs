@@ -7,7 +7,7 @@ use postlet_lib::domain::entities::{
 };
 use postlet_lib::domain::value_objects::{
     AccountId, BodyContentType, ContactId, ContactSource, EmailAddress, FolderId, GroupId,
-    GroupSource, Importance, MessageId, MessageSyncStatus, PageDirection, SessionId, SessionKind,
+    GroupSource, Importance, MessageId, PageDirection, SessionId, SessionKind,
     SyncStatus,
 };
 use postlet_lib::infrastructure::db;
@@ -225,6 +225,8 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
     messages::upsert_with_recipients(
         &mut conn,
         &MessageWithRecipients {
+            send_state: None,
+            pending_delete: false,
             message: Message {
                 id: msg_id.clone(),
                 account_id: account_id.clone(),
@@ -252,8 +254,7 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
                 importance: Importance::Normal,
                 folder_id: Some(FolderId::new("inbox")),
                 parent_folder_name: Some("Inbox".into()),
-                sync_status: MessageSyncStatus::Synced,
-                local_updated_at: 2_000,
+                    local_updated_at: 2_000,
                 remote_updated_at: Some(2_000),
             },
             recipients: vec![],

@@ -13,7 +13,6 @@ export type FolderId = string;
 /** 账户 / 文件夹同步状态 */
 export type SyncStatus = 'idle' | 'running' | 'error';
 /** 单封邮件同步状态 */
-export type MessageSyncStatus = 'synced' | 'pending_local' | 'deleted_remote';
 export type BodyContentType = 'text' | 'html';
 export type Importance = 'low' | 'normal' | 'high';
 export type RecipientRole = 'to' | 'cc' | 'bcc' | 'reply_to';

@@ -8,7 +8,7 @@ use crate::application::error::{AppError, AppErrorCode};
 use crate::application::use_cases::attachment_use_case;
 use crate::domain::entities::{Message, MessageRecipient, MessageWithRecipients};
 use crate::domain::value_objects::{
-    AccountId, BodyContentType, EmailAddress, Importance, MessageId, MessageSyncStatus,
+    AccountId, BodyContentType, EmailAddress, Importance, MessageId,
     RecipientRole, SessionId, TimestampMs,
 };
 use crate::infrastructure::attachment_store;
@@ -466,7 +466,11 @@ pub async fn send(
         let reply = messages::get(&mut tx, &cmd.account_id, reply_id)
             .await?
             .ok_or_else(|| AppError::not_found("回复目标邮件不存在"))?;
-        if reply.message.sync_status == MessageSyncStatus::DeletedRemote {
+        if reply
+            .message
+            .location_status
+            .is_some_and(|status| status != crate::domain::mail::LocationStatus::Present)
+        {
             return Err(AppError::not_found("回复目标邮件不存在"));
         }
         in_reply_to = reply.message.internet_message_id.clone();
@@ -551,7 +555,6 @@ pub async fn send(
         importance: Importance::Normal,
         folder_id: None,
         parent_folder_name: Some("已发送".into()),
-        sync_status: MessageSyncStatus::PendingLocal,
         local_updated_at: t,
         remote_updated_at: None,
     };
@@ -576,6 +579,8 @@ pub async fn send(
     let bundle = MessageWithRecipients {
         message,
         recipients,
+        send_state: Some(crate::domain::entities::SendState::Queued),
+        pending_delete: false,
     };
     messages::upsert_with_recipients(&mut tx, &bundle).await?;
     sessions::recompute_projection(&mut tx, &cmd.account_id, &session_id).await?;

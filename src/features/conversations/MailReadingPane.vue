@@ -97,13 +97,23 @@ const importanceLabel = computed(() => {
 });
 
 const syncLabel = computed(() => {
-  switch (props.item.message.sync_status) {
-    case 'pending_local':
-      return '等待同步';
-    case 'deleted_remote':
-      return '远端已删除';
+  switch (props.item.send_state) {
+    case 'queued':
+      return '排队发送';
+    case 'sending':
+      return '正在发送';
+    case 'retryable':
+      return '稍后重试';
+    case 'failed':
+      return '发送失败';
+    case 'uncertain':
+      return '发送结果未确认';
+    case 'cancelled':
+      return '已取消发送';
+    case 'accepted':
+      return '服务器已接受';
     default:
-      return '已同步';
+      return props.item.pending_delete ? '删除待确认' : '已同步';
   }
 });
 
@@ -131,7 +141,7 @@ const folderLabel = computed(
           </h1>
           <div class="flex shrink-0 items-center gap-1">
             <Button
-              v-if="item.message.sync_status !== 'deleted_remote'"
+              v-if="!item.pending_delete"
               variant="ghost"
               class="!px-2 shrink-0 text-danger"
               aria-label="删除邮件"

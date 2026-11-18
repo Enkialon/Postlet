@@ -34,7 +34,7 @@ export class MemoryMessageAdapter implements MessagePort {
     }
 
     const message = this.store.messages.get(key);
-    if (!message || message.sync_status === 'deleted_remote') {
+    if (!message) {
       this.store.failNotFound('邮件不存在');
     }
     if (message.body_content !== null) {
@@ -62,11 +62,11 @@ export class MemoryMessageAdapter implements MessagePort {
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
       const message = this.store.messages.get(key);
-      if (!message || message.sync_status === 'deleted_remote') {
+      if (!message) {
         this.store.failNotFound('邮件不存在');
       }
+      // 乐观已读只改展示值；真实确认由后端 mutation 完成
       message.is_read = cmd.is_read;
-      message.sync_status = 'pending_local';
       message.local_updated_at = Date.now();
       this.store.messages.set(key, message);
       touched.add(message.session_id);
@@ -83,8 +83,9 @@ export class MemoryMessageAdapter implements MessagePort {
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
       const message = this.store.messages.get(key);
-      if (!message || message.sync_status === 'deleted_remote') continue;
-      message.sync_status = 'deleted_remote';
+      if (!message) continue;
+      // 只记录本地删除意图，不伪造远端位置事实
+      this.store.pendingDeletes.add(key);
       message.local_updated_at = Date.now();
       this.store.messages.set(key, message);
       touched.add(message.session_id);

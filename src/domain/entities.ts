@@ -12,7 +12,7 @@ import type {
   GroupSource,
   Importance,
   MessageId,
-  MessageSyncStatus,
+  SendState,
   RecipientRole,
   SessionId,
   SessionKind,
@@ -115,7 +115,6 @@ export interface Message {
   /** 当前位置文件夹；非主导航 */
   folder_id: FolderId | null;
   parent_folder_name: string | null;
-  sync_status: MessageSyncStatus;
   local_updated_at: TimestampMs;
   remote_updated_at: TimestampMs | null;
 }
@@ -135,6 +134,10 @@ export interface MessageRecipient {
 export interface MessageWithRecipients {
   message: Message;
   recipients: MessageRecipient[];
+  /** 发送队列状态；None 表示不是本次本地发送 */
+  send_state?: SendState | null;
+  /** 本地删除意图待远端确认 */
+  pending_delete?: boolean;
 }
 
 /** 群档案：名称与成员；聊天状态在 Session */

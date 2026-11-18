@@ -194,8 +194,6 @@ CREATE TABLE messages (
         CHECK(importance IN ('low', 'normal', 'high')),
     folder_id               TEXT,
     parent_folder_name      TEXT,
-    sync_status             TEXT NOT NULL DEFAULT 'synced'
-        CHECK(sync_status IN ('synced', 'pending_local', 'deleted_remote')),
     local_updated_at        INTEGER NOT NULL,
     remote_updated_at       INTEGER,
     PRIMARY KEY (account_id, id),

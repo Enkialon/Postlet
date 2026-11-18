@@ -11,15 +11,6 @@ fn parse_syncstatus(value: String) -> Result<SyncStatus, sqlx::Error> {
     }
 }
 
-fn parse_messagesyncstatus(value: String) -> Result<MessageSyncStatus, sqlx::Error> {
-    match value.as_str() {
-        "synced" => Ok(MessageSyncStatus::Synced),
-        "pending_local" => Ok(MessageSyncStatus::PendingLocal),
-        "deleted_remote" => Ok(MessageSyncStatus::DeletedRemote),
-        _ => Err(sqlx::Error::Decode("无效领域枚举值".into())),
-    }
-}
-
 fn parse_bodycontenttype(value: String) -> Result<BodyContentType, sqlx::Error> {
     match value.as_str() {
         "text" => Ok(BodyContentType::Text),
@@ -198,7 +189,6 @@ pub(super) fn message(row: &SqliteRow) -> Result<Message, sqlx::Error> {
             .try_get::<Option<String>, _>("folder_id")?
             .map(FolderId::new),
         parent_folder_name: row.try_get("parent_folder_name")?,
-        sync_status: parse_messagesyncstatus(row.try_get("sync_status")?)?,
         local_updated_at: row.try_get("local_updated_at")?,
         remote_updated_at: row.try_get("remote_updated_at")?,
     })

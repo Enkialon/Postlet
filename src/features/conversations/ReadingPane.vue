@@ -69,12 +69,17 @@ const {
 const pendingStickBottom = ref(Boolean(nav.sessionId.value));
 let loadingOlder = false;
 
-/** 后端返回含已删；默认前端隐藏 */
+/** 后端返回含已删；默认前端隐藏本地删除意图与位置失效 */
 const displayMessages = computed(() => {
-  const effective = messageState.items.filter(item => item.message.location_status === 'present' || (item.message.location_status === null && item.message.sync_status === 'pending_local'));
+  const effective = messageState.items.filter(
+    (item) =>
+      item.message.location_status === null ||
+      item.message.location_status === 'present',
+  );
   if (preferences.showDeletedInThread) return effective;
   return effective.filter(
-    (item) => item.message.sync_status !== 'deleted_remote',
+    (item) =>
+      !item.pending_delete && item.message.location_status !== 'missing',
   );
 });
 

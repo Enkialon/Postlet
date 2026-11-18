@@ -217,7 +217,7 @@ export class MemorySessionAdapter implements SessionPort {
     for (const messageId of cmd.message_ids) {
       const key = this.store.messageKey(cmd.account_id, messageId);
       const message = this.store.messages.get(key);
-      if (!message || message.sync_status === 'deleted_remote') {
+      if (!message) {
         this.store.failNotFound('邮件不存在');
       }
       touched.add(message.session_id);
