@@ -166,6 +166,31 @@ pub async fn reconcile_discovered(
     Ok(retired)
 }
 
+/// 夹级同步失败留痕：不推进游标，供 UI 与诊断查看
+pub async fn record_sync_error(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    message: &str,
+) -> Result<(), InfraError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    sqlx::query(
+        "UPDATE mail_folder_sync_state
+         SET sync_status = 'error', last_error = ?, updated_at = ?
+         WHERE account_id = ? AND folder_id = ?",
+    )
+    .bind(message)
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(folder_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 pub async fn retire(conn: &mut SqliteConnection, account_id: &AccountId, folder_id: &FolderId, now: i64) -> Result<(), InfraError> {
     sqlx::query("UPDATE mail_folder_sync_state SET is_retired = 1, sync_enabled = 0, binding_revision = binding_revision + 1, sync_cursor = NULL, page_cursor = NULL, generation = NULL, updated_at = ? WHERE account_id = ? AND folder_id = ? AND is_retired = 0")
         .bind(now).bind(account_id.as_str()).bind(folder_id.as_str()).execute(conn).await?;

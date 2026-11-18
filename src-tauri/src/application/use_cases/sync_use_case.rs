@@ -267,10 +267,14 @@ pub async fn has_pending_imap_history(
 ) -> Result<bool, AppError> {
     let mut conn = db.acquire().await?;
     let folders = folder_states::list_sync_enabled(&mut conn, account_id).await?;
-    Ok(folders.iter().any(|folder| {
-        parse_cursor(folder.sync_cursor.as_deref(), folder.page_cursor.as_deref())
-            .is_none_or(|cursor| cursor.low_uid != 1)
-    }))
+    // 夹级错误不参与历史补齐判断，避免坏夹让后台无限回填
+    Ok(folders
+        .iter()
+        .filter(|folder| folder.sync_status != SyncStatus::Error)
+        .any(|folder| {
+            parse_cursor(folder.sync_cursor.as_deref(), folder.page_cursor.as_deref())
+                .is_none_or(|cursor| cursor.low_uid != 1)
+        }))
 }
 
 async fn sync_imap_mail(
@@ -373,6 +377,15 @@ async fn apply_imap_folder_batch(
     account_id: &AccountId,
     result: crate::infrastructure::imap::FolderSyncResult,
 ) -> Result<ChangeSet, AppError> {
+    // 夹级不可用：记录最后一次可见错误，不推进游标、不影响其他文件夹
+    if let Some(folder_error) = result.folder_error.clone() {
+        let mut conn = db.acquire().await?;
+        folder_states::record_sync_error(&mut conn, account_id, &result.folder_id, &folder_error)
+            .await
+            .map_err(AppError::from)?;
+        return Err(AppError::sync(folder_error));
+    }
+
     let mut changes = ChangeSet::empty(account_id.clone(), ChangeOrigin::IncrementalSync);
     let mut tx = db.begin().await?;
     let current = folder_states::get(&mut tx, account_id, &result.folder_id)
@@ -440,6 +453,9 @@ async fn apply_imap_folder_batch(
         Some(encode_uid_cursor(result.last_uid, result.low_uid)),
     );
     state.generation = Some(result.uidvalidity.to_string());
+    // 本轮成功：清除历史夹级错误
+    state.sync_status = SyncStatus::Idle;
+    state.last_error = None;
     folder_states::upsert(&mut tx, &state).await.map_err(AppError::from)?;
     if !changes.is_empty() {
         changes.account_version = Some(accounts::bump_change_version(&mut tx, account_id).await?);

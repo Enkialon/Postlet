@@ -36,6 +36,8 @@ pub struct FolderSyncResult {
     pub missing_remote_ids: Vec<String>,
     /// 本批解析/内容失败、需退避重试的 UID（不计为已下载）
     pub failed_uids: Vec<u32>,
+    /// 该文件夹本轮不可用（无 UIDVALIDITY / SELECT 失败等）；不推进游标，但不影响其他夹
+    pub folder_error: Option<String>,
 }
 
 /// 同步单个邮箱（阻塞）。
@@ -49,13 +51,22 @@ pub fn sync_folder(
     let folder = request.remote_binding.as_str();
     let stored_generation = request.stored_generation.as_deref();
     let known_messages = &request.known_messages;
-    let mailbox = session.select(folder).map_err(|e| InfraError::Remote {
-        message: format!("IMAP SELECT {folder} 失败: {e}"),
-        retryable: true,
-    })?;
-    let uidvalidity = mailbox.uid_validity.filter(|v| *v > 0).ok_or_else(|| InfraError::Remote {
-        message: "IMAP SELECT 未返回有效 UIDVALIDITY，已停止同步".into(), retryable: false,
-    })?;
+    // 夹级错误只影响本夹：不推进游标，交由上层继续其他文件夹
+    let mailbox = match session.select(folder) {
+        Ok(mailbox) => mailbox,
+        Err(e) => {
+            return Ok(FolderSyncResult::unavailable(
+                request,
+                format!("IMAP SELECT {folder} 失败: {e}"),
+            ))
+        }
+    };
+    let Some(uidvalidity) = mailbox.uid_validity.filter(|v| *v > 0) else {
+        return Ok(FolderSyncResult::unavailable(
+            request,
+            format!("IMAP SELECT {folder} 未返回有效 UIDVALIDITY，本轮跳过该文件夹"),
+        ));
+    };
     let known_uids: Vec<(u32, bool)> = known_messages.iter().filter_map(|(key, seen)| {
         let (generation, uid) = decode_remote_key(key).ok()?;
         (generation == uidvalidity).then_some((uid, *seen))
@@ -136,7 +147,26 @@ pub fn sync_folder(
         changes,
         missing_remote_ids,
         failed_uids,
+        folder_error: None,
     })
+}
+
+impl FolderSyncResult {
+    /// 文件夹本轮不可用：保留既有游标与下载事实，不产生变更
+    fn unavailable(request: &FolderSyncRequest, message: String) -> Self {
+        Self {
+            folder_id: request.folder_id.clone(),
+            binding_revision: request.binding_revision,
+            uidvalidity: 0,
+            generation_changed: false,
+            last_uid: 0,
+            low_uid: 0,
+            changes: Vec::new(),
+            missing_remote_ids: Vec::new(),
+            failed_uids: Vec::new(),
+            folder_error: Some(message),
+        }
+    }
 }
 
 fn search_uids(session: &mut ImapSession, query: &str) -> Result<HashSet<u32>, InfraError> {
@@ -282,5 +312,30 @@ mod flag_tests {
             (30, RemoteFlags { is_read: Some(true), is_draft: Some(true), is_deleted: Some(true) }),
         ]);
         assert!(parse_flag_observations(b"not an IMAP response\r\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod folder_isolation_tests {
+    use super::*;
+
+    fn request() -> FolderSyncRequest {
+        FolderSyncRequest {
+            folder_id: crate::domain::value_objects::FolderId::new("f1"),
+            remote_binding: "Broken".into(),
+            binding_revision: 3,
+            stored_generation: None,
+            known_messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unavailable_folder_keeps_progress_and_reports_error() {
+        let result = FolderSyncResult::unavailable(&request(), "no uidvalidity".into());
+        assert_eq!(result.binding_revision, 3);
+        assert_eq!(result.uidvalidity, 0);
+        assert!(result.changes.is_empty());
+        assert!(result.missing_remote_ids.is_empty());
+        assert_eq!(result.folder_error.as_deref(), Some("no uidvalidity"));
     }
 }

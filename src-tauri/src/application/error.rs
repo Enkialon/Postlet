@@ -84,6 +84,15 @@ impl AppError {
             retryable: false,
         }
     }
+
+    /// 同步类错误：可重试，用于夹级失败留痕
+    pub fn sync(message: impl Into<String>) -> Self {
+        Self {
+            code: AppErrorCode::Sync,
+            message: message.into(),
+            retryable: true,
+        }
+    }
 }
 
 impl From<DomainError> for AppError {
