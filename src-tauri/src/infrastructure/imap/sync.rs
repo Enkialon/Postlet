@@ -102,8 +102,9 @@ pub fn sync_folder(
             page.len()
         );
     }
-    let discovered_remote_ids: Vec<String> = remote_uids
-        .difference(&known)
+    // 只登记本轮实际尝试的页内候选；未选中的缺失项下轮再进入候选表。
+    let discovered_remote_ids: Vec<String> = page
+        .iter()
         .map(|uid| remote_id(uidvalidity, *uid).as_str().to_string())
         .collect();
     let failed_uids: Vec<u32> = page
