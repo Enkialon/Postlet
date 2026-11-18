@@ -212,3 +212,94 @@ pub async fn recover_interrupted(
     .await?;
     Ok(result.rows_affected() as u32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn interrupted_append_recovers_as_uncertain_and_is_not_reclaimed() {
+        let db = crate::infrastructure::db::open_memory().await.unwrap();
+        let account = AccountId::new("a");
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query("INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO mail_folder_sync_state(account_id,folder_id,protocol,remote_binding,binding_revision,is_retired,display_name,sync_enabled,sync_status,updated_at,role,role_source)
+             VALUES ('a','sent','imap','Sent',1,0,'Sent',1,'idle',1,'sent','server')",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO attachment_contents(content_id,account_id,storage_key,byte_length,digest,created_at)
+             VALUES ('c1','a','c1',1,'d',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO outbound_snapshots(account_id,snapshot_id,content_version,internet_message_id,date,mime_content_id,envelope_json,subject,text_body,created_at)
+             VALUES ('a','s1',1,'<m@x>','d','c1','{}','s','t',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions(account_id,id,kind,normalized_address,created_at,updated_at)
+             VALUES ('a','ses1','private','peer@example.com',1,1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages(account_id,id,session_id,subject,body_preview,body_content_type,from_name,is_read,is_draft,is_outbound,has_attachments,importance,local_updated_at)
+             VALUES ('a','m1','ses1','s','','text','',0,0,1,0,'normal',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO send_tasks(task_id,account_id,message_id,content_version,snapshot_id,state,created_at,updated_at)
+             VALUES ('send-1','a','m1',1,'s1','accepted',1,1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        enqueue_after_acceptance(
+            &mut conn,
+            "t1",
+            &account,
+            "send-1",
+            "s1",
+            ArchiveState::AppendPending,
+            Some(&FolderId::new("sent")),
+            Some(1),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let claimed = claim_due(&mut conn, &account, 10, 1_000, "c1", "a1", 4)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        let recovered = recover_interrupted(&mut conn, 20).await.unwrap();
+        assert_eq!(recovered, 1);
+        // uncertain 不在可认领状态：不会自动再次 APPEND
+        let due = claim_due(&mut conn, &account, 30, 2_000, "c2", "a2", 4)
+            .await
+            .unwrap();
+        assert!(due.is_empty());
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM archive_tasks WHERE account_id='a' AND task_id='t1'",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(state, "uncertain");
+    }
+}

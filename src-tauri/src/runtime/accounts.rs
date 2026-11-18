@@ -46,7 +46,16 @@ pub async fn sign_out(state: &AppState, account_id: &AccountId) -> Result<(), Ap
 }
 
 pub async fn clear_local_data(state: &AppState, account_id: &AccountId) -> Result<(), AppError> {
+    // 先阻止新派发并等待实际任务退出
     let _paused = quiesce(state, account_id).await?;
+    // 再同步冲刷一次待推已读/删除：清库后不得再向远端写
+    let _ = crate::application::use_cases::message_use_case::flush_due_mutations(
+        &state.db,
+        &state.paths,
+        account_id,
+        64,
+    )
+    .await;
     let changeset =
         account_use_case::clear_local_data(&state.db, &state.paths, account_id).await?;
     state.changes.dispatch(changeset);
