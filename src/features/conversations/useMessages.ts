@@ -25,6 +25,9 @@ const markQueue = ref<Promise<void>>(Promise.resolve());
 const entityCache = new Map<string, MessageWithRecipients>();
 let watchBound = false;
 let mailChangedBound = false;
+let focusBound = false;
+let pendingRequestVersion = 0;
+const appliedVersionByAccount = new Map<string, number>();
 
 function cacheKey(accountId: string, messageId: string): string {
   return `${accountId}:${messageId}`;
@@ -46,6 +49,20 @@ export function useMessages() {
     });
   }
 
+  function isCurrentRequest(
+    version: number,
+    accountId: string,
+    sessionId: string,
+    sessionVersion: number,
+  ): boolean {
+    return (
+      version === messageState.requestVersion &&
+      accountId === nav.accountId.value &&
+      sessionId === nav.sessionId.value &&
+      sessionVersion === nav.sessionVersion.value
+    );
+  }
+
   async function loadInitial(): Promise<void> {
     const accountId = nav.accountId.value;
     const sessionId = nav.sessionId.value;
@@ -56,32 +73,30 @@ export function useMessages() {
       return;
     }
     const version = ++messageState.requestVersion;
+    const pendingVersion = ++pendingRequestVersion;
     const session = nav.sessionVersion.value;
     messageState.loading = 'initial';
     messageState.error = null;
     expandedIds.value = new Set();
     suppressAutoRead.value = new Set();
     try {
-      const page = await ports.session.listMessages({
-        account_id: accountId,
-        session_id: sessionId,
-        cursor: null,
-        limit: PAGE_SIZE,
-        direction: 'older',
-      });
-      if (
-        version !== messageState.requestVersion ||
-        session !== nav.sessionVersion.value ||
-        sessionId !== nav.sessionId.value
-      ) {
-        return;
-      }
+      // 两个独立查询并行读取；写入前统一校验请求归属，避免迟到响应跨会话落库。
+      const [page, pending] = await Promise.all([
+        ports.session.listMessages({
+          account_id: accountId,
+          session_id: sessionId,
+          cursor: null,
+          limit: PAGE_SIZE,
+          direction: 'older',
+        }),
+        ports.session.listPendingSends(accountId, sessionId),
+      ]);
+      if (!isCurrentRequest(version, accountId, sessionId, session)) return;
       for (const item of page.items) upsertCache(accountId, item);
       messageState.items = [...page.items].reverse();
-      pendingSends.value = await ports.session.listPendingSends(
-        accountId,
-        sessionId,
-      );
+      if (pendingVersion === pendingRequestVersion) {
+        pendingSends.value = pending;
+      }
       messageState.nextCursor = page.next_cursor;
       messageState.hasMore = page.has_more;
       if (page.has_more && !page.next_cursor) {
@@ -93,10 +108,38 @@ export function useMessages() {
         };
       }
     } catch (e) {
-      if (version !== messageState.requestVersion) return;
+      if (!isCurrentRequest(version, accountId, sessionId, session)) return;
       messageState.error = asAppError(e);
-    } finally {
-      if (version === messageState.requestVersion) messageState.loading = 'idle';
+      messageState.loading = 'idle';
+      return;
+    }
+    if (!isCurrentRequest(version, accountId, sessionId, session)) return;
+    messageState.loading = 'idle';
+  }
+
+  /** 发送状态区独立重查；同一会话的迟到响应不得覆盖较新的结果。 */
+  async function refreshPendingSends(): Promise<void> {
+    const accountId = nav.accountId.value;
+    const sessionId = nav.sessionId.value;
+    if (!accountId || !sessionId) {
+      pendingSends.value = [];
+      return;
+    }
+    const version = ++pendingRequestVersion;
+    const session = nav.sessionVersion.value;
+    try {
+      const items = await ports.session.listPendingSends(accountId, sessionId);
+      if (
+        version !== pendingRequestVersion ||
+        accountId !== nav.accountId.value ||
+        sessionId !== nav.sessionId.value ||
+        session !== nav.sessionVersion.value
+      ) {
+        return;
+      }
+      pendingSends.value = items;
+    } catch {
+      // 状态区刷新失败保留旧值；下一次事件或版本补偿会再查。
     }
   }
 
@@ -126,11 +169,7 @@ export function useMessages() {
         limit: PAGE_SIZE,
         direction: 'older',
       });
-      if (
-        version !== messageState.requestVersion ||
-        session !== nav.sessionVersion.value ||
-        sessionId !== nav.sessionId.value
-      ) {
+      if (!isCurrentRequest(version, accountId, sessionId, session)) {
         return 0;
       }
       for (const item of page.items) upsertCache(accountId, item);
@@ -143,11 +182,13 @@ export function useMessages() {
       messageState.hasMore = page.has_more;
       return older.length;
     } catch (e) {
-      if (version !== messageState.requestVersion) return 0;
+      if (!isCurrentRequest(version, accountId, sessionId, session)) return 0;
       messageState.error = asAppError(e);
       return 0;
     } finally {
-      if (version === messageState.requestVersion) messageState.loading = 'idle';
+      if (isCurrentRequest(version, accountId, sessionId, session)) {
+        messageState.loading = 'idle';
+      }
     }
   }
 
@@ -327,10 +368,25 @@ export function useMessages() {
     if (changed) applyCacheToList(accountId);
   }
 
+  async function reconcileCurrentVersion(): Promise<void> {
+    const accountId = nav.accountId.value;
+    if (!accountId) return;
+    try {
+      const version = await ports.account.getChangeVersion(accountId);
+      const applied = appliedVersionByAccount.get(accountId) ?? 0;
+      if (version <= applied) return;
+      appliedVersionByAccount.set(accountId, version);
+      if (nav.accountId.value === accountId) void loadInitial();
+    } catch {
+      // 账号可能刚被移除；焦点补偿失败不阻塞界面
+    }
+  }
+
   async function bindMailChanged(): Promise<void> {
     if (mailChangedBound) return;
     mailChangedBound = true;
     await ports.changeEvents.subscribeMailChanged((event) => {
+      appliedVersionByAccount.set(event.account_id, event.account_version);
       const accountId = nav.accountId.value;
       const sessionId = nav.sessionId.value;
       if (!accountId || !sessionId || event.account_id !== accountId) return;
@@ -339,12 +395,23 @@ export function useMessages() {
         entityCache.has(cacheKey(accountId, id)),
       );
       if (!touchesSession && !touchesMessage) return;
-      if (event.origin === 'user_action' && event.message_ids.length > 0) {
-        void applySendStates(accountId, event.message_ids);
+      if (event.origin === 'user_action') {
+        // 发送状态区不在 entityCache：直接重查，覆盖新增、状态变化和取消移除。
+        void refreshPendingSends();
+        if (event.message_ids.length > 0) {
+          void applySendStates(accountId, event.message_ids);
+        }
         return;
       }
       void loadInitial();
     });
+    if (!focusBound) {
+      focusBound = true;
+      window.addEventListener('focus', () => {
+        void reconcileCurrentVersion();
+      });
+      void reconcileCurrentVersion();
+    }
   }
 
   if (!watchBound) {
