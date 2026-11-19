@@ -133,17 +133,17 @@ pub async fn execute_claimed_attempt(
                 .wait(async {
                     Ok::<_, crate::infrastructure::error::InfraError>(
                         graph::mail::send_mail(
-                    &token,
-                    &GraphOutgoing {
-                    subject: snapshot.subject.clone(),
-                    body_content_type,
-                    body_content,
-                    to,
-                    cc,
-                    bcc,
-                        save_to_sent_items: true,
-                    },
-                )
+                            &token,
+                            &GraphOutgoing {
+                                subject: snapshot.subject.clone(),
+                                body_content_type,
+                                body_content,
+                                to,
+                                cc,
+                                bcc,
+                                save_to_sent_items: true,
+                            },
+                        )
                         .await,
                     )
                 })
@@ -156,10 +156,7 @@ pub async fn execute_claimed_attempt(
                     crate::domain::mail::SendStage::Data,
                 )),
             };
-            match accepted {
-                Ok(result) => Ok(result),
-                Err(err) => Err(classify_send_infra_error(err)),
-            }
+            accepted.map_err(classify_send_infra_error)
         }
     }
 }
