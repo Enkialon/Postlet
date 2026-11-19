@@ -49,9 +49,9 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
     };
     for account_id in account_ids {
         // 先取得账号许可再认领；许可覆盖网络与归档结果落库整个尝试。
-        let operation = MailOperation::new(Duration::from_secs(120));
+        let operation = MailOperation::new(Duration::from_secs(240));
         let Some(permit) =
-            gate.try_acquire_operation(account_id.as_str(), Some(operation))
+            gate.try_acquire_operation(account_id.as_str(), Some(operation.clone()))
         else {
             continue;
         };
@@ -65,7 +65,7 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
                 now + LEASE.as_millis() as i64,
                 &uuid::Uuid::new_v4().to_string(),
                 &uuid::Uuid::new_v4().to_string(),
-                4,
+                1,
             )
             .await
             .map_err(AppError::from)?
@@ -76,10 +76,12 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
         let db2 = db.clone();
         let paths2 = paths.clone();
         let account2 = account_id.clone();
+        let operation2 = operation.clone();
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
             for task in claimed {
-                let _ = run_attempt(&db2, &paths2, &account2, &task).await;
+                let _ =
+                    run_attempt(&db2, &paths2, &operation2, &account2, &task).await;
             }
         });
     }
@@ -89,10 +91,30 @@ async fn tick_once(db: &SqlitePool, paths: &AppPaths, gate: &MailSyncGate) -> Re
 async fn run_attempt(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &MailOperation,
     account_id: &AccountId,
     task: &ArchiveTask,
 ) -> Result<(), AppError> {
-    let result = append_once(db, paths, account_id, task).await;
+    let mut conn = db.acquire().await?;
+    let now = now_ms();
+    if operation.checkpoint().is_err() {
+        // 取消发生在远端写入前：安全退回可重试，不伪造 APPEND 结果。
+        archive_tasks::record_append_result(
+            &mut conn,
+            task,
+            ArchiveState::Retryable,
+            Some(now + 30_000),
+            Some("账号任务已取消，尚未执行 APPEND"),
+            None,
+            now,
+        )
+        .await
+        .map_err(AppError::from)?;
+        return Ok(());
+    }
+    drop(conn);
+
+    let result = append_once(db, paths, operation, account_id, task).await;
 
     let mut conn = db.acquire().await?;
     let now = now_ms();
@@ -173,6 +195,7 @@ async fn run_attempt(
 async fn append_once(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &MailOperation,
     account_id: &AccountId,
     task: &ArchiveTask,
 ) -> Result<Option<bool>, AppError> {
@@ -233,6 +256,7 @@ async fn append_once(
     let accepted = crate::infrastructure::imap::append_message_async(
         &endpoint,
         &auth,
+        operation,
         &binding,
         &mime,
     )

@@ -24,6 +24,7 @@ fn now_ms() -> i64 {
 pub async fn execute_claimed_attempt(
     db: &SqlitePool,
     paths: &AppPaths,
+    operation: &crate::infrastructure::mail::operation::MailOperation,
     account_id: &AccountId,
     task: &crate::domain::entities::SendTask,
 ) -> Result<crate::domain::mail::SendResult, AppError> {
@@ -75,12 +76,30 @@ pub async fn execute_claimed_attempt(
         SendConfig::Smtp(config) => {
             let (endpoint, auth) =
                 smtp::load_connection(&paths.credentials_dir, config).await?;
-            let result = smtp::send_raw_message(&endpoint, &auth, &mime, &envelope).await?;
-            Ok(result)
+            // 取消发生在建立连接/写入前：明确不发送。
+            operation
+                .checkpoint()
+                .map_err(AppError::from)?;
+            match operation
+                .wait(async {
+                    Ok::<_, crate::infrastructure::error::InfraError>(
+                        smtp::send_raw_message(&endpoint, &auth, &mime, &envelope).await,
+                    )
+                })
+                .await
+            {
+                Ok(result) => result.map_err(classify_send_infra_error),
+                // 外层超时/取消时无法证明服务器未接受，禁止自动重发。
+                Err(_) => Ok(crate::domain::mail::SendResult::new(
+                    crate::domain::mail::SendOutcome::Uncertain,
+                    crate::domain::mail::SendStage::Data,
+                )),
+            }
         }
         SendConfig::Graph(auth) => {
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
-            let token = graph::auth::get_access_token(&paths.credentials_dir, &config, auth)
+            let token = operation
+                .wait(graph::auth::get_access_token(&paths.credentials_dir, &config, auth))
                 .await
                 .map_err(AppError::from)?;
             let body_content_type = if snapshot.html_body.is_some() {
@@ -107,19 +126,36 @@ pub async fn execute_claimed_attempt(
                 .iter()
                 .map(|r| (r.address.clone(), r.name.clone()))
                 .collect();
-            let accepted = graph::mail::send_mail(
-                &token,
-                &GraphOutgoing {
+            operation
+                .checkpoint()
+                .map_err(AppError::from)?;
+            let accepted = match operation
+                .wait(async {
+                    Ok::<_, crate::infrastructure::error::InfraError>(
+                        graph::mail::send_mail(
+                    &token,
+                    &GraphOutgoing {
                     subject: snapshot.subject.clone(),
                     body_content_type,
                     body_content,
                     to,
                     cc,
                     bcc,
-                    save_to_sent_items: true,
-                },
-            )
-            .await;
+                        save_to_sent_items: true,
+                    },
+                )
+                        .await,
+                    )
+                })
+                .await
+            {
+                Ok(result) => result,
+                // 外层取消/超时后请求可能已到达服务器。
+                Err(_) => Ok(crate::domain::mail::SendResult::new(
+                    crate::domain::mail::SendOutcome::Uncertain,
+                    crate::domain::mail::SendStage::Data,
+                )),
+            };
             match accepted {
                 Ok(result) => Ok(result),
                 Err(err) => Err(classify_send_infra_error(err)),

@@ -108,7 +108,7 @@ async fn tick_once(
         // 先取得账号许可再认领：许可覆盖网络调用与结果落库整个尝试。
         let operation = MailOperation::new(Duration::from_secs(120));
         let Some(permit) =
-            gate.try_acquire_operation(account_id.as_str(), Some(operation))
+            gate.try_acquire_operation(account_id.as_str(), Some(operation.clone()))
         else {
             continue;
         };
@@ -124,7 +124,7 @@ async fn tick_once(
                 now + LEASE.as_millis() as i64,
                 &claim_token,
                 &attempt_id,
-                4,
+                1,
             )
             .await
             .map_err(AppError::from)?;
@@ -152,11 +152,12 @@ async fn tick_once(
         let paths2 = paths.clone();
         let changes2 = changes.clone();
         let account2 = account_id.clone();
+        let operation2 = operation.clone();
         tauri::async_runtime::spawn(async move {
             let _permit = permit;
             for task in claimed {
                 if let Err(error) =
-                    run_attempt(&db2, &paths2, &changes2, &account2, &task).await
+                    run_attempt(&db2, &paths2, &changes2, &operation2, &account2, &task).await
                 {
                     eprintln!("发送尝试失败: {}", error.message);
                 }
@@ -171,10 +172,48 @@ async fn run_attempt(
     db: &SqlitePool,
     paths: &AppPaths,
     changes: &ChangeDispatcher,
+    operation: &MailOperation,
     account_id: &AccountId,
     task: &crate::domain::entities::SendTask,
 ) -> Result<(), AppError> {
-    let result = outbound_use_case::execute_claimed_attempt(db, paths, account_id, task).await;
+    let now = now_ms();
+    if operation.checkpoint().is_err() {
+        // 取消发生在远端写入前：退回可重试，不触碰网络；本地失败只重试该收尾。
+        let mut tx = db.begin().await?;
+        let applied = send_tasks::record_result(
+            &mut tx,
+            account_id,
+            &task.task_id,
+            task.content_version,
+            task.attempt_id.as_deref().unwrap_or_default(),
+            task.claim_token.as_deref().unwrap_or_default(),
+            SendState::Retryable,
+            None,
+            Some(now + backoff_ms(task.attempts)),
+            Some("cancelled"),
+            Some("账号任务已取消，尚未开始发送"),
+            now,
+        )
+        .await
+        .map_err(AppError::from)?;
+        let version = if applied {
+            Some(
+                accounts::bump_change_version(&mut tx, account_id)
+                    .await
+                    .map_err(AppError::from)?,
+            )
+        } else {
+            None
+        };
+        tx.commit().await?;
+        if let Some(version) = version {
+            dispatch_send_change(db, changes, account_id, &task.message_id, version).await;
+        }
+        return Ok(());
+    }
+
+    let result =
+        outbound_use_case::execute_claimed_attempt(db, paths, operation, account_id, task).await;
 
     let now = now_ms();
     match result {

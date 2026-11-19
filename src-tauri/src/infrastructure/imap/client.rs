@@ -280,25 +280,28 @@ fn classify_append_result(
         Err(imap::Error::ConnectionLost) | Err(imap::Error::Io(_)) | Err(imap::Error::Parse(_)) => {
             Ok(None)
         }
-        Err(error) => Err(InfraError::Remote {
-            message: format!("IMAP APPEND 未确认: {error}"),
-            retryable: true,
-        }),
+        Err(error) => {
+            // 其余错误无法证明服务器未保存：保留未知，禁止自动重发。
+            eprintln!("IMAP APPEND 未确认: {error}");
+            Ok(None)
+        }
     }
 }
 
 pub async fn append_message_async(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
+    operation: &MailOperation,
     folder: &str,
     mime: &[u8],
 ) -> Result<Option<bool>, InfraError> {
-    let operation = MailOperation::new(Duration::from_secs(180));
-    let mut session = super::connection::session_login(endpoint, auth, &operation).await?;
+    // 连接/登录失败可证明尚未 APPEND；使用调用方的账号取消对象，不再另建。
+    let mut session = super::connection::session_login(endpoint, auth, operation).await?;
     let folder = folder.to_string();
     let mime = mime.to_vec();
     operation
-        .run_blocking(move || {
+        .run_blocking_preserving_result(move || {
+            // APPEND 结果与 logout 结果分开：清理失败不得覆盖已取得的 APPEND 事实。
             let out = append_message(&mut session, &folder, &mime);
             let _ = session.logout();
             out

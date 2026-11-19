@@ -200,6 +200,53 @@ impl MailOperation {
             message: "邮件阻塞任务异常退出".into(),
         })?
     }
+
+    /// 超时/取消时仍等待阻塞线程退出，并保留线程自身已经取得的结果。
+    ///
+    /// 仅用于有副作用的远端写入（如 APPEND）：调用方必须自行区分「线程未开始」
+    /// 与「开始后结果未知」。
+    pub async fn run_blocking_preserving_result<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> Result<T, InfraError> + Send + 'static,
+    ) -> Result<T, InfraError> {
+        let deadline = self.0.deadline;
+        if Instant::now() >= deadline {
+            self.cancel();
+        }
+        self.checkpoint()?;
+        let guard = self.cancel_on_drop();
+        let operation = self.clone();
+        let mut worker = tokio::task::spawn_blocking(move || {
+            operation.checkpoint()?;
+            work()
+        });
+        let interrupted = tokio::select! {
+            result = &mut worker => {
+                if Instant::now() >= deadline {
+                    self.cancel();
+                }
+                guard.disarm();
+                return result.map_err(|_| InfraError::Network {
+                    message: "邮件阻塞任务异常退出".into(),
+                })?;
+            }
+            _ = self.cancelled() => {
+                self.cancel();
+                true
+            }
+            _ = tokio::time::sleep_until(deadline.min(self.0.deadline).into()) => {
+                self.cancel();
+                true
+            }
+        };
+        debug_assert!(interrupted);
+        // 必须先等待线程真正退出，再返回它保留的结果。
+        let result = worker.await.map_err(|_| InfraError::Network {
+            message: "邮件阻塞任务异常退出".into(),
+        })?;
+        guard.disarm();
+        result
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +254,41 @@ mod tests {
     use super::*;
     use std::io::Read;
     use std::net::TcpListener;
+
+    #[tokio::test]
+    async fn preserving_result_waits_for_worker_and_keeps_success_after_deadline() {
+        let operation = MailOperation::new(Duration::from_millis(50));
+        let control = operation.clone();
+        let start = Instant::now();
+        let result: Result<Option<bool>, InfraError> = operation
+            .run_blocking_preserving_result(move || {
+                // 模拟 APPEND 已成功、后续清理被取消。
+                control.cancel();
+                Ok::<_, InfraError>(Some(true))
+            })
+            .await;
+        assert_eq!(result.unwrap(), Some(true));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(operation.checkpoint().is_err());
+    }
+
+    #[tokio::test]
+    async fn preserving_result_keeps_unknown_after_cancel() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let control = operation.clone();
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            control.cancel();
+        });
+        let result: Result<Option<bool>, InfraError> = operation
+            .run_blocking_preserving_result(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok::<_, InfraError>(None)
+            })
+            .await;
+        canceller.await.unwrap();
+        assert_eq!(result.unwrap(), None);
+    }
 
     #[tokio::test]
     async fn deadline_interrupts_established_socket_and_drains_worker() {
