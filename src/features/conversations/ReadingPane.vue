@@ -73,7 +73,12 @@ let loadingOlder = false;
 
 /** 后端返回含已删；默认前端隐藏本地删除意图与位置失效 */
 const displayMessages = computed(() => {
-  const effective = messageState.items.filter(
+  const byId = new Map(messageState.items.map((item) => [item.message.id, item]));
+  for (const item of pendingSends.value) byId.set(item.message.id, item);
+  const time = (item: MessageWithRecipients) => item.message.received_at ?? item.message.sent_at ?? 0;
+  const effective = [...byId.values()].sort((a, b) =>
+    time(a) - time(b) || a.message.id.localeCompare(b.message.id),
+  ).filter(
     (item) =>
       item.message.location_status === null ||
       item.message.location_status === 'present',
@@ -489,7 +494,15 @@ async function confirmDeleteMessage(): Promise<void> {
   }
 }
 
-async function onMailSent(_result: ComposeSendResult): Promise<void> {
+async function onMailSent(result: ComposeSendResult): Promise<void> {
+  const item = result.message;
+  if (
+    item.message.account_id !== nav.accountId.value ||
+    item.message.session_id !== nav.sessionId.value
+  ) return;
+  if (!pendingSends.value.some((existing) => existing.message.id === item.message.id)) {
+    pendingSends.value = [item, ...pendingSends.value];
+  }
   pendingStickBottom.value = true;
   await loadInitial();
   void refreshConversations();
@@ -595,30 +608,6 @@ watch(
           <div
             class="@container/chat px-2.5 py-3 @[28rem]/chat:px-4 @[28rem]/chat:py-4 @[40rem]/chat:px-5 @[40rem]/chat:py-5"
           >
-            <section
-              v-if="pendingSends.length > 0"
-              class="mb-5 rounded-lg border border-border-subtle bg-surface-elevated p-3"
-              aria-label="发信记录"
-            >
-              <p
-                class="m-0 mb-2 text-[12px] font-medium tracking-wide text-text-tertiary uppercase"
-              >
-                发信记录
-              </p>
-              <div class="flex flex-col gap-3">
-                <MessageCard
-                  v-for="item in pendingSends"
-                  :key="item.message.id"
-                  :item="item"
-                  :selected="mailDetail?.message.id === item.message.id"
-                  :preferred-name="selected?.contact_display_name"
-                  @select="openMailReading(item)"
-                  @delete="requestDeleteMessage(item.message.id)"
-                  @reassign="openReassign"
-                  @reply="onReplyMessage(item)"
-                />
-              </div>
-            </section>
             <div
               class="relative w-full min-w-0"
               :style="{ height: `${messagesTotalSize}px` }"
@@ -644,6 +633,7 @@ watch(
                   @select="openMailReading(displayMessages[row.index]!)"
                   @reply="onReplyMessage(displayMessages[row.index]!)"
                   @mark-unread="
+                    displayMessages[row.index]!.message.location_status === 'present' &&
                     markRead([displayMessages[row.index]!.message.id], false)
                   "
                   @delete="

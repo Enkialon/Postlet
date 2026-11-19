@@ -200,7 +200,8 @@ function onMenuSelect(id: string): void {
         <p
           v-if="
             item.message.has_attachments ||
-            (item.send_state && item.send_state !== 'accepted') ||
+            item.send_state === 'failed' ||
+            item.send_state === 'uncertain' ||
             item.pending_delete ||
             item.folder_role === 'junk' ||
             item.pending_junk_move
@@ -212,13 +213,7 @@ function onMenuSelect(id: string): void {
           <span v-if="item.pending_junk_move" class="text-text-tertiary">
             {{ item.pending_junk_move === 'to_junk' ? '标为垃圾待确认' : '移出垃圾待确认' }}
           </span>
-          <span v-if="item.send_state === 'queued'">排队发送</span>
-          <span v-else-if="item.send_state === 'sending'">发送中</span>
-          <span v-else-if="item.send_state === 'retryable'"
-            class="text-text-tertiary"
-            >稍后重试</span
-          >
-          <span v-else-if="item.send_state === 'failed'" class="text-danger"
+          <span v-if="item.send_state === 'failed'" class="text-danger"
             >发送失败</span
           >
           <span v-else-if="item.send_state === 'uncertain'" class="text-danger"
