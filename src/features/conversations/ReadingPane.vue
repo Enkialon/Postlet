@@ -432,7 +432,14 @@ async function openMailReading(item: MessageWithRecipients): Promise<void> {
   mailDetail.value = item;
   nav.selectMessage(item.message.id);
   nav.setDetailOpen(true);
+  const accountId = nav.accountId.value;
+  const sessionVersion = nav.sessionVersion.value;
   await openMessage(item.message.id);
+  if (
+    mailDetail.value?.message.id !== item.message.id ||
+    nav.accountId.value !== accountId ||
+    nav.sessionVersion.value !== sessionVersion
+  ) return;
   // openMessage 可能更新了缓存，侧栏跟进最新快照
   const next = messageState.items.find((i) => i.message.id === item.message.id);
   if (next) mailDetail.value = next;
@@ -657,15 +664,6 @@ watch(
             </p>
           </div>
         </OverlayScrollArea>
-
-        <!-- 邮件详情打开时：点左侧空白关闭 -->
-        <button
-          v-if="showingMailDetail"
-          type="button"
-          class="absolute inset-0 z-[3] cursor-default border-0 bg-transparent"
-          aria-label="关闭邮件"
-          @click="closeDetailPanel"
-        />
 
         <div
           v-if="!composeFull && nav.detailOpen.value && (mailDetail || selected)"
