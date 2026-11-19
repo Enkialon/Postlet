@@ -5,10 +5,12 @@ import { buildFolderTree, flattenFolderTree } from './folderTree';
 import { formatTimestamp } from '../../shared/formatting/format';
 import Button from '../../shared/ui/Button.vue';
 import Avatar from '../../shared/ui/Avatar.vue';
+import Dialog from '../../shared/ui/Dialog.vue';
 import AddAccountDialog from '../accounts/AddAccountDialog.vue';
 import type { Account, MailFolderSyncState } from '../../domain/entities';
 import type { AccountId } from '../../domain/types';
 import type { AppLocale } from '../../i18n';
+import { asAppError } from '../../shared/errors/asAppError';
 
 const {
   accountList,
@@ -19,6 +21,7 @@ const {
   syncingContactIds,
   refreshingFoldersId,
   togglingFolderKey,
+  junkOverrideSavingKey,
   error,
   folderErrorById,
   mailProgressById,
@@ -29,6 +32,7 @@ const {
   triggerContacts,
   refreshMailFolders,
   setFolderSyncEnabled,
+  setFolderJunkOverride,
   folderToggleKey,
   updateAccountSettings,
   updateAccountAliases,
@@ -118,6 +122,66 @@ function onFolderSyncToggle(
     folderId,
     (e.target as HTMLInputElement).checked,
   );
+}
+
+/** 文件夹设置：默认展示登录后发现的生效角色，只在用户修改时保存覆盖。 */
+const junkDialog = ref<{
+  accountId: AccountId;
+  folderId: string;
+  displayName: string;
+  initialChoice: boolean;
+  choice: boolean;
+} | null>(null);
+const junkDialogError = ref<string | null>(null);
+
+const junkDialogBusy = computed(
+  () =>
+    junkDialog.value != null &&
+    junkOverrideSavingKey.value ===
+      folderToggleKey(junkDialog.value.accountId, junkDialog.value.folderId),
+);
+
+function openJunkDialog(
+  accountId: AccountId,
+  folder: MailFolderSyncState,
+): void {
+  junkDialogError.value = null;
+  junkDialog.value = {
+    accountId,
+    folderId: folder.folder_id,
+    displayName: folder.display_name || folder.folder_id,
+    initialChoice: folder.effective_role === 'junk',
+    choice: folder.effective_role === 'junk',
+  };
+}
+
+function closeJunkDialog(): void {
+  junkDialog.value = null;
+  junkDialogError.value = null;
+}
+
+function setJunkChoice(choice: boolean): void {
+  if (!junkDialog.value) return;
+  junkDialog.value = { ...junkDialog.value, choice };
+}
+
+async function confirmJunkDialog(): Promise<void> {
+  const dialog = junkDialog.value;
+  if (!dialog || junkDialogBusy.value) return;
+  if (dialog.choice === dialog.initialChoice) {
+    closeJunkDialog();
+    return;
+  }
+  try {
+    await setFolderJunkOverride(
+      dialog.accountId,
+      dialog.folderId,
+      dialog.choice,
+    );
+    closeJunkDialog();
+  } catch (e) {
+    junkDialogError.value = asAppError(e).message;
+  }
 }
 </script>
 
@@ -448,6 +512,14 @@ function onFolderSyncToggle(
                             folderStatusLabel(f.sync_status, f.synced_at)
                           }}
                         </span>
+                        <Button
+                          variant="ghost"
+                          class="!px-2 shrink-0"
+                          :aria-label="`${f.display_name || f.folder_id} 的更多设置`"
+                          @click="openJunkDialog(account.id, f)"
+                        >
+                          更多设置
+                        </Button>
                       </li>
                     </ul>
                   </div>
@@ -473,6 +545,47 @@ function onFolderSyncToggle(
         </section>
       </div>
     </div>
+
+    <Dialog
+      :open="junkDialog != null"
+      title="文件夹设置"
+      confirm-label="保存"
+      :confirming="junkDialogBusy"
+      @close="closeJunkDialog"
+      @confirm="confirmJunkDialog"
+    >
+      <p class="m-0 mb-3" v-no-i18n>{{ junkDialog?.displayName }}</p>
+      <fieldset
+        class="m-0 flex items-center gap-4 border-0 p-0 text-[14px]"
+        :disabled="junkDialogBusy"
+        aria-labelledby="folder-junk-role-label"
+      >
+        <span id="folder-junk-role-label" class="font-medium">是否垃圾文件夹：</span>
+        <label class="flex cursor-pointer items-center gap-2">
+          <input
+            type="radio"
+            name="folder-junk-role"
+            class="accent-brand"
+            :checked="junkDialog?.choice === true"
+            @change="setJunkChoice(true)"
+          />
+          是
+        </label>
+        <label class="flex cursor-pointer items-center gap-2">
+          <input
+            type="radio"
+            name="folder-junk-role"
+            class="accent-brand"
+            :checked="junkDialog?.choice === false"
+            @change="setJunkChoice(false)"
+          />
+          否
+        </label>
+      </fieldset>
+      <p v-if="junkDialogError" class="mt-2 mb-0 text-[13px] text-danger">
+        {{ junkDialogError }}
+      </p>
+    </Dialog>
 
     <AddAccountDialog
       :open="addAccountOpen"

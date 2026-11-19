@@ -19,6 +19,10 @@ pub struct MailFolderSyncState {
     pub role: FolderRole,
     /// 角色来源：服务器 > 手动 > 名称猜测
     pub role_source: RoleSource,
+    /// 用户三态覆盖：None=自动识别，Some(true)=是垃圾夹，Some(false)=不是垃圾夹
+    pub junk_override: Option<bool>,
+    /// 生效角色：由 `role` 与 `junk_override` 派生，不单独落库
+    pub effective_role: FolderRole,
     /// 是否纳入账户全局同步
     pub sync_enabled: bool,
     /// Adapter 提供的不透明远端代次；与同步进度分开。

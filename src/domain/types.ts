@@ -47,6 +47,9 @@ export type SendState =
   | 'uncertain'
   | 'cancelled';
 
+/** 垃圾移动方向（待确认意图投影） */
+export type JunkMoveDirection = 'to_junk' | 'out_of_junk';
+
 /** 文件夹角色（IMAP SPECIAL-USE 对齐） */
 export type FolderRole =
   | 'inbox'

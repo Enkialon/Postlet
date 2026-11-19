@@ -44,6 +44,9 @@ pub struct MessagePreview {
     pub is_outbound: bool,
     pub has_attachments: bool,
     pub importance: Importance,
+    /// 最后一条消息的生效文件夹角色（垃圾邮件标记用）
+    #[serde(default)]
+    pub folder_role: Option<crate::domain::services::FolderRole>,
 }
 
 /// 会话列表项（含预览与显示名）
@@ -66,6 +69,7 @@ impl From<crate::infrastructure::repository::sessions::SessionProjection> for Se
             row.session.normalized_address.as_ref().map(|a| a.as_str()),
             row.group_name.as_deref(),
         );
+        let last_message_role = row.last_message_role;
         let last_message_preview = row.last_message.map(|m| MessagePreview {
             id: m.id,
             subject: m.subject,
@@ -78,6 +82,7 @@ impl From<crate::infrastructure::repository::sessions::SessionProjection> for Se
             is_outbound: m.is_outbound,
             has_attachments: m.has_attachments,
             importance: m.importance,
+            folder_role: last_message_role,
         });
         Self {
             session: row.session,

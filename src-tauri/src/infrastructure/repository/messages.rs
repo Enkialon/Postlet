@@ -22,7 +22,7 @@ pub async fn get(
     };
     let message = super::rows::message(&row)?;
     let recipients = load_recipients(conn, account_id, &message.id).await?;
-    let (send_state, pending_delete, folder_role) =
+    let (send_state, pending_delete, folder_role, pending_junk_move) =
         load_projection(conn, account_id, &message.id).await?;
     Ok(Some(MessageWithRecipients {
         message,
@@ -30,6 +30,7 @@ pub async fn get(
         send_state,
         pending_delete,
         folder_role,
+        pending_junk_move,
     }))
 }
 
@@ -51,7 +52,7 @@ pub async fn get_by_location(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
-    let (send_state, pending_delete, folder_role) =
+    let (send_state, pending_delete, folder_role, pending_junk_move) =
         load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
@@ -59,6 +60,7 @@ pub async fn get_by_location(
         send_state,
         pending_delete,
         folder_role,
+        pending_junk_move,
     }))
 }
 
@@ -84,7 +86,7 @@ pub async fn find_by_internet_message_id(
     let message = super::rows::message(&row)?;
     let id = message.id.clone();
     let recipients = load_recipients(conn, account_id, &id).await?;
-    let (send_state, pending_delete, folder_role) =
+    let (send_state, pending_delete, folder_role, pending_junk_move) =
         load_projection(conn, account_id, &id).await?;
     Ok(Some(MessageWithRecipients {
         message,
@@ -92,6 +94,7 @@ pub async fn find_by_internet_message_id(
         send_state,
         pending_delete,
         folder_role,
+        pending_junk_move,
     }))
 }
 
@@ -104,6 +107,7 @@ async fn load_projection(
         Option<crate::domain::entities::SendState>,
         bool,
         Option<crate::domain::services::FolderRole>,
+        Option<crate::domain::entities::JunkMoveDirection>,
     ),
     InfraError,
 > {
@@ -123,22 +127,34 @@ async fn load_projection(
     .bind(message_id.as_str())
     .fetch_one(&mut *conn)
     .await?;
-    let folder_role: Option<String> = sqlx::query_scalar(
-        "SELECT f.role FROM messages m
-         JOIN mail_folder_sync_state f
-           ON f.account_id = m.account_id AND f.folder_id = m.folder_id
-         WHERE m.account_id = ? AND m.id = ?",
-    )
-    .bind(account_id.as_str())
-    .bind(message_id.as_str())
-    .fetch_optional(&mut *conn)
-    .await?;
+    let folder_role: Option<String> =
+        sqlx::query_scalar(&super::folder_states::message_effective_role_sql())
+        .bind(account_id.as_str())
+        .bind(message_id.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
     Ok((
         send_state.and_then(|s| crate::domain::entities::SendState::parse(&s)),
         pending_delete,
         folder_role
             .and_then(|r| crate::domain::services::FolderRole::parse(&r)),
+        super::mutations::effective_junk_move(conn, account_id, message_id).await?,
     ))
+}
+
+/// 消息所在文件夹的生效角色（列表预览与详情共用同一规则）。
+pub async fn effective_folder_role(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<Option<crate::domain::services::FolderRole>, InfraError> {
+    let role: Option<String> =
+        sqlx::query_scalar(&super::folder_states::message_effective_role_sql())
+            .bind(account_id.as_str())
+            .bind(message_id.as_str())
+            .fetch_optional(&mut *conn)
+            .await?;
+    Ok(role.and_then(|r| crate::domain::services::FolderRole::parse(&r)))
 }
 
 async fn load_recipients(
@@ -353,6 +369,23 @@ pub async fn list_session_ids(
     Ok(out)
 }
 
+/// 文件夹内现场存在的消息所属会话（角色变更后重投影通知用）。
+pub async fn list_session_ids_in_folder(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &crate::domain::value_objects::FolderId,
+) -> Result<Vec<SessionId>, InfraError> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT session_id FROM messages
+         WHERE account_id = ? AND folder_id = ? AND location_status = 'present'\n         ORDER BY session_id",
+    )
+    .bind(account_id.as_str())
+    .bind(folder_id.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(SessionId::new).collect())
+}
+
 /// 列出会话内非远端删除的邮件 id。
 pub async fn list_ids_by_session(
     conn: &mut SqliteConnection,
@@ -399,7 +432,7 @@ pub async fn list_pending_sends(
     for row in &rows {
         let message = super::rows::message(row)?;
         let recipients = load_recipients(conn, account_id, &message.id).await?;
-        let (send_state, pending_delete, folder_role) =
+        let (send_state, pending_delete, folder_role, pending_junk_move) =
             load_projection(conn, account_id, &message.id).await?;
         items.push(MessageWithRecipients {
             message,
@@ -407,6 +440,7 @@ pub async fn list_pending_sends(
             send_state,
             pending_delete,
             folder_role,
+            pending_junk_move,
         });
     }
     Ok(items)

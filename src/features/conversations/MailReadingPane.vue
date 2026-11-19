@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
-import type { RecipientRole } from '../../domain/types';
+import type { JunkMoveDirection, RecipientRole } from '../../domain/types';
 import {
   addressHoverTitle,
   displayNameOrAddress,
@@ -22,26 +22,34 @@ const props = defineProps<{
   item: MessageWithRecipients;
   bodyLoading: boolean;
   bodyError: string | null;
+  /** 移动请求进行中：防重复提交 */
+  junkMoveBusy?: boolean;
+  /** 移动失败提示；失败后仍按原角色展示 */
+  junkMoveError?: string | null;
   /** 会话联系人昵称；from_name 缺失或等于邮箱时回退 */
   preferredName?: string | null;
 }>();
 
-/** 垃圾邮件默认不渲染正文；用户显式确认后才显示 */
-const junkBodyRevealed = ref(false);
-watch(
-  () => [props.item.message.account_id, props.item.message.id] as const,
-  () => {
-    junkBodyRevealed.value = false;
-  },
+/** 正文与右上角动作由同一生效角色决定；标为垃圾一提交就按文本展示 */
+const junk = computed(
+  () =>
+    props.item.folder_role === 'junk' ||
+    props.item.pending_junk_move === 'to_junk',
 );
-
-const junk = computed(() => props.item.folder_role === 'junk');
-const canRenderBody = computed(() => !junk.value || junkBodyRevealed.value);
+/** 本地发信记录、无远端位置、删除或移动待确认时不允许再移动 */
+const canMoveJunk = computed(
+  () =>
+    props.item.message.location_status === 'present' &&
+    props.item.message.remote_key != null &&
+    !props.item.pending_delete &&
+    !props.item.pending_junk_move,
+);
 
 const emit = defineEmits<{
   close: [];
   retryBody: [];
   delete: [];
+  moveJunk: [direction: JunkMoveDirection];
 }>();
 
 const showMoreMeta = ref(false);
@@ -152,6 +160,23 @@ const folderLabel = computed(
             {{ item.message.subject || '（无主题）' }}
           </h1>
           <div class="flex shrink-0 items-center gap-1">
+            <span
+              v-if="item.pending_junk_move"
+              class="px-2 text-[12px] text-text-secondary"
+            >{{
+              item.pending_junk_move === 'to_junk'
+                ? '标为垃圾待确认'
+                : '移出垃圾待确认'
+            }}</span>
+            <Button
+              v-else-if="canMoveJunk"
+              variant="ghost"
+              class="!px-2 shrink-0"
+              :disabled="junkMoveBusy"
+              @click="emit('moveJunk', junk ? 'out_of_junk' : 'to_junk')"
+            >
+              {{ junk ? '移出垃圾邮件' : '标为垃圾邮件' }}
+            </Button>
             <Button
               v-if="!item.pending_delete"
               variant="ghost"
@@ -175,6 +200,14 @@ const folderLabel = computed(
             </Button>
           </div>
         </div>
+
+        <p
+          v-if="junkMoveError"
+          class="mt-0 mb-2 text-[12px] text-danger"
+          role="alert"
+        >
+          {{ junkMoveError }}
+        </p>
 
         <div class="flex items-start gap-3">
           <Avatar
@@ -303,28 +336,12 @@ const folderLabel = computed(
           >
             此邮件正文为空
           </p>
-          <div v-else-if="junk && !canRenderBody" class="mt-4 grid justify-items-start gap-2">
-            <p class="m-0 text-[14px] text-danger">
-              这封邮件来自垃圾邮件夹，正文可能含不安全内容，默认不渲染。
-            </p>
-            <Button
-              variant="ghost"
-              @click="
-                junkBodyRevealed = true;
-                emit('retryBody');
-              "
-            >
-              仍要查看正文
-            </Button>
-          </div>
-          <div
-            v-else-if="item.message.body_content != null"
-            class="py-1 text-text-primary"
-          >
+          <div v-else-if="item.message.body_content != null" class="py-1 text-text-primary">
             <MailBodyView
               :key="`${item.message.account_id}:${item.message.id}`"
               :content="item.message.body_content"
               :content-type="item.message.body_content_type"
+              :folder-role="junk ? 'junk' : (item.folder_role ?? null)"
               :title="item.message.subject || '邮件正文'"
             />
           </div>

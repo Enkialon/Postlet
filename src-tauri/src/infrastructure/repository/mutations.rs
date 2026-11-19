@@ -286,6 +286,53 @@ pub async fn put_delete(
     require_target_written(result.rows_affected())
 }
 
+/// 标为垃圾 / 移出垃圾：冻结源位置并记录已解析的目标文件夹。
+/// 目标无效（不存在、已退役、协议不一致、与源相同）时 INSERT…SELECT 不命中，必须报错。
+pub async fn put_junk_move(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+    kind: PendingMutationKind,
+    destination: &crate::domain::value_objects::FolderId,
+) -> Result<(), InfraError> {
+    debug_assert!(matches!(
+        kind,
+        PendingMutationKind::Junk | PendingMutationKind::Unjunk
+    ));
+    let now = now_ms();
+    let result = sqlx::query(
+        "INSERT INTO pending_message_mutations (
+            account_id, message_id, kind, desired_is_read, version, attempts, available_at, last_error, target_folder_id, target_remote_key, target_location_revision, target_binding_revision, destination_folder_id
+         ) SELECT m.account_id, m.id, ?, NULL, 1, 0, ?, NULL, m.folder_id, m.remote_key, m.location_revision, f.binding_revision, dest.folder_id
+           FROM messages m
+           JOIN mail_folder_sync_state f ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+           JOIN mail_folder_sync_state dest ON dest.account_id = m.account_id AND dest.folder_id = ?
+                AND dest.is_retired = 0 AND dest.protocol = f.protocol AND dest.folder_id != m.folder_id
+           WHERE m.account_id = ? AND m.id = ? AND m.location_status = 'present' AND f.is_retired = 0
+         ON CONFLICT(account_id, message_id) DO UPDATE SET
+            target_folder_id=excluded.target_folder_id,
+            target_remote_key=excluded.target_remote_key,
+            target_location_revision=excluded.target_location_revision,
+            target_binding_revision=excluded.target_binding_revision,
+            destination_folder_id=excluded.destination_folder_id,
+            kind=excluded.kind,
+            is_active=1,
+            desired_is_read=NULL,
+            version=pending_message_mutations.version + 1,
+            attempts=0,
+            available_at=excluded.available_at,
+            last_error=NULL",
+    )
+    .bind(kind.as_str())
+    .bind(now)
+    .bind(destination.as_str())
+    .bind(account_id.as_str())
+    .bind(message_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    require_target_written(result.rows_affected())
+}
+
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -409,6 +456,46 @@ pub async fn validate_target(
           AND m.location_revision = p.target_location_revision AND f.binding_revision = p.target_binding_revision")
         .bind(mutation.account_id.as_str()).bind(mutation.message_id.as_str()).bind(mutation.version).bind(protocol.as_str())
         .fetch_optional(conn).await?)
+}
+
+/// 待移动意图的目标文件夹：仍存活、协议一致，并返回其当前绑定与生效角色。
+/// 文件夹退役、协议变化或角色不再符合方向时返回 None，由调用方明确失败。
+pub async fn resolve_move_destination(
+    conn: &mut SqliteConnection,
+    mutation: &PendingMessageMutation,
+    protocol: crate::domain::value_objects::ReceiveProtocol,
+) -> Result<Option<(String, crate::domain::services::FolderRole)>, InfraError> {
+    let Some(destination) = mutation.destination_folder_id.as_ref() else {
+        return Ok(None);
+    };
+    let sql = format!(
+        "SELECT f.remote_binding, {} FROM mail_folder_sync_state f
+         WHERE f.account_id = ? AND f.folder_id = ? AND f.is_retired = 0 AND f.protocol = ?",
+        super::folder_states::EFFECTIVE_ROLE_SQL
+    );
+    let row = sqlx::query(&sql)
+        .bind(mutation.account_id.as_str())
+        .bind(destination.as_str())
+        .bind(protocol.as_str())
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let binding: String = row.try_get(0)?;
+    let role: String = row.try_get(1)?;
+    Ok(crate::domain::services::FolderRole::parse(&role).map(|role| (binding, role)))
+}
+
+/// 当前生效的垃圾移动方向（源位置与绑定均未变）；用于读模型投影。
+pub async fn effective_junk_move(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    message_id: &MessageId,
+) -> Result<Option<crate::domain::entities::JunkMoveDirection>, InfraError> {
+    Ok(get_effective(conn, account_id, message_id)
+        .await?
+        .and_then(|mutation| crate::domain::entities::JunkMoveDirection::from_kind(mutation.kind)))
 }
 
 #[cfg(test)]

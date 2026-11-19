@@ -144,18 +144,22 @@ pub async fn list(
         qb.push(")");
     }
     if !include_excluded_folders {
-        // 普通范围排除 Trash/Junk/Drafts/All：会话至少有一条落在其它角色的可见消息
+        // 默认范围只排除 Trash/Drafts/All：已同步的垃圾邮件默认可见（生效角色判定）
         qb.push(
             ") AND EXISTS (SELECT 1 FROM messages vm
-                LEFT JOIN mail_folder_sync_state vf
-                  ON vf.account_id = vm.account_id AND vf.folder_id = vm.folder_id
+                LEFT JOIN mail_folder_sync_state f
+                  ON f.account_id = vm.account_id AND f.folder_id = vm.folder_id
                 WHERE vm.account_id = sessions.account_id AND vm.session_id = sessions.id
                   AND (vm.location_status = 'present'
                        OR (vm.location_status IS NULL AND EXISTS (
                            SELECT 1 FROM send_tasks st
                            WHERE st.account_id = vm.account_id AND st.message_id = vm.id
                              AND st.state <> 'cancelled')))
-                  AND (vf.role IS NULL OR vf.role NOT IN ('trash','junk','drafts','all'))
+                  AND (f.role IS NULL OR ",
+        );
+        qb.push(super::folder_states::EFFECTIVE_ROLE_SQL);
+        qb.push(
+            " NOT IN ('trash','drafts','all'))
             ) ORDER BY (last_message_at IS NULL), last_message_at DESC, account_id ASC, id ASC LIMIT ",
         );
     } else {
@@ -292,9 +296,16 @@ async fn enrich_item(
     } else {
         None
     };
+    let last_message_role = match last_message.as_ref() {
+        Some(message) => {
+            super::messages::effective_folder_role(conn, &session.account_id, &message.id).await?
+        }
+        None => None,
+    };
     Ok(SessionProjection {
         session,
         last_message,
+        last_message_role,
         contact_display_name,
         group_name,
     })
@@ -486,6 +497,7 @@ pub async fn list_messages(
     let mut items = Vec::with_capacity(message_rows.len());
     for row in &message_rows {
         let message = super::rows::message(row)?;
+        let message_id = message.id.clone();
         let recipients = sqlx::query(
             "SELECT * FROM message_recipients WHERE account_id = ? AND message_id = ? ORDER BY role, seq",
         )
@@ -512,12 +524,8 @@ pub async fn list_messages(
         .bind(message.id.as_str())
         .fetch_one(&mut *conn)
         .await?;
-        let folder_role: Option<String> = sqlx::query_scalar(
-            "SELECT f.role FROM messages m
-             JOIN mail_folder_sync_state f
-               ON f.account_id = m.account_id AND f.folder_id = m.folder_id
-             WHERE m.account_id = ? AND m.id = ?",
-        )
+        let folder_role: Option<String> =
+            sqlx::query_scalar(&super::folder_states::message_effective_role_sql())
         .bind(account_id.as_str())
         .bind(message.id.as_str())
         .fetch_optional(&mut *conn)
@@ -530,6 +538,12 @@ pub async fn list_messages(
             pending_delete,
             folder_role: folder_role
                 .and_then(|r| crate::domain::services::FolderRole::parse(&r)),
+            pending_junk_move: super::mutations::effective_junk_move(
+                &mut *conn,
+                account_id,
+                &message_id,
+            )
+            .await?,
         });
     }
     let next_cursor = if has_more {
@@ -771,4 +785,6 @@ pub struct SessionProjection {
     pub contact_display_name: Option<String>,
     pub group_name: Option<String>,
     pub last_message: Option<crate::domain::entities::Message>,
+    /// 最后一条消息的生效文件夹角色（列表标记用）
+    pub last_message_role: Option<crate::domain::services::FolderRole>,
 }

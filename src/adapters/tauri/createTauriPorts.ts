@@ -16,6 +16,7 @@ import type {
   MailSyncProgress,
   MarkMessagesReadCommand,
   MergeSessionsCommand,
+  MoveMessageJunkCommand,
   ReassignMessagesCommand,
   RenameGroupCommand,
   SaveComposeDraftCommand,
@@ -23,6 +24,7 @@ import type {
   SessionListItem,
   SessionListQuery,
   SessionMessagesQuery,
+  SetFolderJunkOverrideCommand,
   SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
@@ -95,6 +97,8 @@ export function createTauriPorts(): AppPorts {
         invoke<MailFolderSyncState[]>('refresh_mail_folders', { accountId }),
       setFolderSyncEnabled: (cmd: SetFolderSyncEnabledCommand) =>
         invoke<MailFolderSyncState>('set_folder_sync_enabled', { cmd }),
+      setFolderJunkOverride: (cmd: SetFolderJunkOverrideCommand) =>
+        invoke<MailFolderSyncState>('set_folder_junk_override', { cmd }),
     },
     contact: {
       listContacts: (query: ContactListQuery) =>
@@ -145,6 +149,8 @@ export function createTauriPorts(): AppPorts {
         invoke<void>('mark_messages_read', { cmd }),
       deleteMessages: (cmd: DeleteMessagesCommand) =>
         invoke<void>('delete_messages', { cmd }),
+      moveMessageJunk: (cmd: MoveMessageJunkCommand) =>
+        invoke<MessageWithRecipients>('move_message_junk', { cmd }),
     },
     compose: {
       getDraft: (accountId: AccountId, sessionId: SessionId) =>

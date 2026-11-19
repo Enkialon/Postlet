@@ -46,6 +46,7 @@ const {
   ensureBody,
   markRead,
   deleteMessages,
+  moveJunk,
   loadInitial,
 } = useMessages();
 const { accounts, accountLabel } = useAccounts();
@@ -184,6 +185,28 @@ const deleteOpen = ref(false);
 const deleteMessageId = ref<string | null>(null);
 const deleteBusy = ref(false);
 const deleteError = ref<string | null>(null);
+
+/** 标为垃圾 / 移出垃圾：失败时保留原展示并提示 */
+const junkMoveBusy = ref(false);
+const junkMoveError = ref<string | null>(null);
+
+async function onMoveJunk(direction: 'to_junk' | 'out_of_junk'): Promise<void> {
+  const item = mailDetail.value;
+  if (!item || junkMoveBusy.value) return;
+  junkMoveBusy.value = true;
+  junkMoveError.value = null;
+  try {
+    await moveJunk(item.message.id, direction);
+    const next = messageState.items.find(
+      (i) => i.message.id === item.message.id,
+    );
+    if (next) mailDetail.value = next;
+  } catch (e) {
+    junkMoveError.value = asAppError(e).message;
+  } finally {
+    junkMoveBusy.value = false;
+  }
+}
 
 function sessionOptionLabel(item: SessionListItem): string {
   const kind = item.session.kind === 'group' ? '群聊' : '私聊';
@@ -669,10 +692,13 @@ watch(
             :item="mailDetail"
             :body-loading="mailBodyLoading"
             :body-error="mailBodyError"
+            :junk-move-busy="junkMoveBusy"
+            :junk-move-error="junkMoveError"
             :preferred-name="selected?.contact_display_name"
             @close="closeDetailPanel"
             @retry-body="ensureBody(mailDetail.message.id)"
             @delete="requestDeleteMessage(mailDetail.message.id)"
+            @move-junk="onMoveJunk"
           />
 
           <template v-else-if="selected">

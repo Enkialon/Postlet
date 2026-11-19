@@ -411,15 +411,20 @@ struct ListedFolder {
 /// 目录刷新不持久化 Delta 进度；这里不叠加第二套发现算法。
 pub async fn list_mail_folders(access_token: &str) -> Result<Vec<RemoteMailFolder>, InfraError> {
     let mut out = list_mail_folders_bfs(access_token).await?;
-    annotate_inbox_well_known(access_token, &mut out).await;
+    annotate_well_known_folders(access_token, &mut out).await;
     Ok(out)
 }
 
-async fn annotate_inbox_well_known(access_token: &str, folders: &mut [RemoteMailFolder]) {
-    if let Ok(inbox_id) = resolve_well_known_folder_id(access_token, "inbox").await {
+/// 用 well-known 名确认标准文件夹的真实 id（收件箱与垃圾邮件）。
+/// 解析失败不阻断目录刷新：对应的文件夹只是保持未确认，交给名称启发式。
+async fn annotate_well_known_folders(access_token: &str, folders: &mut [RemoteMailFolder]) {
+    for well_known in ["inbox", "junkemail"] {
+        let Ok(id) = resolve_well_known_folder_id(access_token, well_known).await else {
+            continue;
+        };
         for f in folders.iter_mut() {
-            if f.id == inbox_id {
-                f.well_known_name = Some("inbox".into());
+            if f.id == id {
+                f.well_known_name = Some(well_known.to_string());
             }
         }
     }

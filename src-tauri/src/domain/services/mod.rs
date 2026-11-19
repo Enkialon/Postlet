@@ -12,7 +12,8 @@ pub use message_attribution::{
 };
 pub use self_address_resolver::resolve_self_addresses;
 pub use folder_role::{
-    resolve_role, role_from_display_name, role_from_special_use, FolderRole, RoleSource,
+    effective_role, resolve_role, role_from_display_name, role_from_special_use, FolderRole,
+    RoleSource,
 };
 pub use imap_sync_policy::{imap_pending_boundary, missing_imap_page};
 pub use session_aggregation_policy::{

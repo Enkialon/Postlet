@@ -2,15 +2,18 @@
 
 use crate::application::dto::{
     ChangeOrigin, ChangeSet, DeleteMessagesCommand, MarkMessagesReadCommand,
+    MoveMessageJunkCommand,
 };
 use crate::application::error::AppError;
 use crate::infrastructure::error::InfraError;
 use crate::application::self_view::apply_outbound_to_bundle;
 use crate::domain::entities::{
-    MessageWithRecipients, PendingMessageMutation, PendingMutationKind, ReceiveConfig,
+    JunkMoveDirection, MessageWithRecipients, PendingMessageMutation, PendingMutationKind,
+    ReceiveConfig,
 };
+use crate::domain::services::FolderRole;
 use crate::domain::services::resolve_self_addresses;
-use crate::domain::value_objects::{AccountId, MessageId, ReceiveProtocol, TimestampMs};
+use crate::domain::value_objects::{AccountId, FolderId, MessageId, ReceiveProtocol, TimestampMs};
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph;
 use crate::infrastructure::imap::{uid_delete_async, uid_move_async, uid_set_seen_async};
@@ -210,6 +213,111 @@ pub async fn delete_messages(
     })
 }
 
+/// 标为垃圾 / 移出垃圾：只移动当前邮件，不入队删除，也不改同步开关。
+///
+/// 本地不改位置事实：待处理阶段仅写入意图，真实位置由后续同步按“旧位置移除、新位置新增”决定。
+pub async fn move_message_junk(
+    db: &SqlitePool,
+    cmd: MoveMessageJunkCommand,
+) -> Result<ChangeSet, AppError> {
+    let mut tx = db.begin().await?;
+    let bundle = messages::get(&mut tx, &cmd.account_id, &cmd.message_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(format!("邮件不存在: {}", cmd.message_id)))?;
+    if bundle.message.location_status != Some(crate::domain::mail::LocationStatus::Present)
+        || bundle.message.remote_key.is_none()
+    {
+        return Err(AppError::validation("邮件没有有效的远端位置，无法移动"));
+    }
+    if bundle.pending_delete {
+        return Err(AppError::conflict("邮件已在删除流程中，无法移动"));
+    }
+    if let Some(existing) = mutations::get(&mut tx, &cmd.account_id, &cmd.message_id)
+        .await
+        .map_err(AppError::from)?
+    {
+        if existing.is_active
+            && matches!(
+                existing.kind,
+                PendingMutationKind::Trash | PendingMutationKind::Delete
+            )
+        {
+            return Err(AppError::conflict("邮件已有待确认的删除，无法移动"));
+        }
+    }
+    let folders = folder_states::list_by_account(&mut tx, &cmd.account_id)
+        .await
+        .map_err(AppError::from)?;
+    let destination = resolve_junk_destination(&folders, cmd.direction)?;
+    mutations::put_junk_move(
+        &mut tx,
+        &cmd.account_id,
+        &cmd.message_id,
+        cmd.direction.kind(),
+        &destination,
+    )
+    .await
+    .map_err(AppError::from)?;
+    let session_ids =
+        messages::list_session_ids(&mut tx, &cmd.account_id, std::slice::from_ref(&cmd.message_id))
+            .await?;
+    let account_version = Some(accounts::bump_change_version(&mut tx, &cmd.account_id).await?);
+    tx.commit().await?;
+
+    Ok(ChangeSet {
+        account_id: cmd.account_id,
+        session_ids,
+        message_ids: vec![cmd.message_id],
+        new_incoming_ids: Vec::new(),
+        account_cleared: false,
+        pending_remote_flush: true,
+        account_version,
+        origin: ChangeOrigin::UserAction,
+    })
+}
+
+/// 单封移动的目标选择：不按名称猜，歧义或不唯一时要求先确认文件夹角色。
+fn resolve_junk_destination(
+    folders: &[crate::domain::entities::MailFolderSyncState],
+    direction: JunkMoveDirection,
+) -> Result<FolderId, AppError> {
+    match direction {
+        JunkMoveDirection::ToJunk => {
+            let junk: Vec<&crate::domain::entities::MailFolderSyncState> = folders
+                .iter()
+                .filter(|folder| folder.effective_role.is_junk())
+                .collect();
+            // 优先仍生效且由协议确认的标准垃圾夹；否则只在唯一生效垃圾夹时可用
+            let standard: Vec<&crate::domain::entities::MailFolderSyncState> = junk
+                .iter()
+                .copied()
+                .filter(|folder| folder.role_source == crate::domain::services::RoleSource::Server)
+                .collect();
+            let chosen = match (standard.as_slice(), junk.as_slice()) {
+                ([only], _) => Some(*only),
+                ([], [only]) => Some(*only),
+                _ => None,
+            };
+            chosen.map(|folder| folder.folder_id.clone()).ok_or_else(|| {
+                AppError::validation("未找到唯一的垃圾邮件文件夹，请先在设置中确认文件夹角色")
+            })
+        }
+        JunkMoveDirection::OutOfJunk => {
+            let inboxes: Vec<&crate::domain::entities::MailFolderSyncState> = folders
+                .iter()
+                .filter(|folder| folder.effective_role == FolderRole::Inbox)
+                .collect();
+            match inboxes.as_slice() {
+                [only] => Ok(only.folder_id.clone()),
+                _ => Err(AppError::validation(
+                    "未找到唯一的收件箱文件夹，请先在设置中确认文件夹角色",
+                )),
+            }
+        }
+    }
+}
+
 /// 串行推送到期的已读 / 删除变更。
 /// 认领租约：到期只表示需要恢复核对，不表示可以并行执行
 const MUTATION_LEASE_MS: i64 = 5 * 60 * 1000;
@@ -264,6 +372,17 @@ pub async fn flush_due_mutations(
                 None => { mutations::stop_if_version(&mut conn, &mutation, "位置、文件夹绑定或账号状态已改变，旧操作已停止").await?; continue; }
             }
         };
+        // 垃圾移动：目标文件夹必须仍未退役、协议一致且角色方向未变
+        let move_destination = match crate::domain::entities::JunkMoveDirection::from_kind(mutation.kind) {
+            Some(direction) => {
+                let mut conn = db.acquire().await?;
+                match mutations::resolve_move_destination(&mut conn, &mutation, protocol).await? {
+                    Some((binding, role)) if direction.accepts(role) => Some(binding),
+                    _ => { mutations::stop_if_version(&mut conn, &mutation, "目标文件夹已退役或角色已改变，移动已停止").await?; continue; }
+                }
+            }
+            None => None,
+        };
         let push = match (mutation.kind, protocol) {
             (PendingMutationKind::Read, ReceiveProtocol::Graph) => {
                 let is_read = mutation.desired_is_read.unwrap_or(true);
@@ -284,6 +403,14 @@ pub async fn flush_due_mutations(
             }
             (PendingMutationKind::Delete, ReceiveProtocol::Imap) => {
                 push_imap_delete(paths, &transport, &binding, &mutation).await
+            }
+            (PendingMutationKind::Junk | PendingMutationKind::Unjunk, ReceiveProtocol::Graph) => {
+                let destination = move_destination.as_deref().unwrap_or_default();
+                push_graph_move(paths, &transport, &binding, destination, &mutation).await
+            }
+            (PendingMutationKind::Junk | PendingMutationKind::Unjunk, ReceiveProtocol::Imap) => {
+                let destination = move_destination.as_deref().unwrap_or_default();
+                push_imap_move(paths, &transport, &binding, destination, &mutation).await
             }
         };
 
@@ -397,6 +524,53 @@ async fn push_imap_trash(
         remote_binding,
         &mutation.target_remote_key,
         destination.as_str(),
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+async fn push_graph_move(
+    paths: &AppPaths,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
+    destination_binding: &str,
+    mutation: &PendingMessageMutation,
+) -> Result<(), AppError> {
+    let ReceiveConfig::Graph(auth) = &transport.receive else {
+        return Err(AppError::validation("账号收信配置不是 Graph"));
+    };
+    let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
+    let token = graph::auth::get_access_token(&paths.credentials_dir, &config, auth)
+        .await
+        .map_err(AppError::from)?;
+    graph::mail::move_message(
+        &token,
+        remote_binding,
+        &mutation.target_remote_key,
+        destination_binding,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+async fn push_imap_move(
+    paths: &AppPaths,
+    transport: &crate::domain::entities::AccountMailTransport,
+    remote_binding: &str,
+    destination_binding: &str,
+    mutation: &PendingMessageMutation,
+) -> Result<(), AppError> {
+    let ReceiveConfig::Imap(config) = &transport.receive else {
+        return Err(AppError::validation("账号收信配置不是 IMAP"));
+    };
+    let (endpoint, auth) =
+        crate::infrastructure::imap::load_connection(&paths.credentials_dir, config).await?;
+    uid_move_async(
+        &endpoint,
+        &auth,
+        remote_binding,
+        &mutation.target_remote_key,
+        destination_binding,
     )
     .await
     .map_err(AppError::from)

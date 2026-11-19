@@ -141,6 +141,19 @@ pub fn role_from_display_name(name: &str) -> Option<FolderRole> {
     Some(candidate)
 }
 
+/// 生效角色：用户三态覆盖优先于自动识别结果。
+///
+/// - `Some(true)` → junk
+/// - `Some(false)` 且自动角色为 junk → custom（显式否定不能被自动结果推翻）
+/// - 其它情况保留自动角色
+pub fn effective_role(role: FolderRole, junk_override: Option<bool>) -> FolderRole {
+    match junk_override {
+        Some(true) => FolderRole::Junk,
+        Some(false) if role == FolderRole::Junk => FolderRole::Custom,
+        _ => role,
+    }
+}
+
 /// 合并角色：服务器/手动优先；名称猜测只填补缺失
 pub fn resolve_role(
     server_role: Option<FolderRole>,
@@ -195,6 +208,16 @@ mod tests {
             resolve_role(None, None, "自定义夹"),
             (FolderRole::Custom, RoleSource::Unknown)
         );
+    }
+
+    #[test]
+    fn junk_override_is_three_state_and_keeps_other_roles() {
+        assert_eq!(effective_role(FolderRole::Inbox, Some(true)), FolderRole::Junk);
+        assert_eq!(effective_role(FolderRole::Junk, Some(false)), FolderRole::Custom);
+        assert_eq!(effective_role(FolderRole::Junk, None), FolderRole::Junk);
+        // 非垃圾角色不被「不是垃圾」覆盖成 custom
+        assert_eq!(effective_role(FolderRole::Inbox, Some(false)), FolderRole::Inbox);
+        assert_eq!(effective_role(FolderRole::Custom, Some(false)), FolderRole::Custom);
     }
 
     #[test]

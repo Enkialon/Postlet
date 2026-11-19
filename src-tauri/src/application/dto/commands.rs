@@ -71,6 +71,14 @@ pub struct DeleteMessagesCommand {
     pub permanent: bool,
 }
 
+/// 标为垃圾 / 移出垃圾：只作用于当前邮件
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MoveMessageJunkCommand {
+    pub account_id: AccountId,
+    pub message_id: MessageId,
+    pub direction: crate::domain::entities::JunkMoveDirection,
+}
+
 /// 用户空手创建群组
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CreateManualGroupCommand {

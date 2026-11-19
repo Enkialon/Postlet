@@ -2,13 +2,14 @@ import type { SyncPort } from '../../ports/syncPort';
 import type {
   ContactSyncProgress,
   MailSyncProgress,
+  SetFolderJunkOverrideCommand,
   SetFolderSyncEnabledCommand,
   TriggerContactSyncCommand,
   TriggerMailSyncCommand,
 } from '../../domain/dto';
 import type { MailFolderSyncState, Message } from '../../domain/entities';
 import type { AccountId } from '../../domain/types';
-import type { MemoryStore } from './memoryStore';
+import { effectiveFolderRole, type MemoryStore } from './memoryStore';
 
 export class MemorySyncAdapter implements SyncPort {
   private readonly timers = new Map<AccountId, ReturnType<typeof setTimeout>>();
@@ -198,6 +199,8 @@ export class MemorySyncAdapter implements SyncPort {
     ];
     const next: MailFolderSyncState[] = seed.map((s) => {
       const prev = byId.get(s.id);
+      const role = prev?.role ?? 'custom';
+      const junk_override = prev?.junk_override ?? null;
       return {
         account_id: accountId,
         folder_id: s.id,
@@ -212,8 +215,10 @@ export class MemorySyncAdapter implements SyncPort {
         sync_cursor: prev?.sync_cursor ?? null,
         page_cursor: prev?.page_cursor ?? null,
         synced_at: prev?.synced_at ?? null,
-        role: prev?.role ?? 'custom',
+        role,
         role_source: prev?.role_source ?? 'unknown',
+        junk_override,
+        effective_role: effectiveFolderRole(role, junk_override),
         sync_status: prev?.sync_status ?? 'idle',
         last_error: prev?.last_error ?? null,
         updated_at: t,
@@ -235,6 +240,27 @@ export class MemorySyncAdapter implements SyncPort {
     const updated: MailFolderSyncState = {
       ...folders[idx]!,
       sync_enabled: cmd.sync_enabled,
+      updated_at: Date.now(),
+    };
+    folders[idx] = updated;
+    this.store.folderStates.set(cmd.account_id, folders);
+    return updated;
+  }
+
+  async setFolderJunkOverride(
+    cmd: SetFolderJunkOverrideCommand,
+  ): Promise<MailFolderSyncState> {
+    this.store.requireAccount(cmd.account_id);
+    const folders = this.store.folderStates.get(cmd.account_id) ?? [];
+    const idx = folders.findIndex((f) => f.folder_id === cmd.folder_id);
+    if (idx < 0) {
+      throw new Error(`文件夹不存在: ${cmd.folder_id}`);
+    }
+    const prev = folders[idx]!;
+    const updated: MailFolderSyncState = {
+      ...prev,
+      junk_override: cmd.junk_override,
+      effective_role: effectiveFolderRole(prev.role, cmd.junk_override),
       updated_at: Date.now(),
     };
     folders[idx] = updated;

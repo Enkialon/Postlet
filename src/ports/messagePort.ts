@@ -2,6 +2,7 @@ import type { MessageWithRecipients } from '../domain/entities';
 import type {
   DeleteMessagesCommand,
   MarkMessagesReadCommand,
+  MoveMessageJunkCommand,
 } from '../domain/dto';
 import type { AccountId, MessageId } from '../domain/types';
 
@@ -19,4 +20,6 @@ export interface MessagePort {
   markRead(cmd: MarkMessagesReadCommand): Promise<void>;
   /** 删除邮件（本地软删 + 推远端） */
   deleteMessages(cmd: DeleteMessagesCommand): Promise<void>;
+  /** 标为垃圾 / 移出垃圾：只移动当前邮件，返回最新读模型 */
+  moveMessageJunk(cmd: MoveMessageJunkCommand): Promise<MessageWithRecipients>;
 }

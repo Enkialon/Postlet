@@ -3,8 +3,10 @@ import type {
   AccountId,
   EmailAddress,
   FolderId,
+  FolderRole,
   GroupId,
   Importance,
+  JunkMoveDirection,
   MailTlsMode,
   MessageId,
   PageDirection,
@@ -73,6 +75,8 @@ export interface MessagePreview {
   is_outbound: boolean;
   has_attachments: boolean;
   importance: Importance;
+  /** 该邮件所在文件夹的生效角色（列表垃圾标记用） */
+  folder_role?: FolderRole | null;
 }
 
 /** 会话列表项（含预览与显示名） */
@@ -238,6 +242,20 @@ export interface SetFolderSyncEnabledCommand {
   account_id: AccountId;
   folder_id: FolderId;
   sync_enabled: boolean;
+}
+
+/** 设置文件夹垃圾邮件角色覆盖（null=自动识别，true=是，false=不是） */
+export interface SetFolderJunkOverrideCommand {
+  account_id: AccountId;
+  folder_id: FolderId;
+  junk_override: boolean | null;
+}
+
+/** 标为垃圾 / 移出垃圾：只作用于当前邮件 */
+export interface MoveMessageJunkCommand {
+  account_id: AccountId;
+  message_id: MessageId;
+  direction: JunkMoveDirection;
 }
 
 /** 写信附件草稿（稳定 content_id 引用受管理内容） */

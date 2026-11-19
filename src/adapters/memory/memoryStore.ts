@@ -15,6 +15,7 @@ import type {
   EmailAddress,
   GroupId,
   FolderRole,
+  JunkMoveDirection,
   MessageId,
   SendState,
   SessionId,
@@ -23,6 +24,16 @@ import type { AppError } from '../../domain/errors';
 
 function now(): number {
   return Date.now();
+}
+
+/** 生效角色：与后端同一三态规则（内存适配器自演后端） */
+export function effectiveFolderRole(
+  role: FolderRole,
+  junkOverride: boolean | null,
+): FolderRole {
+  if (junkOverride === true) return 'junk';
+  if (junkOverride === false && role === 'junk') return 'custom';
+  return role;
 }
 
 function appError(
@@ -95,6 +106,7 @@ export class MemoryStore {
       is_outbound: message.is_outbound,
       has_attachments: message.has_attachments,
       importance: message.importance,
+      folder_role: this.folderRoleOf(message),
     };
   }
 
@@ -187,20 +199,25 @@ export class MemoryStore {
       pending_delete: this.pendingDeletes.has(
         this.messageKey(accountId, messageId),
       ),
+      folder_role: this.folderRoleOf(message),
+      pending_junk_move:
+        this.pendingJunkMoves.get(this.messageKey(accountId, messageId)) ?? null,
     };
   }
 
-  /** 消息所在文件夹角色（内存适配器按 folder_id 查表） */
+  /** 消息所在文件夹的生效角色（内存适配器按 folder_id 查表） */
   folderRoleOf(message: Message): FolderRole | null {
     if (!message.folder_id) return null;
     const list = this.folderStates.get(message.account_id) ?? [];
-    return (
-      list.find((f) => f.folder_id === message.folder_id)?.role ?? null
-    );
+    const folder = list.find((f) => f.folder_id === message.folder_id);
+    if (!folder) return null;
+    return effectiveFolderRole(folder.role, folder.junk_override ?? null);
   }
 
   /** 本地删除意图（待远端确认）；内存适配器用集合表达 */
   readonly pendingDeletes = new Set<string>();
+  /** 待确认的垃圾移动方向；内存适配器用集合表达 */
+  readonly pendingJunkMoves = new Map<string, JunkMoveDirection>();
   /** 发送队列状态（内存适配器） */
   readonly sendStates = new Map<string, SendState>();
 

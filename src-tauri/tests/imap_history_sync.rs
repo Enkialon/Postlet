@@ -19,6 +19,8 @@ async fn only_enabled_unfinished_folders_keep_history_running_after_commit() {
     let mut folder = MailFolderSyncState {
         role: postlet_lib::domain::services::FolderRole::Inbox,
         role_source: postlet_lib::domain::services::RoleSource::Server,
+        junk_override: None,
+        effective_role: postlet_lib::domain::services::FolderRole::Inbox,
         account_id: a.clone(),
         folder_id: FolderId::new("local-inbox"),
         protocol: postlet_lib::domain::value_objects::ReceiveProtocol::Imap,

@@ -5,11 +5,12 @@ use crate::application::dto::{
     ComposeAttachmentDraft, ComposeDraft, ComposeSendResult, ContactListQuery, ContactSyncProgress,
     CreateManualGroupCommand, DeleteMessagesCommand, EnsureGroupSessionCommand, HideGroupCommand,
     EnsurePrivateSessionCommand, GroupListQuery, ImportAttachmentCommand, MailSyncProgress,
-    MarkMessagesReadCommand, MergeSessionsCommand, ReassignMessagesCommand, RenameGroupCommand,
+    MarkMessagesReadCommand, MergeSessionsCommand, MoveMessageJunkCommand,
+    ReassignMessagesCommand, RenameGroupCommand,
     SaveComposeDraftCommand, SendComposedMailCommand, SessionListItem, SessionListQuery,
-    SessionMessagesQuery, SetFolderSyncEnabledCommand, TriggerContactSyncCommand,
-    TriggerMailSyncCommand, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
-    UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
+    SessionMessagesQuery, SetFolderJunkOverrideCommand, SetFolderSyncEnabledCommand,
+    TriggerContactSyncCommand, TriggerMailSyncCommand, UpdateAccountAliasesCommand,
+    UpdateAccountDisplaySettingsCommand, UpdateGroupSendMembersCommand, UpsertImapSmtpAccountCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::{
@@ -246,6 +247,26 @@ pub async fn delete_messages(
 }
 
 #[tauri::command]
+pub async fn move_message_junk(
+    state: State<'_, AppState>,
+    cmd: MoveMessageJunkCommand,
+) -> Result<MessageWithRecipients, AppError> {
+    let account_id = cmd.account_id.clone();
+    let message_id = cmd.message_id.clone();
+    let changes = message_use_case::move_message_junk(&state.db, cmd).await?;
+    let flush = changes.pending_remote_flush;
+    state.changes.dispatch(changes);
+    if flush {
+        crate::runtime::mail_sync::spawn_pending_flush(
+            state.db.clone(),
+            state.paths.clone(),
+            account_id.clone(),
+        );
+    }
+    message_use_case::get_message(&state.db, &account_id, &message_id).await
+}
+
+#[tauri::command]
 pub async fn list_groups(
     state: State<'_, AppState>,
     query: GroupListQuery,
@@ -324,6 +345,18 @@ pub async fn set_folder_sync_enabled(
     cmd: SetFolderSyncEnabledCommand,
 ) -> Result<MailFolderSyncState, AppError> {
     sync_use_case::set_folder_sync_enabled(&state.db, cmd).await
+}
+
+#[tauri::command]
+pub async fn set_folder_junk_override(
+    state: State<'_, AppState>,
+    cmd: SetFolderJunkOverrideCommand,
+) -> Result<MailFolderSyncState, AppError> {
+    let (folder, changes) = sync_use_case::set_folder_junk_override(&state.db, cmd).await?;
+    if let Some(changes) = changes {
+        state.changes.dispatch(changes);
+    }
+    Ok(folder)
 }
 
 #[tauri::command]

@@ -472,6 +472,10 @@ function itemClass(active: boolean): string {
                 </time>
               </div>
               <div class="flex min-w-0 items-center gap-2">
+                <span
+                  v-if="filteredItems[row.index]!.last_message_preview?.folder_role === 'junk'"
+                  class="shrink-0 rounded-pill bg-surface-muted px-1.5 py-px text-[11px] text-danger"
+                >垃圾邮件</span>
                 <p
                   class="m-0 min-w-0 flex-1 truncate text-[12px] leading-snug text-text-secondary"
                   :title="previewOf(filteredItems[row.index]!)"

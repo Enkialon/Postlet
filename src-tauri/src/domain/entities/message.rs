@@ -70,4 +70,7 @@ pub struct MessageWithRecipients {
     /// 读模型投影：消息所在文件夹的 IMAP 对齐角色
     #[serde(default)]
     pub folder_role: Option<crate::domain::services::FolderRole>,
+    /// 读模型投影：待确认的垃圾移动方向（None=无）
+    #[serde(default)]
+    pub pending_junk_move: Option<crate::domain::entities::JunkMoveDirection>,
 }

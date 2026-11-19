@@ -6,6 +6,25 @@ use crate::domain::value_objects::{AccountId, FolderId, ReceiveProtocol, SyncSta
 use crate::domain::mail::DiscoveredFolder;
 use sqlx::SqliteConnection;
 
+/// 生效角色 SQL 片段（别名 `f` = mail_folder_sync_state）。
+///
+/// 与 `domain::services::effective_role` 同一规则：会话可见性、消息角色投影与移动目标
+/// 都引用这里，避免前后端或各查询各写一套。
+pub const EFFECTIVE_ROLE_SQL: &str =
+    "CASE WHEN f.junk_override = 1 THEN 'junk'\
+     WHEN f.junk_override = 0 AND f.role = 'junk' THEN 'custom'\
+     ELSE f.role END";
+
+/// 消息所在文件夹的生效角色投影（参数：account_id、message_id）。
+pub fn message_effective_role_sql() -> String {
+    format!(
+        "SELECT {EFFECTIVE_ROLE_SQL} FROM messages m
+         JOIN mail_folder_sync_state f
+           ON f.account_id = m.account_id AND f.folder_id = m.folder_id
+         WHERE m.account_id = ? AND m.id = ?"
+    )
+}
+
 pub async fn get(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -112,6 +131,7 @@ pub async fn upsert(
 
 /// 完整目录快照：按有效绑定复用本地身份；已退役的同名绑定永不复用。
 /// 返回本次退役的 FolderId，调用方在同一事务失效其消息和任务。
+/// 发现流程不写 `junk_override`：用户三态覆盖不因重新发现而丢失。
 pub async fn reconcile_discovered(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -130,14 +150,19 @@ pub async fn reconcile_discovered(
     let mut states = HashMap::new();
     for folder in folders {
         let state = active.iter().find(|state| state.protocol == protocol && state.remote_binding == folder.remote_binding)
-            .cloned().unwrap_or_else(|| MailFolderSyncState {
-                account_id: account_id.clone(), folder_id: FolderId::new(uuid::Uuid::new_v4().to_string()),
-                protocol, remote_binding: folder.remote_binding.clone(), binding_revision: 1, is_retired: false,
-                parent_folder_id: None, display_name: folder.display_name.clone(), sync_enabled: false,
-                role: crate::domain::services::resolve_role(folder.server_role, None, &folder.display_name).0,
-                role_source: crate::domain::services::resolve_role(folder.server_role, None, &folder.display_name).1,
-                generation: None, sync_cursor: None, page_cursor: None, synced_at: None,
-                sync_status: SyncStatus::Idle, last_error: None, updated_at: now,
+            .cloned().unwrap_or_else(|| {
+                let (role, role_source) =
+                    crate::domain::services::resolve_role(folder.server_role, None, &folder.display_name);
+                MailFolderSyncState {
+                    account_id: account_id.clone(), folder_id: FolderId::new(uuid::Uuid::new_v4().to_string()),
+                    protocol, remote_binding: folder.remote_binding.clone(), binding_revision: 1, is_retired: false,
+                    parent_folder_id: None, display_name: folder.display_name.clone(), sync_enabled: false,
+                    role, role_source,
+                    junk_override: None,
+                    effective_role: crate::domain::services::effective_role(role, None),
+                    generation: None, sync_cursor: None, page_cursor: None, synced_at: None,
+                    sync_status: SyncStatus::Idle, last_error: None, updated_at: now,
+                }
             });
         states.insert(folder.remote_binding.clone(), state);
     }
@@ -154,6 +179,7 @@ pub async fn reconcile_discovered(
         );
         state.role = role;
         state.role_source = source;
+        state.effective_role = crate::domain::services::effective_role(role, state.junk_override);
         upsert(conn, state).await?;
     }
     let mut retired = Vec::new();
@@ -194,6 +220,33 @@ pub async fn record_sync_error(
 pub async fn retire(conn: &mut SqliteConnection, account_id: &AccountId, folder_id: &FolderId, now: i64) -> Result<(), InfraError> {
     sqlx::query("UPDATE mail_folder_sync_state SET is_retired = 1, sync_enabled = 0, binding_revision = binding_revision + 1, sync_cursor = NULL, page_cursor = NULL, generation = NULL, updated_at = ? WHERE account_id = ? AND folder_id = ? AND is_retired = 0")
         .bind(now).bind(account_id.as_str()).bind(folder_id.as_str()).execute(conn).await?;
+    Ok(())
+}
+
+/// 保存用户三态垃圾覆盖；只允许写入未退役的现有文件夹。
+pub async fn set_junk_override(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    junk_override: Option<bool>,
+    now: i64,
+) -> Result<(), InfraError> {
+    let result = sqlx::query(
+        "UPDATE mail_folder_sync_state
+         SET junk_override = ?, updated_at = ?
+         WHERE account_id = ? AND folder_id = ? AND is_retired = 0",
+    )
+    .bind(junk_override.map(|value| if value { 1 } else { 0 }))
+    .bind(now)
+    .bind(account_id.as_str())
+    .bind(folder_id.as_str())
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(InfraError::Conflict {
+            message: format!("文件夹不存在或已退役: {folder_id}"),
+        });
+    }
     Ok(())
 }
 

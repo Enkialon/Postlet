@@ -582,6 +582,7 @@ pub async fn send(
         send_state: Some(crate::domain::entities::SendState::Queued),
         pending_delete: false,
         folder_role: None,
+        pending_junk_move: None,
     };
     messages::upsert_with_recipients(&mut tx, &bundle).await?;
     sessions::recompute_projection(&mut tx, &cmd.account_id, &session_id).await?;

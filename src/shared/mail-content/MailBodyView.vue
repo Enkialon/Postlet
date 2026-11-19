@@ -1,29 +1,39 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
-import type { BodyContentType } from '../../domain/types';
+import type { BodyContentType, FolderRole } from '../../domain/types';
 import { portsKey } from '../../app/provide';
 import { bindMailLinks, createMailDocument } from './mailDocument';
-import Button from '../ui/Button.vue';
 
 const props = withDefaults(defineProps<{
   content: string;
   contentType: BodyContentType;
+  /** 当前消息的生效文件夹角色；junk 只显示文本，不创建正文 iframe */
+  folderRole?: FolderRole | null;
   title?: string;
-}>(), { title: '邮件正文' });
+}>(), { title: '邮件正文', folderRole: null });
 
 const ports = inject(portsKey)!;
-const allowRemoteImages = ref(false);
 const linkError = ref('');
 const frame = ref<HTMLIFrameElement | null>(null);
 const height = ref(160);
 let resizeObserver: ResizeObserver | undefined;
 let resizeFrame = 0;
-watch(() => [props.content, props.contentType], () => {
-  allowRemoteImages.value = false;
-  linkError.value = '';
-  height.value = 160;
-}, { flush: 'sync' });
-const source = computed(() => createMailDocument(props.content, allowRemoteImages.value));
+
+const junk = computed(() => props.folderRole === 'junk');
+// 普通邮件：允许的远程图片直接加载（净化与隔离仍由 mailDocument 保证）
+const source = computed(() => createMailDocument(props.content));
+
+watch(
+  () => [props.content, props.contentType, props.folderRole],
+  () => {
+    linkError.value = '';
+    height.value = 160;
+    // 内容或角色变了：旧 iframe 卸载前先断开测量
+    resizeObserver?.disconnect();
+    cancelAnimationFrame(resizeFrame);
+  },
+  { flush: 'sync' },
+);
 
 function onFrameLoad(): void {
   resizeObserver?.disconnect();
@@ -54,13 +64,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="min-h-40 w-full">
-    <template v-if="contentType === 'html'">
-      <div class="mb-3 flex items-center gap-2 text-[12px] text-text-secondary">
-        <span>{{ allowRemoteImages ? '已允许此邮件加载远程图片' : '远程图片已屏蔽' }}</span>
-        <Button variant="ghost" @click="allowRemoteImages = !allowRemoteImages">
-          {{ allowRemoteImages ? '屏蔽远程图片' : '加载此邮件的远程图片' }}
-        </Button>
-      </div>
+    <!-- 垃圾邮件：纯文本插值，不建 iframe、不激活链接、不请求远程资源 -->
+    <div
+      v-if="junk"
+      class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-text-secondary"
+      v-no-i18n
+    >{{ content }}</div>
+    <template v-else-if="contentType === 'html'">
       <p v-if="linkError" class="mb-2 text-[12px] text-danger" role="alert">{{ linkError }}</p>
       <!-- Same origin permits parent resize/link handlers; scripts are forbidden
            by both sandbox and the frame CSP. Never add allow-scripts. -->

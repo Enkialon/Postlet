@@ -42,3 +42,11 @@ pub struct SetFolderSyncEnabledCommand {
     pub folder_id: FolderId,
     pub sync_enabled: bool,
 }
+
+/// 设置文件夹垃圾邮件角色覆盖（三态：null=自动识别，true=是，false=不是）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SetFolderJunkOverrideCommand {
+    pub account_id: AccountId,
+    pub folder_id: FolderId,
+    pub junk_override: Option<bool>,
+}

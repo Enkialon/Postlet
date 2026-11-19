@@ -23,7 +23,12 @@ export function externalMailUrl(raw: string, allowMailto = true): string | null 
   return null;
 }
 
-export function createMailDocument(content: string, allowRemoteImages: boolean): string {
+/**
+ * 把 HTML 正文变成隔离 iframe 用的文档。
+ *
+ * 普通邮件直接允许 http(s) 图片（仍只留净化后的标记）；垃圾邮件根本不进这个分支。
+ */
+export function createMailDocument(content: string): string {
   // A template's owner document is inert. Raw markup never enters the live
   // application document, including during parsing and sanitization.
   const template = document.createElement('template');
@@ -60,7 +65,7 @@ export function createMailDocument(content: string, allowRemoteImages: boolean):
     const src = externalMailUrl(image.getAttribute('src') ?? '', false);
     image.removeAttribute('src');
     image.setAttribute('referrerpolicy', 'no-referrer');
-    if (src && allowRemoteImages) image.setAttribute('src', src);
+    if (src) image.setAttribute('src', src);
   }
   for (const anchor of body.querySelectorAll('a')) {
     const href = externalMailUrl(anchor.getAttribute('href') ?? '');
@@ -73,7 +78,7 @@ export function createMailDocument(content: string, allowRemoteImages: boolean):
     }
   }
 
-  const csp = `default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src ${allowRemoteImages ? 'https: http:' : "'none'"}; base-uri 'none'; form-action 'none'`;
+  const csp = `default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; form-action 'none'`;
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"><style>
     html { color-scheme: light; }
     body { margin: 0; padding: 2px; color: #273340; background: white; font: 14px/1.65 system-ui, sans-serif; overflow-wrap: anywhere; }

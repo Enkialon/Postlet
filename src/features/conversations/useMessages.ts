@@ -1,6 +1,6 @@
 import { inject, reactive, ref, watch } from 'vue';
 import type { MessageWithRecipients } from '../../domain/entities';
-import type { MessageId } from '../../domain/types';
+import type { JunkMoveDirection, MessageId } from '../../domain/types';
 import { portsKey, navigationKey } from '../../app/provide';
 import {
   createEmptyPageState,
@@ -333,11 +333,8 @@ export function useMessages() {
 
     const accountId = nav.accountId.value;
     if (!accountId) return;
-    // 垃圾夹邮件默认不主动拉取正文；待用户显式确认后再加载
-    const cachedItem = entityCache.get(cacheKey(accountId, messageId));
-    if (cachedItem?.folder_role !== 'junk') {
-      await ensureBody(messageId);
-    }
+    // 垃圾邮件也要正文：它按纯文本渲染，不进入 HTML 分支
+    await ensureBody(messageId);
     const item = entityCache.get(cacheKey(accountId, messageId));
     if (
       item &&
@@ -347,6 +344,23 @@ export function useMessages() {
     ) {
       await markRead([messageId], true);
     }
+  }
+
+  /** 标为垃圾 / 移出垃圾：只改这一封的意图，位置由后续同步确认 */
+  async function moveJunk(
+    messageId: MessageId,
+    direction: JunkMoveDirection,
+  ): Promise<void> {
+    const accountId = nav.accountId.value;
+    if (!accountId) return;
+    const updated = await ports.message.moveMessageJunk({
+      account_id: accountId,
+      message_id: messageId,
+      direction,
+    });
+    upsertCache(accountId, updated);
+    applyCacheToList(accountId);
+    void conversations.refreshSoft();
   }
 
   /** @deprecated 兼容旧名；等同 openMessage */
@@ -469,6 +483,7 @@ export function useMessages() {
     ensureBody,
     markRead,
     deleteMessages,
+    moveJunk,
     entityCache,
   };
 }

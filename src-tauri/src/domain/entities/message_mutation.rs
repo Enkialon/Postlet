@@ -8,6 +8,10 @@ pub enum PendingMutationKind {
     Trash,
     /// 用户明确选择的永久删除
     Delete,
+    /// 用户手动标为垃圾：移入生效垃圾文件夹
+    Junk,
+    /// 用户手动移出垃圾：移入同账号生效的收件箱
+    Unjunk,
 }
 
 impl PendingMutationKind {
@@ -16,6 +20,8 @@ impl PendingMutationKind {
             Self::Read => "read",
             Self::Trash => "trash",
             Self::Delete => "delete",
+            Self::Junk => "junk",
+            Self::Unjunk => "unjunk",
         }
     }
 
@@ -24,6 +30,8 @@ impl PendingMutationKind {
             "read" => Some(Self::Read),
             "trash" => Some(Self::Trash),
             "delete" => Some(Self::Delete),
+            "junk" => Some(Self::Junk),
+            "unjunk" => Some(Self::Unjunk),
             _ => None,
         }
     }
@@ -56,8 +64,43 @@ pub struct PendingMessageMutation {
     /// 执行阶段：started（已开始网络写）/ sent（已发送待确认）
     pub execution_phase: Option<MutationPhase>,
     pub last_error_code: Option<String>,
-    /// kind=Trash 时的目标文件夹（源位置仍是 target_folder_id）
+    /// kind=Trash / Junk / Unjunk 时的目标文件夹（源位置仍是 target_folder_id）
     pub destination_folder_id: Option<FolderId>,
+}
+
+/// 垃圾移动方向（读模型投影：提交后、确认前均保留）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JunkMoveDirection {
+    /// 标为垃圾邮件
+    ToJunk,
+    /// 移出垃圾邮件
+    OutOfJunk,
+}
+
+impl JunkMoveDirection {
+    pub fn kind(self) -> PendingMutationKind {
+        match self {
+            Self::ToJunk => PendingMutationKind::Junk,
+            Self::OutOfJunk => PendingMutationKind::Unjunk,
+        }
+    }
+
+    pub fn from_kind(kind: PendingMutationKind) -> Option<Self> {
+        match kind {
+            PendingMutationKind::Junk => Some(Self::ToJunk),
+            PendingMutationKind::Unjunk => Some(Self::OutOfJunk),
+            _ => None,
+        }
+    }
+
+    /// 目标文件夹的生效角色是否仍符合该方向
+    pub fn accepts(self, destination_role: crate::domain::services::FolderRole) -> bool {
+        match self {
+            Self::ToJunk => destination_role.is_junk(),
+            Self::OutOfJunk => destination_role == crate::domain::services::FolderRole::Inbox,
+        }
+    }
 }
 
 /// 一次远端写尝试的阶段

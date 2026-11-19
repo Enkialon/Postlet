@@ -116,6 +116,7 @@ async fn shared_content_ref_survives_when_one_owner_deleted() {
             send_state: None,
             pending_delete: false,
             folder_role: None,
+            pending_junk_move: None,
             message: Message {
                 id: message_id.clone(),
                 account_id: account.clone(),

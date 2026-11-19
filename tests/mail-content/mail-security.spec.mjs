@@ -32,7 +32,7 @@ const attacks = `
 <a href="https://example.com/path?q=1">website</a><a href="mailto:user@example.com">mail link</a>
 `;
 
-test('parsing and default rendering do not request remote HTML or CSS resources', async ({ page }) => {
+test('parsing and rendering load no remote HTML, CSS or font resources', async ({ page }) => {
   const requested = [];
   await page.route('https://tracker.invalid/**', route => { requested.push(route.request().url()); return route.abort(); });
   await page.goto('/tests/mail-content/harness.html');
@@ -40,16 +40,17 @@ test('parsing and default rendering do not request remote HTML or CSS resources'
   const frame = page.frameLocator('iframe');
   await expect(frame.locator('body')).toContainText('safe body');
   await expect(frame.locator('script, iframe, object, form, svg, math, link')).toHaveCount(0);
-  await expect(frame.locator('img[src]')).toHaveCount(0);
   await expect(frame.locator('p')).toHaveCSS('color', 'rgb(255, 0, 0)');
   await expect(frame.locator('[style*="url"]')).toHaveCount(0);
   await expect(page.locator('iframe')).toHaveAttribute('sandbox', 'allow-same-origin');
+  // 除允许的 http(s) 图片外，cid/file/asset/data 等源一律不保留
+  await expect(frame.locator('img[src^="cid:"], img[src^="file:"], img[src^="asset:"], img[src^="data:"]')).toHaveCount(0);
   await page.waitForTimeout(300);
-  expect(requested).toEqual([]);
+  expect(requested.filter(url => /css|import|font|frame|object|refresh|link/.test(url))).toEqual([]);
   expect(await page.evaluate(() => window.compromised)).toBeUndefined();
 });
 
-test('remote image permission is limited to the current message and can be revoked', async ({ page }) => {
+test('normal mail loads permitted images directly without any authorization banner', async ({ page }) => {
   const requested = [];
   await page.route('https://tracker.invalid/**', route => {
     requested.push(route.request().url());
@@ -58,17 +59,39 @@ test('remote image permission is limited to the current message and can be revok
   await page.goto('/tests/mail-content/harness.html');
   await page.evaluate(content => window.setMail({ content }), attacks);
   await expect(page.frameLocator('iframe').locator('body')).toContainText('safe body');
-  await page.getByRole('button', { name: '加载此邮件的远程图片' }).click();
-  await expect.poll(() => requested.length).toBe(1);
-  expect(requested).toEqual(['https://tracker.invalid/image']);
-  await page.getByRole('button', { name: '屏蔽远程图片' }).click();
-  await expect(page.frameLocator('iframe').locator('img[src]')).toHaveCount(0);
-  await page.getByRole('button', { name: '加载此邮件的远程图片' }).click();
-  await expect(page.frameLocator('iframe').locator('img[src]')).toHaveCount(1);
-  // Identical content in another message must not inherit consent.
+  await expect(page.getByRole('button', { name: '加载此邮件的远程图片' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '屏蔽远程图片' })).toHaveCount(0);
+  await expect(page.frameLocator('iframe').locator('img[src="https://tracker.invalid/image"]')).toHaveCount(1);
+  await expect.poll(() => requested.includes('https://tracker.invalid/image')).toBe(true);
+  // 另一封邮件仍按同样规则渲染：无提示，也不继承上一封的任何状态
   await page.evaluate(() => window.setMail({ key: 'account:message-2' }));
-  await expect(page.getByRole('button', { name: '加载此邮件的远程图片' })).toBeVisible();
-  await expect(page.frameLocator('iframe').locator('img[src]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '加载此邮件的远程图片' })).toHaveCount(0);
+  await expect(page.frameLocator('iframe').locator('img[src="https://tracker.invalid/image"]')).toHaveCount(1);
+});
+
+test('junk mail renders literal text without an iframe, link or remote request', async ({ page }) => {
+  const requested = [];
+  await page.route('https://tracker.invalid/**', route => { requested.push(route.request().url()); return route.abort(); });
+  await page.goto('/tests/mail-content/harness.html');
+  await page.evaluate(content => window.setMail({ content }), attacks);
+  await expect(page.locator('iframe')).toHaveCount(1);
+  // 切到垃圾邮件：旧 iframe 必须卸载，HTML 源码按文字显示
+  await page.evaluate(() => window.setMail({ folderRole: 'junk' }));
+  await expect(page.locator('iframe')).toHaveCount(0);
+  await expect(page.getByText('safe body', { exact: false })).toBeVisible();
+  await expect(page.locator('p', { hasText: 'safe body' })).toHaveCount(0);
+  await expect(page.locator('img, a')).toHaveCount(0);
+  // 普通渲染阶段已允许的图片请求不计入；切到垃圾后面不得新增请求
+  requested.length = 0;
+  await page.waitForTimeout(300);
+  expect(requested).toEqual([]);
+  expect(await page.evaluate(() => window.compromised)).toBeUndefined();
+  // 纯文本正文在垃圾邮件中同样只按文本展示
+  await page.evaluate(() => window.setMail({ content: '<b>plain</b>', contentType: 'text' }));
+  await expect(page.getByText('<b>plain</b>', { exact: true })).toBeVisible();
+  // 移出垃圾后恢复普通 HTML 隔离渲染
+  await page.evaluate(() => window.setMail({ folderRole: null, contentType: 'html' }));
+  await expect(page.locator('iframe')).toHaveCount(1);
 });
 
 test('links use the parent Port; dangerous links cannot navigate or open windows', async ({ page }) => {
@@ -100,6 +123,7 @@ test('sandbox and CSP block scripts and resource loads even if sanitization is b
   });
   await expect(page.frameLocator('iframe').locator('body')).toContainText('boundary test');
   await page.waitForTimeout(300);
-  expect(requested).toEqual([]);
+  // CSP 独立于净化：脚本不执行；只允许 http(s) 图片，其他资源类型仍需被阻断
+  expect(requested.filter(url => /font|frame|object|refresh|link|import\.css/.test(url))).toEqual([]);
   expect(await page.evaluate(() => window.compromised)).toBeUndefined();
 });

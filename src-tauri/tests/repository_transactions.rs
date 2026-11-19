@@ -228,6 +228,7 @@ async fn seed_signed_in_mailbox(db: &SqlitePool) -> AccountId {
             send_state: None,
             pending_delete: false,
             folder_role: None,
+            pending_junk_move: None,
             message: Message {
                 id: msg_id.clone(),
                 account_id: account_id.clone(),

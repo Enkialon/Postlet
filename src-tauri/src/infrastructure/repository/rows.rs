@@ -211,6 +211,11 @@ pub(super) fn messagerecipient(row: &SqliteRow) -> Result<MessageRecipient, sqlx
 pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState, sqlx::Error> {
     let parent = row.try_get::<Option<String>, _>("parent_folder_id")?;
     let sync_enabled: i64 = row.try_get("sync_enabled").unwrap_or(0);
+    let role = FolderRole::parse(&row.try_get::<String, _>("role").unwrap_or_default())
+        .unwrap_or(FolderRole::Custom);
+    let junk_override = row
+        .try_get::<Option<i64>, _>("junk_override")?
+        .map(|value| value != 0);
     Ok(MailFolderSyncState {
         account_id: AccountId::new(row.try_get::<String, _>("account_id")?),
         folder_id: FolderId::new(row.try_get::<String, _>("folder_id")?),
@@ -220,12 +225,13 @@ pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState
         is_retired: row.try_get("is_retired")?,
         parent_folder_id: parent.filter(|s| !s.is_empty()).map(FolderId::new),
         display_name: row.try_get::<String, _>("display_name").unwrap_or_default(),
-        role: FolderRole::parse(&row.try_get::<String, _>("role").unwrap_or_default())
-            .unwrap_or(FolderRole::Custom),
+        role,
         role_source: RoleSource::parse(
             &row.try_get::<String, _>("role_source").unwrap_or_default(),
         )
         .unwrap_or(RoleSource::Unknown),
+        junk_override,
+        effective_role: crate::domain::services::effective_role(role, junk_override),
         sync_enabled: sync_enabled != 0,
         generation: row.try_get("generation")?,
         sync_cursor: row.try_get("sync_cursor")?,

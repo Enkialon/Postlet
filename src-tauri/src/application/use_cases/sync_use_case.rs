@@ -2,8 +2,8 @@
 
 use crate::domain::mail::{DiscoveredFolder, LocationStatus, RemoteFlags, RemoteMessageChange, RemoteMessage};
 use crate::application::dto::{
-    ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, SetFolderSyncEnabledCommand,
-    TriggerContactSyncCommand, TriggerMailSyncCommand,
+    ChangeOrigin, ChangeSet, ContactSyncProgress, MailSyncProgress, SetFolderJunkOverrideCommand,
+    SetFolderSyncEnabledCommand, TriggerContactSyncCommand, TriggerMailSyncCommand,
 };
 use crate::application::error::AppError;
 use crate::domain::entities::{
@@ -663,6 +663,7 @@ async fn upsert_remote_message(
             send_state: None,
             pending_delete: false,
             folder_role: None,
+            pending_junk_move: None,
         },
     )
     .await
@@ -1083,6 +1084,56 @@ fn imap_folder_display_name(
         }
     }
     full_name.to_string()
+}
+
+/// 设置文件夹垃圾邮件三态覆盖；不触发网络同步。
+///
+/// 覆盖影响生效角色，因此同一事务内递增账号版本，并在提交后告知受影响的会话
+/// （列表、卡片与已打开的正文都靠这一事件重读，不重拉正文）。
+pub async fn set_folder_junk_override(
+    db: &SqlitePool,
+    cmd: SetFolderJunkOverrideCommand,
+) -> Result<(MailFolderSyncState, Option<ChangeSet>), AppError> {
+    let mut tx = db.begin().await?;
+    folder_states::get(&mut tx, &cmd.account_id, &cmd.folder_id)
+        .await
+        .map_err(AppError::from)?
+        .filter(|folder| !folder.is_retired)
+        .ok_or_else(|| {
+            AppError::not_found(format!(
+                "文件夹不存在或已退役: {}/{}",
+                cmd.account_id, cmd.folder_id
+            ))
+        })?;
+    folder_states::set_junk_override(
+        &mut tx,
+        &cmd.account_id,
+        &cmd.folder_id,
+        cmd.junk_override,
+        now_ms(),
+    )
+    .await
+    .map_err(AppError::from)?;
+    let session_ids =
+        messages::list_session_ids_in_folder(&mut tx, &cmd.account_id, &cmd.folder_id).await?;
+    let account_version = accounts::bump_change_version(&mut tx, &cmd.account_id).await?;
+    let updated = folder_states::get(&mut tx, &cmd.account_id, &cmd.folder_id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(format!("文件夹不存在: {}", cmd.folder_id)))?;
+    tx.commit().await?;
+
+    let changes = ChangeSet {
+        account_id: cmd.account_id,
+        session_ids,
+        message_ids: Vec::new(),
+        new_incoming_ids: Vec::new(),
+        account_cleared: false,
+        pending_remote_flush: false,
+        account_version: Some(account_version),
+        origin: ChangeOrigin::Rebuild,
+    };
+    Ok((updated, (!changes.session_ids.is_empty()).then_some(changes)))
 }
 
 /// 勾选/取消文件夹纳入账户全局同步。

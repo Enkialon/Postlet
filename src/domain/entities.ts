@@ -11,6 +11,7 @@ import type {
   GroupId,
   GroupSource,
   Importance,
+  JunkMoveDirection,
   MessageId,
   FolderRole,
   SendState,
@@ -46,9 +47,13 @@ export interface Account {
 
 /** 按账户 + 文件夹保存的目录元数据与增量游标（非主导航） */
 export interface MailFolderSyncState {
-  /** IMAP SPECIAL-USE 对齐角色 */
+  /** IMAP SPECIAL-USE 对齐角色（自动识别结果） */
   role: FolderRole;
   role_source: 'server' | 'manual' | 'guess' | 'unknown';
+  /** 用户三态覆盖：null=自动识别，true=是垃圾夹，false=不是垃圾夹 */
+  junk_override: boolean | null;
+  /** 生效角色：由 role 与 junk_override 派生，后端统一给出 */
+  effective_role: FolderRole;
   account_id: AccountId;
   folder_id: FolderId;
   protocol: 'graph' | 'imap';
@@ -142,8 +147,10 @@ export interface MessageWithRecipients {
   send_state?: SendState | null;
   /** 本地删除意图待远端确认 */
   pending_delete?: boolean;
-  /** 消息所在文件夹角色；junk 默认不渲染正文 */
+  /** 消息所在文件夹的生效角色；junk 只显示文本 */
   folder_role?: FolderRole | null;
+  /** 待确认的垃圾移动方向；非空时正文保持文本并禁用再次移动 */
+  pending_junk_move?: JunkMoveDirection | null;
 }
 
 /** 群档案：名称与成员；聊天状态在 Session */

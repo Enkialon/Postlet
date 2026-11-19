@@ -30,6 +30,8 @@ export function useSettings() {
   const syncingContactIds = ref<Set<AccountId>>(new Set());
   const refreshingFoldersId = ref<AccountId | null>(null);
   const togglingFolderKey = ref<string | null>(null);
+  /** 正在保存垃圾角色覆盖的文件夹（account:folder） */
+  const junkOverrideSavingKey = ref<string | null>(null);
   const error = ref<string | null>(null);
   const folderErrorById = ref<Record<string, string>>({});
   const mailProgressById = ref<Record<string, MailSyncProgress>>({});
@@ -340,6 +342,36 @@ export function useSettings() {
     }
   }
 
+  async function setFolderJunkOverride(
+    accountId: AccountId,
+    folderId: FolderId,
+    junkOverride: boolean | null,
+  ): Promise<void> {
+    const key = folderToggleKey(accountId, folderId);
+    if (junkOverrideSavingKey.value === key) return;
+    junkOverrideSavingKey.value = key;
+    error.value = null;
+    try {
+      const updated = await ports.sync.setFolderJunkOverride({
+        account_id: accountId,
+        folder_id: folderId,
+        junk_override: junkOverride,
+      });
+      patchFolders(
+        accountId,
+        (mailProgressById.value[accountId]?.folders ?? []).map((f) =>
+          f.folder_id === updated.folder_id ? updated : f,
+        ),
+      );
+    } catch (e) {
+      // 失败时保留原已生效设置，由调用方在原位提示
+      error.value = asAppError(e).message;
+      throw e;
+    } finally {
+      junkOverrideSavingKey.value = null;
+    }
+  }
+
   async function signOutAccount(accountId: AccountId): Promise<void> {
     error.value = null;
     try {
@@ -401,6 +433,7 @@ export function useSettings() {
     syncingContactIds,
     refreshingFoldersId,
     togglingFolderKey,
+    junkOverrideSavingKey,
     error,
     folderErrorById,
     mailProgressById,
@@ -411,6 +444,7 @@ export function useSettings() {
     triggerContacts,
     refreshMailFolders,
     setFolderSyncEnabled,
+    setFolderJunkOverride,
     folderToggleKey,
     updateAccountSettings,
     updateAccountAliases,
