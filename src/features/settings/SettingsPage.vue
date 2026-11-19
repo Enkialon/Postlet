@@ -141,6 +141,14 @@ const junkDialogBusy = computed(
       folderToggleKey(junkDialog.value.accountId, junkDialog.value.folderId),
 );
 
+const currentJunkFolder = computed(() => {
+  const dialog = junkDialog.value;
+  if (!dialog) return undefined;
+  return mailProgressById.value[dialog.accountId]?.folders.find(
+    (folder) => folder.effective_role === 'junk',
+  );
+});
+
 function openJunkDialog(
   accountId: AccountId,
   folder: MailFolderSyncState,
@@ -582,6 +590,15 @@ async function confirmJunkDialog(): Promise<void> {
           否
         </label>
       </fieldset>
+      <p class="mt-2 mb-0 text-[13px] text-text-secondary">
+        当前垃圾文件夹：{{ currentJunkFolder?.display_name || currentJunkFolder?.folder_id || '未设置' }}
+      </p>
+      <p
+        v-if="junkDialog?.choice && currentJunkFolder && currentJunkFolder.folder_id !== junkDialog.folderId"
+        class="mt-2 mb-0 text-[13px] text-danger"
+      >
+        保存后将切换到「{{ junkDialog.displayName }}」，已有邮件不会移动。
+      </p>
       <p v-if="junkDialogError" class="mt-2 mb-0 text-[13px] text-danger">
         {{ junkDialogError }}
       </p>

@@ -263,8 +263,11 @@ export class MemorySyncAdapter implements SyncPort {
       effective_role: effectiveFolderRole(prev.role, cmd.junk_override),
       updated_at: Date.now(),
     };
-    folders[idx] = updated;
-    this.store.folderStates.set(cmd.account_id, folders);
+    this.store.folderStates.set(cmd.account_id, folders.map((folder, index) => {
+      if (index === idx) return updated;
+      if (updated.effective_role !== 'junk' || folder.effective_role !== 'junk') return folder;
+      return { ...folder, junk_override: false, effective_role: effectiveFolderRole(folder.role, false) };
+    }));
     return updated;
   }
 }

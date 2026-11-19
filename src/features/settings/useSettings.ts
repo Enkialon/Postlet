@@ -360,7 +360,11 @@ export function useSettings() {
       patchFolders(
         accountId,
         (mailProgressById.value[accountId]?.folders ?? []).map((f) =>
-          f.folder_id === updated.folder_id ? updated : f,
+          f.folder_id === updated.folder_id
+            ? updated
+            : updated.effective_role === 'junk' && f.effective_role === 'junk'
+              ? { ...f, junk_override: false, effective_role: f.role === 'junk' ? 'custom' : f.role }
+              : f,
         ),
       );
     } catch (e) {

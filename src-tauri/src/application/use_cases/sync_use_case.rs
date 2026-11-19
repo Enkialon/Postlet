@@ -1095,7 +1095,7 @@ pub async fn set_folder_junk_override(
     cmd: SetFolderJunkOverrideCommand,
 ) -> Result<(MailFolderSyncState, Option<ChangeSet>), AppError> {
     let mut tx = db.begin().await?;
-    folder_states::get(&mut tx, &cmd.account_id, &cmd.folder_id)
+    let current = folder_states::get(&mut tx, &cmd.account_id, &cmd.folder_id)
         .await
         .map_err(AppError::from)?
         .filter(|folder| !folder.is_retired)
@@ -1105,17 +1105,27 @@ pub async fn set_folder_junk_override(
                 cmd.account_id, cmd.folder_id
             ))
         })?;
-    folder_states::set_junk_override(
-        &mut tx,
-        &cmd.account_id,
-        &cmd.folder_id,
-        cmd.junk_override,
-        now_ms(),
-    )
-    .await
-    .map_err(AppError::from)?;
-    let session_ids =
+    let now = now_ms();
+    let mut session_ids =
         messages::list_session_ids_in_folder(&mut tx, &cmd.account_id, &cmd.folder_id).await?;
+    if crate::domain::services::effective_role(current.role, cmd.junk_override).is_junk() {
+        for folder in folder_states::list_by_account(&mut tx, &cmd.account_id).await? {
+            if folder.folder_id == cmd.folder_id || !folder.effective_role.is_junk() {
+                continue;
+            }
+            folder_states::set_junk_override(
+                &mut tx, &cmd.account_id, &folder.folder_id, Some(false), now,
+            ).await?;
+            session_ids.extend(
+                messages::list_session_ids_in_folder(&mut tx, &cmd.account_id, &folder.folder_id).await?,
+            );
+        }
+        session_ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        session_ids.dedup();
+    }
+    folder_states::set_junk_override(
+        &mut tx, &cmd.account_id, &cmd.folder_id, cmd.junk_override, now,
+    ).await?;
     let account_version = accounts::bump_change_version(&mut tx, &cmd.account_id).await?;
     let updated = folder_states::get(&mut tx, &cmd.account_id, &cmd.folder_id)
         .await
