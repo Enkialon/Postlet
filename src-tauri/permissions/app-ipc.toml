@@ -16,6 +16,7 @@ commands.allow = [
   "list_sessions",
   "get_session",
   "list_session_messages",
+  "list_pending_sends",
   "hide_session",
   "get_message",
   "ensure_message_body",
