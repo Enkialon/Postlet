@@ -221,3 +221,137 @@ pub async fn get_for_message(
     .await?;
     row.as_ref().map(map_task).transpose()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn seed_queued_task() -> (sqlx::SqlitePool, AccountId) {
+        let db = crate::infrastructure::db::open_memory().await.unwrap();
+        let account = AccountId::new("a");
+        let mut conn = db.acquire().await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts(id,email,created_at,updated_at) VALUES ('a','a@example.com',1,1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions(account_id,id,kind,normalized_address,created_at,updated_at)
+             VALUES ('a','ses1','private','peer@example.com',1,1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages(account_id,id,session_id,subject,body_preview,body_content_type,
+                from_name,is_read,is_draft,is_outbound,has_attachments,importance,local_updated_at)
+             VALUES ('a','m1','ses1','s','','text','',0,0,1,0,'normal',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO attachment_contents(content_id,account_id,storage_key,byte_length,digest,created_at)
+             VALUES ('c1','a','c1',1,'d',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO outbound_snapshots(account_id,snapshot_id,content_version,internet_message_id,date,
+                mime_content_id,envelope_json,subject,text_body,created_at)
+             VALUES ('a','s1',1,'<m@x>','d','c1','{}','s','t',1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO send_tasks(task_id,account_id,message_id,content_version,snapshot_id,state,
+                created_at,updated_at)
+             VALUES ('send-1','a','m1',1,'s1','queued',1,1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        drop(conn);
+        (db, account)
+    }
+
+    /// 已提交但无明确回执 → uncertain，下一次 tick 不得自动重发。
+    #[tokio::test]
+    async fn unknown_send_result_is_uncertain_and_never_reclaimed() {
+        let (db, account) = seed_queued_task().await;
+        let mut conn = db.acquire().await.unwrap();
+        let claimed = claim_due(&mut conn, &account, 10, 1_000, "c1", "a1", 4)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        assert!(
+            record_result(
+                &mut conn,
+                &account,
+                "send-1",
+                1,
+                "a1",
+                "c1",
+                SendState::Uncertain,
+                None,
+                None,
+                None,
+                Some("发送结果未知"),
+                20,
+            )
+            .await
+            .unwrap()
+        );
+
+        let due = claim_due(&mut conn, &account, 10_000, 20_000, "c2", "a2", 4)
+            .await
+            .unwrap();
+        assert!(due.is_empty(), "结果未知不得自动重发");
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM send_tasks WHERE account_id='a' AND task_id='send-1'")
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(state, "uncertain");
+    }
+
+    /// 仅可证明未提交的暂时失败按退避重试。
+    #[tokio::test]
+    async fn provably_unsent_retryable_is_reclaimed_only_after_backoff() {
+        let (db, account) = seed_queued_task().await;
+        let mut conn = db.acquire().await.unwrap();
+        claim_due(&mut conn, &account, 10, 1_000, "c1", "a1", 4)
+            .await
+            .unwrap();
+        record_result(
+            &mut conn,
+            &account,
+            "send-1",
+            1,
+            "a1",
+            "c1",
+            SendState::Retryable,
+            None,
+            Some(500),
+            None,
+            None,
+            20,
+        )
+        .await
+        .unwrap();
+
+        let early = claim_due(&mut conn, &account, 400, 2_000, "c2", "a2", 4)
+            .await
+            .unwrap();
+        assert!(early.is_empty(), "退避未到期不得重发");
+        let due = claim_due(&mut conn, &account, 500, 2_000, "c3", "a3", 4)
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].state, SendState::Sending);
+    }
+}

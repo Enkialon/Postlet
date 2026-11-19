@@ -257,58 +257,6 @@ pub async fn uid_delete_async(
     .await
 }
 
-/// APPEND 结果三态：成功 = Some(true)，服务器明确拒绝 = Some(false)，
-/// 连接/响应未知 = None（调用方记 uncertain，不重复 APPEND）。
-pub fn append_message<T: std::io::Read + std::io::Write>(
-    session: &mut Session<T>,
-    folder: &str,
-    mime: &[u8],
-) -> Result<Option<bool>, InfraError> {
-    classify_append_result(session.append(folder, mime))
-}
-
-fn classify_append_result(
-    result: Result<(), imap::Error>,
-) -> Result<Option<bool>, InfraError> {
-    match result {
-        Ok(()) => Ok(Some(true)),
-        Err(imap::Error::No(message)) | Err(imap::Error::Bad(message)) => {
-            eprintln!("IMAP APPEND 被服务器拒绝: {message}");
-            Ok(Some(false))
-        }
-        Err(imap::Error::Append) => Ok(Some(false)),
-        Err(imap::Error::ConnectionLost) | Err(imap::Error::Io(_)) | Err(imap::Error::Parse(_)) => {
-            Ok(None)
-        }
-        Err(error) => {
-            // 其余错误无法证明服务器未保存：保留未知，禁止自动重发。
-            eprintln!("IMAP APPEND 未确认: {error}");
-            Ok(None)
-        }
-    }
-}
-
-pub async fn append_message_async(
-    endpoint: &ImapEndpoint,
-    auth: &ImapAuth,
-    operation: &MailOperation,
-    folder: &str,
-    mime: &[u8],
-) -> Result<Option<bool>, InfraError> {
-    // 连接/登录失败可证明尚未 APPEND；使用调用方的账号取消对象，不再另建。
-    let mut session = super::connection::session_login(endpoint, auth, operation).await?;
-    let folder = folder.to_string();
-    let mime = mime.to_vec();
-    operation
-        .run_blocking_preserving_result(move || {
-            // APPEND 结果与 logout 结果分开：清理失败不得覆盖已取得的 APPEND 事实。
-            let out = append_message(&mut session, &folder, &mime);
-            let _ = session.logout();
-            out
-        })
-        .await
-}
-
 pub async fn uid_move_async(
     endpoint: &ImapEndpoint,
     auth: &ImapAuth,
@@ -369,22 +317,6 @@ mod tests {
         let result = uid_delete(&mut session, "INBOX", &super::super::parse::remote_id(1, 20));
         let written = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         (result, written)
-    }
-
-    #[test]
-    fn append_connection_loss_is_unknown_not_a_definite_rejection() {
-        assert_eq!(classify_append_result(Ok(())).unwrap(), Some(true));
-        assert_eq!(classify_append_result(Err(imap::Error::No("no".into()))).unwrap(), Some(false));
-        assert_eq!(classify_append_result(Err(imap::Error::Append)).unwrap(), Some(false));
-        assert_eq!(classify_append_result(Err(imap::Error::ConnectionLost)).unwrap(), None);
-        assert_eq!(
-            classify_append_result(Err(imap::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "lost"
-            ))))
-            .unwrap(),
-            None
-        );
     }
 
     #[test]

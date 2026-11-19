@@ -462,31 +462,3 @@ CREATE TABLE mail_download_candidates (
 
 CREATE INDEX idx_download_candidates_due
     ON mail_download_candidates(account_id, folder_id, state, next_attempt_at);
-
--- Task 14：已发送副本归档（策略：server_saved / client_append）
-ALTER TABLE accounts ADD COLUMN sent_archive_policy TEXT NOT NULL DEFAULT 'needs_configuration'
-    CHECK(sent_archive_policy IN ('server_saved','client_append','needs_configuration'));
-
-CREATE TABLE archive_tasks (
-    task_id            TEXT NOT NULL,
-    account_id         TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    send_task_id       TEXT NOT NULL,
-    snapshot_id        TEXT NOT NULL,
-    state              TEXT NOT NULL DEFAULT 'waiting_server_copy'
-        CHECK(state IN ('waiting_server_copy','append_pending','appending','confirmed','retryable','uncertain','needs_configuration')),
-    target_folder_id   TEXT,
-    target_binding_revision INTEGER,
-    attempt_id         TEXT,
-    claim_token        TEXT,
-    lease_until        INTEGER,
-    next_attempt_at    INTEGER,
-    last_error         TEXT,
-    confirmed_message_id TEXT,
-    created_at         INTEGER NOT NULL,
-    updated_at         INTEGER NOT NULL,
-    PRIMARY KEY (account_id, task_id),
-    FOREIGN KEY (account_id, send_task_id) REFERENCES send_tasks(account_id, task_id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_archive_tasks_due
-    ON archive_tasks(state, next_attempt_at);

@@ -372,7 +372,8 @@ pub async fn list_ids_by_session(
     Ok(rows.into_iter().map(MessageId::new).collect())
 }
 
-/// 发送状态区：尚无远端位置的本地发送记录（不混入普通邮件列表）。
+/// 发信记录区：尚无远端位置的本地发信记录（不混入普通邮件列表）。
+/// 已受理的记录不会因缺少 Sent 副本而消失，重启后仍可回看。
 pub async fn list_pending_sends(
     conn: &mut SqliteConnection,
     account_id: &AccountId,

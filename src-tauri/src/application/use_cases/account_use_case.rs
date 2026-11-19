@@ -12,12 +12,11 @@ use uuid::Uuid;
 
 use crate::application::dto::{
     ChangeOrigin, ChangeSet, UpdateAccountAliasesCommand, UpdateAccountDisplaySettingsCommand,
-    UpdateSentArchivePolicyCommand,
 };
 use crate::application::error::AppError;
 use crate::application::use_cases::aggregate_worker_use_case;
 use crate::application::use_cases::compose_use_case;
-use crate::domain::entities::{Account, ArchivePolicy};
+use crate::domain::entities::Account;
 
 /// 列出当前已登录的 Outlook 账户，供启动恢复和账户切换使用。
 ///
@@ -148,7 +147,6 @@ async fn persist_graph_sign_in(
             mail_sync_status: existing.mail_sync_status,
             mail_sync_error: existing.mail_sync_error,
             include_in_all: existing.include_in_all,
-            sent_archive_policy: existing.sent_archive_policy,
             created_at: existing.created_at,
             updated_at: now,
         }
@@ -164,7 +162,6 @@ async fn persist_graph_sign_in(
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
             include_in_all: true,
-            sent_archive_policy: ArchivePolicy::NeedsConfiguration,
             created_at: now,
             updated_at: now,
         }
@@ -261,59 +258,6 @@ pub async fn update_display_settings(
     accounts::update_display_settings(&mut tx, &cmd.account_id, cmd.include_in_all)
         .await
         .map_err(AppError::from)?;
-    accounts::bump_change_version(&mut tx, &cmd.account_id)
-        .await
-        .map_err(AppError::from)?;
-    let account = accounts::get(&mut tx, &cmd.account_id)
-        .await?
-        .ok_or_else(|| AppError::not_found(format!("账户不存在: {}", cmd.account_id)))?;
-    tx.commit().await?;
-    Ok(account)
-}
-
-/// 确认归档策略；客户端保存必须有有效 Sent 目标，并把待配置任务推进到可执行状态。
-pub async fn update_sent_archive_policy(
-    db: &SqlitePool,
-    cmd: UpdateSentArchivePolicyCommand,
-) -> Result<Account, AppError> {
-    use crate::domain::entities::{archive_initial_state, ArchivePolicy};
-    if cmd.policy == ArchivePolicy::NeedsConfiguration {
-        return Err(AppError::validation("请选择服务器保存或客户端保存策略"));
-    }
-    let mut tx = db.begin().await?;
-    let target: Option<(String, i64)> = if cmd.policy == ArchivePolicy::ClientAppend {
-        let row = sqlx::query_as::<_, (String, i64)>(
-            "SELECT folder_id, binding_revision FROM mail_folder_sync_state
-             WHERE account_id = ? AND role = 'sent' AND is_retired = 0
-             ORDER BY folder_id LIMIT 1",
-        )
-        .bind(cmd.account_id.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(AppError::from)?;
-        Some(row.ok_or_else(|| {
-            AppError::validation("未找到可用的 Sent 文件夹，请先刷新文件夹列表")
-        })?)
-    } else {
-        None
-    };
-    accounts::update_sent_archive_policy(&mut tx, &cmd.account_id, cmd.policy)
-        .await
-        .map_err(AppError::from)?;
-    let now = now_ms();
-    crate::infrastructure::repository::archive_tasks::advance_needs_configuration(
-        &mut tx,
-        &cmd.account_id,
-        archive_initial_state(cmd.policy),
-        target
-            .as_ref()
-            .map(|(folder_id, _)| crate::domain::value_objects::FolderId::new(folder_id))
-            .as_ref(),
-        target.as_ref().map(|(_, revision)| *revision),
-        now,
-    )
-    .await
-    .map_err(AppError::from)?;
     accounts::bump_change_version(&mut tx, &cmd.account_id)
         .await
         .map_err(AppError::from)?;
@@ -485,7 +429,6 @@ mod graph_sign_in_tests {
             mail_sync_status: SyncStatus::Idle,
             mail_sync_error: None,
             include_in_all: true,
-            sent_archive_policy: ArchivePolicy::NeedsConfiguration,
             created_at: now,
             updated_at: now,
         };

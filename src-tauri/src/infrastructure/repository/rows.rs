@@ -80,11 +80,6 @@ pub(super) fn account(row: &SqliteRow) -> Result<Account, sqlx::Error> {
         mail_sync_status: parse_syncstatus(row.try_get("mail_sync_status")?)?,
         mail_sync_error: row.try_get("mail_sync_error")?,
         include_in_all: row.try_get("include_in_all")?,
-        sent_archive_policy: {
-            let raw: String = row.try_get("sent_archive_policy")?;
-            ArchivePolicy::parse(&raw)
-                .ok_or_else(|| sqlx::Error::Decode("无效归档策略".into()))?
-        },
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })

@@ -568,12 +568,12 @@ watch(
             <section
               v-if="pendingSends.length > 0"
               class="mb-5 rounded-lg border border-border-subtle bg-surface-elevated p-3"
-              aria-label="发送状态"
+              aria-label="发信记录"
             >
               <p
                 class="m-0 mb-2 text-[12px] font-medium tracking-wide text-text-tertiary uppercase"
               >
-                发送状态
+                发信记录
               </p>
               <div class="flex flex-col gap-3">
                 <MessageCard
@@ -585,7 +585,6 @@ watch(
                   @select="openMailReading(item)"
                   @delete="requestDeleteMessage(item.message.id)"
                   @reassign="openReassign"
-                  @mark-unread="markRead([item.message.id], false)"
                   @reply="onReplyMessage(item)"
                 />
               </div>

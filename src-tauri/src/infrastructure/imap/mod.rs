@@ -11,7 +11,7 @@ mod stream;
 
 pub use client::{
     discover_folder_tree, discover_folders, list_capabilities, load_connection,
-    append_message_async, uid_delete, uid_delete_async, uid_move_async, uid_set_seen,
+    uid_delete, uid_delete_async, uid_move_async, uid_set_seen,
     uid_set_seen_async,
     ImapAuth, ImapEndpoint, ImapFolderNode,
 };

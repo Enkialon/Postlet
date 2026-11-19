@@ -111,7 +111,7 @@ export function useConversations() {
     return nav.listAccountId.value;
   }
 
-  async function loadInitial(): Promise<void> {
+  async function loadInitial(): Promise<boolean> {
     const filter = nav.accountFilter.value;
     const version = ++listState.requestVersion;
     const session = nav.sessionVersion.value;
@@ -130,7 +130,7 @@ export function useConversations() {
         session !== nav.sessionVersion.value ||
         filter !== nav.accountFilter.value
       ) {
-        return;
+        return false;
       }
       if (page.has_more && !page.next_cursor) {
         listState.error = {
@@ -144,18 +144,20 @@ export function useConversations() {
         });
         listState.hasMore = false;
         listState.nextCursor = null;
-        return;
+        return false;
       }
       applyPageToState(page.items, { mode: 'replace', forceApplyOrder: true });
       listState.nextCursor = page.next_cursor;
       listState.hasMore = page.has_more;
       await restoreSelection();
     } catch (e) {
-      if (version !== listState.requestVersion) return;
+      if (version !== listState.requestVersion) return false;
       listState.error = asAppError(e);
+      return false;
     } finally {
       if (version === listState.requestVersion) listState.loading = 'idle';
     }
+    return true;
   }
 
   async function loadMore(): Promise<void> {
@@ -386,19 +388,24 @@ export function useConversations() {
         return;
       }
     }
-    let changed = false;
+    const stale: Array<[string, number]> = [];
     for (const id of accountIds) {
       try {
         const version = await ports.account.getChangeVersion(id);
-        if (version > (appliedVersions.get(id) ?? 0)) {
-          appliedVersions.set(id, version);
-          changed = true;
-        }
+        if (version > (appliedVersions.get(id) ?? 0)) stale.push([id, version]);
       } catch {
         // 账号可能刚被移除；忽略单个失败
       }
     }
-    if (changed) void loadInitial();
+    if (stale.length === 0) return;
+    // 查询成功应用后才算覆盖；失败保留旧版本，下次焦点重试。
+    if (await loadInitial()) {
+      for (const [id, version] of stale) {
+        if (version > (appliedVersions.get(id) ?? 0)) {
+          appliedVersions.set(id, version);
+        }
+      }
+    }
   }
 
   function handleProjectFocus(): void {
@@ -409,9 +416,16 @@ export function useConversations() {
     if (mailChangedBound) return;
     mailChangedBound = true;
     await ports.changeEvents.subscribeMailChanged((event) => {
-      appliedVersions.set(event.account_id, event.account_version);
       const current = nav.listAccountId.value;
-      if (!current || current === event.account_id) void loadInitial();
+      if (!current || current === event.account_id) {
+        // 列表刷新成功才算覆盖该版本；失败时不标记，让下次焦点补偿重查。
+        void loadInitial().then((applied) => {
+          if (!applied) return;
+          if (event.account_version > (appliedVersions.get(event.account_id) ?? 0)) {
+            appliedVersions.set(event.account_id, event.account_version);
+          }
+        });
+      }
     });
     window.addEventListener('focus', handleProjectFocus);
     void reconcileAccountVersions();

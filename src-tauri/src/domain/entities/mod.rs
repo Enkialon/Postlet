@@ -1,7 +1,6 @@
 //! 领域实体
 
 mod account;
-mod archive_task;
 mod aggregate_job;
 mod contact;
 mod group;
@@ -13,10 +12,6 @@ mod sync_state;
 
 pub use account::Account;
 pub use aggregate_job::SessionAggregateJob;
-pub use archive_task::{
-    initial_state as archive_initial_state, next_after_append, ArchivePolicy, ArchiveState,
-    ArchiveTask,
-};
 pub use contact::Contact;
 pub use group::{Group, GroupParticipant};
 pub use mail_transport::{AccountMailTransport, ReceiveConfig, SendConfig, MailEndpoint, PasswordAuthConfig, GraphAuthConfig, PasswordMailConfig};

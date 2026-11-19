@@ -32,7 +32,6 @@ const {
   folderToggleKey,
   updateAccountSettings,
   updateAccountAliases,
-  updateSentArchivePolicy,
   signOutAccount,
   clearLocalData,
   setLocale,
@@ -82,12 +81,6 @@ function onRemoveAlias(account: Account, alias: string): void {
 
 function onLocaleChange(e: Event) {
   setLocale((e.target as HTMLSelectElement).value as AppLocale);
-}
-
-function onSentPolicyChange(account: Account, e: Event) {
-  const value = (e.target as HTMLSelectElement).value;
-  if (value !== 'server_saved' && value !== 'client_append') return;
-  void updateSentArchivePolicy(account.id, value);
 }
 
 function onIncludeInAll(account: Account, e: Event) {
@@ -287,25 +280,6 @@ function onFolderSyncToggle(
                       <span class="mt-1 block text-[12px] text-text-tertiary">
                         关闭后，会话/联系人/群组的「全部」视图将不再包含此账号
                       </span>
-                    </span>
-                  </label>
-
-                  <label class="grid gap-1.5 text-[14px] text-text-primary">
-                    已发送副本归档
-                    <select
-                      class="max-w-xs rounded-md border border-border-subtle bg-surface-input px-3 py-2 text-[14px] text-text-primary outline-none focus:border-brand"
-                      :value="account.sent_archive_policy"
-                      :disabled="savingId === account.id"
-                      @change="onSentPolicyChange(account, $event)"
-                    >
-                      <option value="needs_configuration" disabled>
-                        请选择（未确认前不归档）
-                      </option>
-                      <option value="server_saved">服务器自动保存副本</option>
-                      <option value="client_append">客户端保存到 Sent</option>
-                    </select>
-                    <span class="text-[12px] text-text-tertiary">
-                      客户端保存需要本账号存在已识别的 Sent 文件夹
                     </span>
                   </label>
 

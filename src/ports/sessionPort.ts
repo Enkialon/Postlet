@@ -20,7 +20,7 @@ export interface SessionPort {
   listMessages(
     query: SessionMessagesQuery,
   ): Promise<CursorPage<MessageWithRecipients>>;
-  /** 尚无远端位置的本地发送记录（发送状态区；不混入普通列表） */
+  /** 尚无远端位置的本地发信记录（发信记录区；含已发送，不混入普通列表） */
   listPendingSends(
     accountId: AccountId,
     sessionId: SessionId,

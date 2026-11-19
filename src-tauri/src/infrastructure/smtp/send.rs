@@ -125,11 +125,9 @@ pub async fn send_message(
         SmtpAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
     };
 
-    // 发送阶段无法从 lettre 错误精确还原；有 SMTP 状态码时按码分类，
-    // 无状态码的 IO/超时错误保守视为结果不确定，不猜测「服务器未接受」。
     match transport.send(message).await {
         Ok(_) => Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data)),
-        Err(err) => Err(classify_smtp_error(&err)),
+        Err(err) => classify_smtp_result(&err),
     }
 }
 
@@ -242,18 +240,25 @@ pub async fn send_raw_message(
         SmtpAuth::OAuth2 { .. } => unreachable!("OAuth2 rejected before connection"),
     };
 
+    // 发送阶段无法从 lettre 错误精确还原：有 SMTP 状态码时按码分类；
+    // 无状态码的错误按「能否证明未提交」分类，不猜测已经写入内容的结果。
     match transport.send_raw(&envelope, mime).await {
         Ok(_) => Ok(SendResult::new(SendOutcome::Accepted, SendStage::Data)),
-        Err(err) => Err(classify_smtp_error(&err)),
+        Err(err) => classify_smtp_result(&err),
     }
 }
 
-/// 将 lettre 错误映射为「不可自动重试 / 可重试 / 结果不确定」。
+/// 将 lettre 错误映射为发送结论。
 ///
 /// 与锁定版本 lettre 0.11.23 的 `smtp::Error` API 对应：
-/// `status()` 给出 4xx/5xx；`is_tls` / `is_connection` 类错误可证明未提交内容；
-/// 其余（无状态码的 IO/网络中断）保守判为「结果不确定」。
-fn classify_smtp_error(err: &lettre::transport::smtp::Error) -> InfraError {
+/// `status()` 给出服务端应答码（证明内容未被接受）；
+/// `is_tls` / `is_client` 是本地即可确定失败；
+/// 建连/DNS 失败（`Display` 固定为 `Connection error`）可证明尚未写入；
+/// 其余（写入/读应答的 IO、超时、应答解析失败、连接被关闭）无法证明未提交，
+/// 只能记为结果不确定，绝不自动重发。
+fn classify_smtp_result(
+    err: &lettre::transport::smtp::Error,
+) -> Result<SendResult, InfraError> {
     let detail = err.to_string();
 
     if let Some(code) = err.status() {
@@ -265,52 +270,47 @@ fn classify_smtp_error(err: &lettre::transport::smtp::Error) -> InfraError {
             .unwrap_or(0);
         return match code {
             // 认证类拒绝：530/534/535 等
-            530..=539 => InfraError::Auth {
+            530..=539 => Err(InfraError::Auth {
                 message: format!("SMTP 认证被拒绝 ({code}): {detail}"),
-            },
-            // 4xx：暂时拒绝，可退避重试
-            400..=499 => InfraError::Remote {
+            }),
+            // 4xx：服务端明确暂时拒绝，可退避重试
+            400..=499 => Err(InfraError::Remote {
                 message: format!("SMTP 暂时拒绝 ({code}): {detail}"),
                 retryable: true,
-            },
+            }),
             // 5xx：永久拒绝
-            _ => InfraError::Remote {
+            _ => Err(InfraError::Remote {
                 message: format!("SMTP 永久拒绝 ({code}): {detail}"),
                 retryable: false,
-            },
+            }),
         };
     }
 
     if err.is_tls() {
         // TLS 不可用：重试无意义，且绝不能降级为明文
-        return InfraError::Remote {
+        return Err(InfraError::Remote {
             message: format!("SMTP 无法建立受保护连接: {detail}"),
             retryable: false,
-        };
-    }
-    if err.is_transport_shutdown() {
-        return InfraError::Network {
-            message: format!("SMTP 连接中断: {detail}"),
-        };
-    }
-    if err.is_timeout() {
-        // 超时可能发生在 DATA 之后，不能断言未被接受
-        return InfraError::Remote {
-            message: format!("SMTP 结果不确定（超时）: {detail}"),
-            retryable: false,
-        };
+        });
     }
     if err.is_client() {
-        return InfraError::Remote {
+        return Err(InfraError::Remote {
             message: format!("SMTP 客户端拒绝发送: {detail}"),
             retryable: false,
-        };
+        });
+    }
+    if is_connection_failure(err) {
+        // 建连/DNS 失败：可证明未提交，按可恢复的暂时失败处理。
+        return Ok(SendResult::new(SendOutcome::Transient, SendStage::Connect));
     }
 
-    InfraError::Remote {
-        message: format!("SMTP 结果不确定: {detail}"),
-        retryable: false,
-    }
+    Ok(SendResult::new(SendOutcome::Uncertain, SendStage::Data))
+}
+
+/// lettre 0.11 未公开连接阶段错误种类；建连/DNS 失败的 `Display` 固定以
+/// `Connection error` 开头，且不会在会话中途产生。
+fn is_connection_failure(err: &lettre::transport::smtp::Error) -> bool {
+    err.to_string().starts_with("Connection error")
 }
 
 #[cfg(test)]
@@ -376,5 +376,74 @@ mod tests {
             InfraError::Remote { retryable, .. } => Some(*retryable),
             _ => None,
         }
+    }
+
+    fn envelope() -> crate::infrastructure::mail::outbound_content::SnapshotEnvelope {
+        use crate::infrastructure::mail::outbound_content::{SnapshotEnvelope, SnapshotRecipient};
+        SnapshotEnvelope {
+            from: "me@example.com".into(),
+            from_name: String::new(),
+            to: vec![SnapshotRecipient {
+                address: "to@example.com".into(),
+                name: String::new(),
+            }],
+            cc: vec![],
+            bcc: vec![],
+        }
+    }
+
+    /// 建连失败可证明未提交：既不能记为结果未知，也不能直接判死。
+    #[tokio::test]
+    async fn connect_failure_is_recoverable_instead_of_unknown_or_failed() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            send_raw_message(
+                &SmtpEndpoint {
+                    host: "127.0.0.1".into(),
+                    port,
+                    tls: MailTlsMode::Implicit,
+                },
+                &SmtpAuth::Password {
+                    username: "u".into(),
+                    password: "p".into(),
+                },
+                b"From: me@example.com\r\n\r\nbody",
+                &envelope(),
+            ),
+        )
+        .await
+        .expect("建连失败必须立即返回，不得等待超时")
+        .unwrap();
+        assert_eq!(
+            result,
+            SendResult::new(SendOutcome::Transient, SendStage::Connect)
+        );
+    }
+
+    /// 本地即可确定的失败仍是确定失败，不会退化为未知。
+    #[tokio::test]
+    async fn invalid_envelope_is_definitely_not_sent() {
+        let mut envelope = envelope();
+        envelope.from = "not-an-address".into();
+        let error = send_raw_message(
+            &SmtpEndpoint {
+                host: "must-not-connect.invalid".into(),
+                port: 587,
+                tls: MailTlsMode::Implicit,
+            },
+            &SmtpAuth::Password {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            b"body",
+            &envelope,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error_kind(&error), Some(false)));
+        assert!(error.to_string().contains("无效发件地址"));
     }
 }

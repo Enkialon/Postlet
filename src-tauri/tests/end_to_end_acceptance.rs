@@ -2,10 +2,10 @@
 
 use postlet_lib::domain::services::missing_imap_page;
 use postlet_lib::domain::value_objects::{
-    AccountId, EmailAddress, FolderId, MessageId, RemoteKey, SessionId,
+    AccountId, FolderId, MessageId, RemoteKey, SessionId,
 };
 use postlet_lib::infrastructure::db;
-use postlet_lib::infrastructure::repository::{accounts, messages, mutations, sessions};
+use postlet_lib::infrastructure::repository::{messages, mutations, sessions};
 use std::collections::HashSet;
 use sqlx::SqlitePool;
 
@@ -148,17 +148,18 @@ fn uid_gaps_are_downloaded_by_set_difference() {
     assert!(!order.is_empty());
 }
 
-/// 接受确认与归档入队同事务；目标使用真实绑定修订而不是硬编码 1。
+/// 受理结果写入本地发信记录：同事务提交发送状态与账号版本，会话可回看。
+/// 已发送与 Sent 副本无关，客户端也不再有任何归档任务。
 #[tokio::test]
-async fn accepted_send_commits_result_and_archive_task_together() {
+async fn accepted_send_commits_local_record_and_account_version() {
     use postlet_lib::application::use_cases::outbound_use_case;
     use postlet_lib::domain::entities::{next_state, SendState, SendTask};
     use postlet_lib::domain::mail::{SendOutcome, SendStage};
 
     let db = db::open_memory().await.unwrap();
     sqlx::query(
-        "INSERT INTO accounts(id,email,created_at,updated_at,sent_archive_policy)
-         VALUES ('a','a@example.com',1,1,'client_append')",
+        "INSERT INTO accounts(id,email,created_at,updated_at)
+         VALUES ('a','a@example.com',1,1)",
     )
     .execute(&db)
     .await
@@ -175,15 +176,6 @@ async fn accepted_send_commits_result_and_archive_task_together() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO mail_folder_sync_state(
-            account_id,folder_id,protocol,remote_binding,binding_revision,is_retired,
-            display_name,sync_enabled,sync_status,updated_at,role,role_source)
-         VALUES ('a','sent-uuid','imap','Sent Items',7,0,'Sent',0,'idle',1,'sent','server')",
-    )
-    .execute(&db)
-    .await
-    .unwrap();
-    sqlx::query(
         "INSERT INTO sessions(account_id,id,kind,normalized_address,created_at,updated_at)
          VALUES ('a','s1','private','peer@example.com',1,1)",
     )
@@ -192,8 +184,8 @@ async fn accepted_send_commits_result_and_archive_task_together() {
     .unwrap();
     sqlx::query(
         "INSERT INTO messages(account_id,id,session_id,subject,body_preview,body_content_type,
-            from_name,is_read,is_draft,is_outbound,has_attachments,importance,local_updated_at)
-         VALUES ('a','m1','s1','s','','text','',0,0,1,0,'normal',1)",
+            body_content,from_name,sent_at,is_read,is_draft,is_outbound,has_attachments,importance,local_updated_at)
+         VALUES ('a','m1','s1','s','t','text','t','',1,0,0,1,0,'normal',1)",
     )
     .execute(&db)
     .await
@@ -263,16 +255,17 @@ async fn accepted_send_commits_result_and_archive_task_together() {
     .await
     .unwrap();
     assert_eq!(state, "accepted");
-    let (archive_state, folder, revision): (String, String, i64) = sqlx::query_as(
-        "SELECT state, target_folder_id, target_binding_revision FROM archive_tasks
-         WHERE account_id='a' AND send_task_id='send-1'",
+
+    // 入队时的会话投影：本地发信记录参与排序与摘要（不依赖远端位置）
+    let projected = sessions::recompute_projection(
+        &mut conn,
+        &AccountId::new("a"),
+        &SessionId::new("s1"),
     )
-    .fetch_one(&mut *conn)
     .await
     .unwrap();
-    assert_eq!(archive_state, "append_pending");
-    assert_eq!(folder, "sent-uuid");
-    assert_eq!(revision, 7);
+    assert_eq!(projected.last_message_id, Some(MessageId::new("m1")));
+    assert_eq!(projected.last_message_at, Some(1));
 
     // 普通列表只展示实际位置消息；无位置发送记录进入发送状态区。
     let ordinary = sessions::list_messages(
@@ -294,11 +287,70 @@ async fn accepted_send_commits_result_and_archive_task_together() {
     .await
     .unwrap();
     assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].message.id, MessageId::new("m1"));
+    assert_eq!(pending[0].message.body_content.as_deref(), Some("t"));
+    assert_eq!(pending[0].send_state, Some(SendState::Accepted));
 
-    // 仅凭同 Message-ID 不得自动确认归档任务。
-    let state: String = sqlx::query_scalar("SELECT state FROM archive_tasks WHERE account_id='a'")
-        .fetch_one(&mut *conn)
+    // 只发过信的会话仍出现在默认会话列表，摘要来自本地发信记录。
+    let page = sessions::list(
+        &mut conn,
+        Some(&AccountId::new("a")),
+        None,
+        50,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let item = page
+        .items
+        .iter()
+        .find(|item| item.session.id == SessionId::new("s1"))
+        .expect("仅有本地发信记录的会话必须可见");
+    assert_eq!(item.session.last_message_id, Some(MessageId::new("m1")));
+    let preview = item
+        .last_message
+        .as_ref()
+        .expect("会话摘要必须覆盖本地发信");
+    assert!(preview.is_outbound);
+    assert_eq!(preview.subject, "s");
+
+    // 无远端位置的本地记录不得被当成远端标记目标。
+    let rejected = mutations::put_read(
+        &mut conn,
+        &AccountId::new("a"),
+        &MessageId::new("m1"),
+        true,
+    )
+    .await;
+    assert!(rejected.is_err(), "本地发信记录没有远端位置，不得提交远端标记");
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pending_message_mutations WHERE account_id='a'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(queued, 0);
+}
+
+/// 新建 SQLite 初始化后不存在客户端归档：无归档表、无归档策略字段。
+#[tokio::test]
+async fn fresh_schema_has_no_client_sent_archive() {
+    let db = db::open_memory().await.unwrap();
+    let tables: Vec<String> = sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetch_all(&db)
         .await
         .unwrap();
-    assert_eq!(state, "append_pending");
+    assert!(
+        !tables.iter().any(|name| name == "archive_tasks"),
+        "客户端归档表必须随归档链移除"
+    );
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('accounts')")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert!(
+        !columns.iter().any(|name| name == "sent_archive_policy"),
+        "归档策略字段必须随归档链移除"
+    );
 }

@@ -63,14 +63,21 @@ export function useMessages() {
     );
   }
 
-  async function loadInitial(): Promise<void> {
+  /** 记录已真正应用到界面的版本；查询失败或无归属的结果不得当作已覆盖。 */
+  function markVersionApplied(accountId: string, version: number): void {
+    if (version > (appliedVersionByAccount.get(accountId) ?? 0)) {
+      appliedVersionByAccount.set(accountId, version);
+    }
+  }
+
+  async function loadInitial(): Promise<boolean> {
     const accountId = nav.accountId.value;
     const sessionId = nav.sessionId.value;
     if (!accountId || !sessionId) {
       Object.assign(messageState, createEmptyPageState());
       pendingSends.value = [];
       expandedIds.value = new Set();
-      return;
+      return false;
     }
     const version = ++messageState.requestVersion;
     const pendingVersion = ++pendingRequestVersion;
@@ -91,7 +98,7 @@ export function useMessages() {
         }),
         ports.session.listPendingSends(accountId, sessionId),
       ]);
-      if (!isCurrentRequest(version, accountId, sessionId, session)) return;
+      if (!isCurrentRequest(version, accountId, sessionId, session)) return false;
       for (const item of page.items) upsertCache(accountId, item);
       messageState.items = [...page.items].reverse();
       if (pendingVersion === pendingRequestVersion) {
@@ -108,22 +115,23 @@ export function useMessages() {
         };
       }
     } catch (e) {
-      if (!isCurrentRequest(version, accountId, sessionId, session)) return;
+      if (!isCurrentRequest(version, accountId, sessionId, session)) return false;
       messageState.error = asAppError(e);
       messageState.loading = 'idle';
-      return;
+      return false;
     }
-    if (!isCurrentRequest(version, accountId, sessionId, session)) return;
+    if (!isCurrentRequest(version, accountId, sessionId, session)) return false;
     messageState.loading = 'idle';
+    return true;
   }
 
   /** 发送状态区独立重查；同一会话的迟到响应不得覆盖较新的结果。 */
-  async function refreshPendingSends(): Promise<void> {
+  async function refreshPendingSends(): Promise<boolean> {
     const accountId = nav.accountId.value;
     const sessionId = nav.sessionId.value;
     if (!accountId || !sessionId) {
       pendingSends.value = [];
-      return;
+      return false;
     }
     const version = ++pendingRequestVersion;
     const session = nav.sessionVersion.value;
@@ -135,11 +143,13 @@ export function useMessages() {
         sessionId !== nav.sessionId.value ||
         session !== nav.sessionVersion.value
       ) {
-        return;
+        return false;
       }
       pendingSends.value = items;
+      return true;
     } catch {
       // 状态区刷新失败保留旧值；下一次事件或版本补偿会再查。
+      return false;
     }
   }
 
@@ -375,8 +385,9 @@ export function useMessages() {
       const version = await ports.account.getChangeVersion(accountId);
       const applied = appliedVersionByAccount.get(accountId) ?? 0;
       if (version <= applied) return;
-      appliedVersionByAccount.set(accountId, version);
-      if (nav.accountId.value === accountId) void loadInitial();
+      if (nav.accountId.value !== accountId) return;
+      // 查询成功应用到界面后才算覆盖；失败则保留旧版本，下次焦点重试。
+      if (await loadInitial()) markVersionApplied(accountId, version);
     } catch {
       // 账号可能刚被移除；焦点补偿失败不阻塞界面
     }
@@ -386,7 +397,6 @@ export function useMessages() {
     if (mailChangedBound) return;
     mailChangedBound = true;
     await ports.changeEvents.subscribeMailChanged((event) => {
-      appliedVersionByAccount.set(event.account_id, event.account_version);
       const accountId = nav.accountId.value;
       const sessionId = nav.sessionId.value;
       if (!accountId || !sessionId || event.account_id !== accountId) return;
@@ -397,13 +407,17 @@ export function useMessages() {
       if (!touchesSession && !touchesMessage) return;
       if (event.origin === 'user_action') {
         // 发送状态区不在 entityCache：直接重查，覆盖新增、状态变化和取消移除。
-        void refreshPendingSends();
+        void refreshPendingSends().then((applied) => {
+          if (applied) markVersionApplied(event.account_id, event.account_version);
+        });
         if (event.message_ids.length > 0) {
           void applySendStates(accountId, event.message_ids);
         }
         return;
       }
-      void loadInitial();
+      void loadInitial().then((applied) => {
+        if (applied) markVersionApplied(event.account_id, event.account_version);
+      });
     });
     if (!focusBound) {
       focusBound = true;

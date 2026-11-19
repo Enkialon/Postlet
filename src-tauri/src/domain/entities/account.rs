@@ -22,8 +22,6 @@ pub struct Account {
     pub mail_sync_error: Option<String>,
     /// 是否纳入「全部账号」会话/联系人/群组查询（默认是；与是否已登录无关）
     pub include_in_all: bool,
-    /// 已发送副本归档策略；未确认时不得自动选择
-    pub sent_archive_policy: crate::domain::entities::ArchivePolicy,
     pub created_at: TimestampMs,
     pub updated_at: TimestampMs,
 }

@@ -29,7 +29,6 @@ import type {
   UpdateAccountAliasesCommand,
   UpdateAccountDisplaySettingsCommand,
   UpdateGroupSendMembersCommand,
-  UpdateSentArchivePolicyCommand,
   UpsertImapSmtpAccountCommand,
 } from '../../domain/dto';
 import type {
@@ -78,8 +77,6 @@ export function createTauriPorts(): AppPorts {
         invoke<Account>('update_display_settings', { cmd }),
       updateAliases: (cmd: UpdateAccountAliasesCommand) =>
         invoke<Account>('update_account_aliases', { cmd }),
-      updateSentArchivePolicy: (cmd: UpdateSentArchivePolicyCommand) =>
-        invoke<Account>('update_sent_archive_policy', { cmd }),
       getChangeVersion: (accountId: AccountId) =>
         invoke<number>('get_account_change_version', { accountId }),
     },

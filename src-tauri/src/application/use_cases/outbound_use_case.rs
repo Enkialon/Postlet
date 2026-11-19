@@ -1,22 +1,16 @@
 //! 外发：将 PendingLocal 按 send_protocol 推到 Graph / SMTP。
 
 use crate::application::error::AppError;
-use crate::domain::entities::{MessageWithRecipients, SendConfig, GraphAuthConfig, PasswordMailConfig};
+use crate::domain::entities::SendConfig;
+use crate::domain::mail::{SendOutcome, SendResult, SendStage};
 use crate::domain::value_objects::{AccountId, BodyContentType};
 use crate::infrastructure::config::load_azure_auth_config;
 use crate::infrastructure::graph::{self, mail::GraphOutgoing};
+use crate::infrastructure::mail::operation::{CallOutcome, MailOperation};
 use crate::infrastructure::paths::AppPaths;
-use crate::infrastructure::repository::{accounts, mail_transports, messages};
-use crate::infrastructure::smtp::{self, SmtpOutgoing};
+use crate::infrastructure::repository::{accounts, mail_transports};
+use crate::infrastructure::smtp;
 use sqlx::SqlitePool;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// 执行一次已认领的发送尝试：读取不可变快照并派发，返回明确阶段与结论。
 ///
@@ -76,25 +70,12 @@ pub async fn execute_claimed_attempt(
         SendConfig::Smtp(config) => {
             let (endpoint, auth) =
                 smtp::load_connection(&paths.credentials_dir, config).await?;
-            // 取消发生在建立连接/写入前：明确不发送。
-            operation
-                .checkpoint()
-                .map_err(AppError::from)?;
-            match operation
-                .wait(async {
-                    Ok::<_, crate::infrastructure::error::InfraError>(
-                        smtp::send_raw_message(&endpoint, &auth, &mime, &envelope).await,
-                    )
-                })
-                .await
-            {
-                Ok(result) => result.map_err(classify_send_infra_error),
-                // 外层超时/取消时无法证明服务器未接受，禁止自动重发。
-                Err(_) => Ok(crate::domain::mail::SendResult::new(
-                    crate::domain::mail::SendOutcome::Uncertain,
-                    crate::domain::mail::SendStage::Data,
-                )),
-            }
+            // 取消发生在建立连接/写入前：明确不发送；写入后只保留协议自身结果。
+            run_remote_send(
+                operation,
+                smtp::send_raw_message(&endpoint, &auth, &mime, &envelope),
+            )
+            .await
         }
         SendConfig::Graph(auth) => {
             let config = load_azure_auth_config(&paths.config_dir).map_err(AppError::from)?;
@@ -126,42 +107,41 @@ pub async fn execute_claimed_attempt(
                 .iter()
                 .map(|r| (r.address.clone(), r.name.clone()))
                 .collect();
-            operation
-                .checkpoint()
-                .map_err(AppError::from)?;
-            let accepted = match operation
-                .wait(async {
-                    Ok::<_, crate::infrastructure::error::InfraError>(
-                        graph::mail::send_mail(
-                            &token,
-                            &GraphOutgoing {
-                                subject: snapshot.subject.clone(),
-                                body_content_type,
-                                body_content,
-                                to,
-                                cc,
-                                bcc,
-                                save_to_sent_items: true,
-                            },
-                        )
-                        .await,
-                    )
-                })
-                .await
-            {
-                Ok(result) => result,
-                // 外层取消/超时后请求可能已到达服务器。
-                Err(_) => Ok(crate::domain::mail::SendResult::new(
-                    crate::domain::mail::SendOutcome::Uncertain,
-                    crate::domain::mail::SendStage::Data,
-                )),
-            };
-            accepted.map_err(classify_send_infra_error)
+            run_remote_send(
+                operation,
+                graph::mail::send_mail(
+                    &token,
+                    &GraphOutgoing {
+                        subject: snapshot.subject.clone(),
+                        body_content_type,
+                        body_content,
+                        to,
+                        cc,
+                        bcc,
+                        save_to_sent_items: true,
+                    },
+                ),
+            )
+            .await
         }
     }
 }
 
-/// 已接受结果的本地收尾：发送状态、归档入队和账号版本同一事务提交。
+/// 远端写入统一边界：协议自身结果优先；未开始可恢复；开始后结果未知则不重发。
+async fn run_remote_send(
+    operation: &MailOperation,
+    call: impl std::future::Future<Output = Result<SendResult, crate::infrastructure::error::InfraError>>,
+) -> Result<SendResult, AppError> {
+    match operation.wait_preserving_result(call).await {
+        CallOutcome::Returned(result) => result.map_err(classify_send_infra_error),
+        // 取消发生在写入开始前：可证明未提交，按可恢复的暂时失败处理。
+        CallOutcome::NotStarted => Ok(SendResult::new(SendOutcome::Transient, SendStage::Connect)),
+        // 写入已开始后被取消/截止：没有明确回执，只能待确认，禁止自动重发。
+        CallOutcome::Aborted => Ok(SendResult::new(SendOutcome::Uncertain, SendStage::Data)),
+    }
+}
+
+/// 已接受结果的本地收尾：发送状态与账号版本同一事务提交。
 ///
 /// 网络已成功而本地提交失败时，调用方只能重试本步骤，不能重新发送邮件。
 pub async fn complete_accepted_attempt(
@@ -191,7 +171,6 @@ pub async fn complete_accepted_attempt(
         tx.rollback().await?;
         return Ok(None);
     }
-    enqueue_archive(&mut tx, account_id, task, now).await?;
     let version = crate::infrastructure::repository::accounts::bump_change_version(
         &mut tx, account_id,
     )
@@ -201,71 +180,116 @@ pub async fn complete_accepted_attempt(
     Ok(Some(version))
 }
 
-/// 按账号策略创建归档任务；与发送接受确认在同一事务内。
-async fn enqueue_archive(
-    conn: &mut sqlx::SqliteConnection,
-    account_id: &AccountId,
-    task: &crate::domain::entities::SendTask,
-    now: i64,
-) -> Result<(), AppError> {
-    let policy = {
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT a.sent_archive_policy, t.receive_protocol
-             FROM accounts a
-             JOIN account_mail_transport t ON t.account_id = a.id
-             WHERE a.id = ?",
-        )
-        .bind(account_id.as_str())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(AppError::from)?;
-        let Some((policy, protocol)) = row else {
-            return Ok(());
-        };
-        crate::domain::entities::ArchivePolicy::parse(&policy).unwrap_or_else(|| {
-            let protocol = crate::domain::value_objects::ReceiveProtocol::parse(&protocol)
-                .unwrap_or(crate::domain::value_objects::ReceiveProtocol::Imap);
-            crate::domain::entities::ArchivePolicy::default_for(protocol)
-        })
-    };
-    let state = crate::domain::entities::archive_initial_state(policy);
-    let target = if policy == crate::domain::entities::ArchivePolicy::ClientAppend {
-        sqlx::query_as::<_, (String, i64)>(
-            "SELECT folder_id, binding_revision FROM mail_folder_sync_state
-             WHERE account_id = ? AND role = 'sent' AND is_retired = 0
-             ORDER BY folder_id LIMIT 1",
-        )
-        .bind(account_id.as_str())
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(AppError::from)?
-    } else {
-        None
-    };
-    let state = if policy == crate::domain::entities::ArchivePolicy::ClientAppend && target.is_none() {
-        crate::domain::entities::ArchiveState::NeedsConfiguration
-    } else {
-        state
-    };
-    crate::infrastructure::repository::archive_tasks::enqueue_after_acceptance(
-        conn,
-        &format!("archive-{}", uuid::Uuid::new_v4().as_hyphenated()),
-        account_id,
-        &task.task_id,
-        &task.snapshot_id,
-        state,
-        target
-            .as_ref()
-            .map(|(folder_id, _)| crate::domain::value_objects::FolderId::new(folder_id))
-            .as_ref(),
-        target.as_ref().map(|(_, revision)| *revision),
-        now,
-    )
-    .await
-    .map_err(AppError::from)
-}
-
 /// InfraError → 发送结论；用于保留阶段/重试语义
 fn classify_send_infra_error(err: crate::infrastructure::error::InfraError) -> AppError {
     err.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{next_state, SendState};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn accepted() -> SendResult {
+        SendResult::new(SendOutcome::Accepted, SendStage::Data)
+    }
+
+    /// 取消与接受回执同时到达：server 已明确受理即为成功。
+    #[tokio::test]
+    async fn receipt_is_kept_when_cancelled_at_the_same_time() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let control = operation.clone();
+        let result = run_remote_send(&operation, async move {
+            control.cancel();
+            Ok(accepted())
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, accepted());
+        assert_eq!(next_state(result.outcome, result.stage), SendState::Accepted);
+        assert!(operation.checkpoint().is_err(), "取消事实仍必须保留");
+    }
+
+    /// 写入开始前取消：未调用协议、可安全恢复为可重试。
+    #[tokio::test]
+    async fn cancellation_before_write_is_recoverable_and_skips_the_call() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        operation.cancel();
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let result = run_remote_send(&operation, async move {
+            flag.store(true, Ordering::SeqCst);
+            Ok(accepted())
+        })
+        .await
+        .unwrap();
+        assert!(!called.load(Ordering::SeqCst), "未开始的协议调用不得执行");
+        assert_eq!(
+            result,
+            SendResult::new(SendOutcome::Transient, SendStage::Connect)
+        );
+        assert_eq!(next_state(result.outcome, result.stage), SendState::Retryable);
+    }
+
+    /// 预算已耗尽且未开始写入：同样可恢复，不记为结果未知。
+    #[tokio::test]
+    async fn expired_budget_before_write_is_recoverable() {
+        let operation = MailOperation::new(Duration::ZERO);
+        let result = run_remote_send(&operation, async { Ok(accepted()) })
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            SendResult::new(SendOutcome::Transient, SendStage::Connect)
+        );
+    }
+
+    /// 写入开始后被取消：没有明确回执，只能 uncertain，下一次 tick 不重发。
+    #[tokio::test]
+    async fn cancellation_after_write_started_keeps_unknown_and_is_not_retried() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let control = operation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let canceller = tokio::spawn(async move {
+            started_rx.await.unwrap();
+            control.cancel();
+        });
+        let result = run_remote_send(&operation, async move {
+            started_tx.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(accepted())
+        })
+        .await
+        .unwrap();
+        canceller.await.unwrap();
+        assert_eq!(
+            result,
+            SendResult::new(SendOutcome::Uncertain, SendStage::Data)
+        );
+        assert_eq!(next_state(result.outcome, result.stage), SendState::Uncertain);
+    }
+
+    /// 协议自身结论原样返回：不确定不得被当成失败，确定失败不得退化为未知。
+    #[tokio::test]
+    async fn protocol_results_pass_through_unchanged() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let uncertain = run_remote_send(&operation, async {
+            Ok(SendResult::new(SendOutcome::Uncertain, SendStage::Data))
+        })
+        .await
+        .unwrap();
+        assert_eq!(uncertain.outcome, SendOutcome::Uncertain);
+
+        let error = run_remote_send(&operation, async {
+            Err::<SendResult, _>(crate::infrastructure::error::InfraError::Auth {
+                message: "SMTP 认证被拒绝".into(),
+            })
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, crate::application::error::AppErrorCode::Auth);
+    }
 }

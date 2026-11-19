@@ -123,7 +123,7 @@ const syncLabel = computed(() => {
     case 'cancelled':
       return '已取消发送';
     case 'accepted':
-      return '服务器已接受';
+      return '已发送';
     default:
       return props.item.pending_delete ? '删除待确认' : '已同步';
   }

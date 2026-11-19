@@ -269,8 +269,13 @@ async fn enrich_item(
         None
     };
     let last_message = if let Some(ref mid) = session.last_message_id {
+        // 无远端位置的本地发信记录也是会话内容：摘要必须能显示它。
         let row = sqlx::query(
-            "SELECT * FROM messages WHERE account_id = ? AND id = ? AND location_status = 'present'
+            "SELECT * FROM messages WHERE account_id = ? AND id = ?
+           AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (
+                 SELECT 1 FROM send_tasks st
+                 WHERE st.account_id = messages.account_id AND st.message_id = messages.id
+                   AND st.state <> 'cancelled')))
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)",
         )
         .bind(session.account_id.as_str())
@@ -564,11 +569,15 @@ pub async fn recompute_projection(
     account_id: &AccountId,
     session_id: &SessionId,
 ) -> Result<Session, InfraError> {
+    // 本地发信记录先于远端副本存在：它参与排序与摘要，否则只发过信的会话会沉底且无摘要。
     let last = sqlx::query(
         "SELECT id, COALESCE(received_at, sent_at) AS at
          FROM messages
          WHERE account_id = ? AND session_id = ?
-           AND location_status = 'present'
+           AND (location_status = 'present' OR (location_status IS NULL AND EXISTS (
+                 SELECT 1 FROM send_tasks st
+                 WHERE st.account_id = messages.account_id AND st.message_id = messages.id
+                   AND st.state <> 'cancelled')))
          AND NOT EXISTS (SELECT 1 FROM pending_message_mutations pm WHERE pm.account_id = messages.account_id AND pm.message_id = messages.id AND pm.kind = 'delete' AND pm.is_active = 1)
          ORDER BY COALESCE(received_at, sent_at, 0) DESC, id DESC
          LIMIT 1",

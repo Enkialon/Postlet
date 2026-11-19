@@ -1,7 +1,8 @@
 # Task 14：实现已发送副本归档和展示
 
-- 状态：已完成
-- 实现备注：`accounts.sent_archive_policy` + `archive_tasks`（waiting_server_copy/append_pending/appending/confirmed/retryable/uncertain/needs_configuration）。发送接受确认与归档入队同事务；Graph 走服务器保存等副本，IMAP 用持久化 MIME 执行 APPEND。APPEND 拒绝→retryable，结果未知→uncertain（不自动重发），进程中断恢复为 uncertain；归档许可复用账号 gate，不重发邮件。
+- 状态：**退出 V1 范围**（按 [V1 设计修复：发信记录留在会话](../../v1-conversation-send-no-sent-design.md)）
+- 退出说明：V1 不提供独立「已发送」目录，也不维护 Sent 副本；服务端受理即「已发送」，会话内的本地发信记录就是发信历史。客户端归档策略、归档任务/worker、APPEND 专用实现及设置入口已随该设计移除；不承诺下版恢复，也不以本任务为「已实现」。普通邮件同步与 Sent 角色识别不变。
+- 历史状态：本任务曾在旧方案下实现，现已被上述设计取代。
 - 对应问题：I-11、A-06
 - 前置任务：06、08、09
 

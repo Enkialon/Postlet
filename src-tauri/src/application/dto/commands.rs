@@ -21,13 +21,6 @@ pub struct UpdateAccountDisplaySettingsCommand {
     pub include_in_all: bool,
 }
 
-/// 确认已发送副本归档策略（服务器保存 / 客户端 APPEND）
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct UpdateSentArchivePolicyCommand {
-    pub account_id: AccountId,
-    pub policy: crate::domain::entities::ArchivePolicy,
-}
-
 /// 手动维护账户别名（self 额外身份；不做 Send-As）
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpdateAccountAliasesCommand {

@@ -20,6 +20,19 @@ struct OperationInner {
 #[derive(Clone)]
 pub struct MailOperation(Arc<OperationInner>);
 
+/// 一次异步远端写入在取消/截止下的结果边界。
+///
+/// 远端写入必须区分「调用没开始」「调用自身已返回」「调用被打断」：
+/// 只有前两者能得出可复用的结论，被打断的写入结果未知。
+pub enum CallOutcome<T> {
+    /// 调用自身返回了协议结果（即使同一时刻已发生取消/截止）
+    Returned(T),
+    /// 取消或截止发生在调用开始前：可证明未提交
+    NotStarted,
+    /// 调用已开始后被打断：结果未知
+    Aborted,
+}
+
 /// 调用方 Future 被丢弃时发出取消；后台任务负责继续等待退出。
 pub struct CancelOnDrop(Option<MailOperation>);
 
@@ -156,6 +169,36 @@ impl MailOperation {
         result
     }
 
+    /// 异步远端写入的结果边界：协议自身结果优先，取消/截止只阻止尚未开始的调用。
+    ///
+    /// 与 `run_blocking_preserving_result` 对称：已经取得的接受回执不会被随后到达的
+    /// 取消或截止时间覆盖；已开始后被取消则丢弃本次调用并报告结果未知，禁止自动重发。
+    pub async fn wait_preserving_result<T>(
+        &self,
+        future: impl Future<Output = Result<T, InfraError>>,
+    ) -> CallOutcome<Result<T, InfraError>> {
+        if Instant::now() >= self.0.deadline {
+            self.cancel();
+        }
+        if self.checkpoint().is_err() {
+            return CallOutcome::NotStarted;
+        }
+        let mut future = std::pin::pin!(future);
+        tokio::select! {
+            // 先轮询调用再观察取消：已返回的协议结果不能被同时到达的取消覆盖。
+            biased;
+            result = &mut future => CallOutcome::Returned(result),
+            _ = self.cancelled() => {
+                self.cancel();
+                CallOutcome::Aborted
+            }
+            _ = tokio::time::sleep_until(self.0.deadline.into()) => {
+                self.cancel();
+                CallOutcome::Aborted
+            }
+        }
+    }
+
     pub async fn run_blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T, InfraError> + Send + 'static,
@@ -200,95 +243,14 @@ impl MailOperation {
             message: "邮件阻塞任务异常退出".into(),
         })?
     }
-
-    /// 超时/取消时仍等待阻塞线程退出，并保留线程自身已经取得的结果。
-    ///
-    /// 仅用于有副作用的远端写入（如 APPEND）：调用方必须自行区分「线程未开始」
-    /// 与「开始后结果未知」。
-    pub async fn run_blocking_preserving_result<T: Send + 'static>(
-        &self,
-        work: impl FnOnce() -> Result<T, InfraError> + Send + 'static,
-    ) -> Result<T, InfraError> {
-        let deadline = self.0.deadline;
-        if Instant::now() >= deadline {
-            self.cancel();
-        }
-        self.checkpoint()?;
-        let guard = self.cancel_on_drop();
-        let operation = self.clone();
-        let mut worker = tokio::task::spawn_blocking(move || {
-            operation.checkpoint()?;
-            work()
-        });
-        let interrupted = tokio::select! {
-            result = &mut worker => {
-                if Instant::now() >= deadline {
-                    self.cancel();
-                }
-                guard.disarm();
-                return result.map_err(|_| InfraError::Network {
-                    message: "邮件阻塞任务异常退出".into(),
-                })?;
-            }
-            _ = self.cancelled() => {
-                self.cancel();
-                true
-            }
-            _ = tokio::time::sleep_until(deadline.min(self.0.deadline).into()) => {
-                self.cancel();
-                true
-            }
-        };
-        debug_assert!(interrupted);
-        // 必须先等待线程真正退出，再返回它保留的结果。
-        let result = worker.await.map_err(|_| InfraError::Network {
-            message: "邮件阻塞任务异常退出".into(),
-        })?;
-        guard.disarm();
-        result
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::mail::{SendOutcome, SendResult, SendStage};
     use std::io::Read;
     use std::net::TcpListener;
-
-    #[tokio::test]
-    async fn preserving_result_waits_for_worker_and_keeps_success_after_deadline() {
-        let operation = MailOperation::new(Duration::from_millis(50));
-        let control = operation.clone();
-        let start = Instant::now();
-        let result: Result<Option<bool>, InfraError> = operation
-            .run_blocking_preserving_result(move || {
-                // 模拟 APPEND 已成功、后续清理被取消。
-                control.cancel();
-                Ok::<_, InfraError>(Some(true))
-            })
-            .await;
-        assert_eq!(result.unwrap(), Some(true));
-        assert!(start.elapsed() < Duration::from_secs(2));
-        assert!(operation.checkpoint().is_err());
-    }
-
-    #[tokio::test]
-    async fn preserving_result_keeps_unknown_after_cancel() {
-        let operation = MailOperation::new(Duration::from_secs(5));
-        let control = operation.clone();
-        let canceller = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            control.cancel();
-        });
-        let result: Result<Option<bool>, InfraError> = operation
-            .run_blocking_preserving_result(|| {
-                std::thread::sleep(Duration::from_millis(300));
-                Ok::<_, InfraError>(None)
-            })
-            .await;
-        canceller.await.unwrap();
-        assert_eq!(result.unwrap(), None);
-    }
 
     #[tokio::test]
     async fn deadline_interrupts_established_socket_and_drains_worker() {
@@ -384,5 +346,88 @@ mod tests {
         );
         assert!(exited_rx.try_recv().is_ok());
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn preserving_async_result_keeps_receipt_returned_while_cancelled() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let control = operation.clone();
+        // 取消与回执同时到达：已取得的协议结果不得被取消覆盖。
+        let outcome = operation
+            .wait_preserving_result(async move {
+                control.cancel();
+                Ok::<_, InfraError>(SendResult::new(SendOutcome::Accepted, SendStage::Data))
+            })
+            .await;
+        match outcome {
+            CallOutcome::Returned(Ok(result)) => assert_eq!(result.outcome, SendOutcome::Accepted),
+            _ => panic!("已取得的接受回执必须保留"),
+        }
+        assert!(operation.checkpoint().is_err(), "取消事实仍必须生效");
+    }
+
+    #[tokio::test]
+    async fn preserving_async_result_does_not_start_a_cancelled_call() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        operation.cancel();
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        let outcome = operation
+            .wait_preserving_result(async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, InfraError>(42)
+            })
+            .await;
+        assert!(matches!(outcome, CallOutcome::NotStarted));
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst), "未开始的调用不得执行");
+    }
+
+    #[tokio::test]
+    async fn preserving_async_result_reports_expired_budget_as_not_started() {
+        let operation = MailOperation::new(Duration::ZERO);
+        let outcome = operation
+            .wait_preserving_result(async { Ok::<_, InfraError>(42) })
+            .await;
+        assert!(matches!(outcome, CallOutcome::NotStarted));
+    }
+
+    #[tokio::test]
+    async fn preserving_async_result_reports_started_call_as_unknown() {
+        let operation = MailOperation::new(Duration::from_secs(5));
+        let control = operation.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let canceller = tokio::spawn(async move {
+            started_rx.await.unwrap();
+            control.cancel();
+        });
+        let outcome = operation
+            .wait_preserving_result(async move {
+                started_tx.send(()).unwrap();
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok::<_, InfraError>(42)
+            })
+            .await;
+        canceller.await.unwrap();
+        assert!(matches!(outcome, CallOutcome::Aborted));
+    }
+
+    #[tokio::test]
+    async fn preserving_async_result_reports_call_own_error_after_deadline() {
+        let operation = MailOperation::new(Duration::from_millis(50));
+        let control = operation.clone();
+        let outcome = operation
+            .wait_preserving_result(async move {
+                control.cancel();
+                Err::<i32, _>(InfraError::Auth {
+                    message: "SMTP 认证被拒绝".into(),
+                })
+            })
+            .await;
+        match outcome {
+            CallOutcome::Returned(Err(error)) => {
+                assert!(matches!(error, InfraError::Auth { .. }))
+            }
+            _ => panic!("协议自身的确定失败不得退化为未知"),
+        }
     }
 }
