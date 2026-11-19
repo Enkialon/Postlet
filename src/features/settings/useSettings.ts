@@ -27,6 +27,7 @@ export function useSettings() {
   const expandedId = ref<AccountId | null>(null);
   const savingId = ref<AccountId | null>(null);
   const syncingMailIds = ref<Set<AccountId>>(new Set());
+  const syncingFolderByAccount = ref<Partial<Record<AccountId, FolderId>>>({});
   const syncingContactIds = ref<Set<AccountId>>(new Set());
   const refreshingFoldersId = ref<AccountId | null>(null);
   const togglingFolderKey = ref<string | null>(null);
@@ -172,19 +173,23 @@ export function useSettings() {
     return mailProgressById.value[accountId]?.mail_sync_status === 'running';
   }
 
-  async function triggerMail(accountId: AccountId): Promise<void> {
+  async function triggerMail(accountId: AccountId, folderId?: FolderId): Promise<void> {
     if (syncingMailIds.value.has(accountId) || isMailRunning(accountId)) return;
     error.value = null;
     const next = new Set(syncingMailIds.value);
     next.add(accountId);
     syncingMailIds.value = next;
+    syncingFolderByAccount.value[accountId] = folderId;
     try {
-      // RS 侧立即返回，同步在后台跑；状态靠进度轮询
       await ports.sync.triggerMailSync({
         account_id: accountId,
-        folder_ids: null,
+        folder_ids: folderId === undefined ? null : [folderId],
       });
-      // 短等 Running 落库，避免按钮闪一下「同步邮件」
+      if (folderId !== undefined) {
+        await refreshProgressFor(accountId);
+        return;
+      }
+      // 全量同步在后台执行，短等 Running 落库，避免按钮闪一下「同步邮件」
       for (let i = 0; i < 8; i += 1) {
         await refreshProgressFor(accountId);
         if (isMailRunning(accountId)) break;
@@ -192,11 +197,13 @@ export function useSettings() {
       }
       schedulePoll();
     } catch (e) {
+      if (folderId !== undefined) await refreshProgressFor(accountId);
       error.value = asAppError(e).message;
     } finally {
       const done = new Set(syncingMailIds.value);
       done.delete(accountId);
       syncingMailIds.value = done;
+      delete syncingFolderByAccount.value[accountId];
     }
   }
 
@@ -434,6 +441,7 @@ export function useSettings() {
     expandedId,
     savingId,
     syncingMailIds,
+    syncingFolderByAccount,
     syncingContactIds,
     refreshingFoldersId,
     togglingFolderKey,

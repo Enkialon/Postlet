@@ -18,6 +18,7 @@ const {
   expandedId,
   savingId,
   syncingMailIds,
+  syncingFolderByAccount,
   syncingContactIds,
   refreshingFoldersId,
   togglingFolderKey,
@@ -93,11 +94,30 @@ function onIncludeInAll(account: Account, e: Event) {
   });
 }
 
-function folderStatusLabel(status: string, syncedAt: number | null): string {
-  if (status === 'running') return '正在同步';
-  if (status === 'error') return '部分内容可能未更新';
-  if (syncedAt) return formatTimestamp(syncedAt);
-  return '尚未完成首次同步';
+function folderSyncIsStale(syncedAt: number | null): boolean {
+  return syncedAt != null && Date.now() - syncedAt >= 60 * 60 * 1000;
+}
+
+function folderSyncTooltip(folder: MailFolderSyncState): string {
+  const lastSync = folder.synced_at == null
+    ? '尚未成功同步'
+    : `上次同步：${new Date(folder.synced_at).toLocaleString()}`;
+  if (folder.sync_status === 'error') return `同步失败 · ${lastSync}`;
+  if (folderSyncIsStale(folder.synced_at)) return `超过一小时未同步 · ${lastSync}`;
+  return lastSync;
+}
+
+const folderTooltip = ref<{ left: number; top: number; above: boolean; text: string } | null>(null);
+
+function showFolderTooltip(event: Event, text: string): void {
+  const anchor = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const above = anchor.top >= 48;
+  folderTooltip.value = {
+    left: Math.min(window.innerWidth - 8, Math.max(8, anchor.right)),
+    top: above ? anchor.top - 4 : anchor.bottom + 4,
+    above,
+    text,
+  };
 }
 
 function foldersFor(accountId: AccountId): MailFolderSyncState[] {
@@ -195,6 +215,7 @@ async function confirmJunkDialog(): Promise<void> {
 
 <template>
   <section
+    @scroll.capture="folderTooltip = null"
     class="flex h-full min-h-0 w-full flex-col bg-surface-chat"
     aria-label="邮件同步管理"
   >
@@ -515,19 +536,46 @@ async function confirmJunkDialog(): Promise<void> {
                             f.display_name || f.folder_id
                           }}</span>
                         </label>
-                        <span class="shrink-0 text-text-secondary">
-                          {{
-                            folderStatusLabel(f.sync_status, f.synced_at)
-                          }}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          class="!px-2 shrink-0"
+                        <button
+                          type="button"
+                          class="group relative inline-grid size-10 shrink-0 cursor-pointer place-items-center rounded hover:bg-surface-elevated focus-visible:bg-surface-elevated disabled:cursor-default"
+                          :class="(f.sync_enabled && folderSyncIsStale(f.synced_at)) || f.sync_status === 'error' ? 'text-danger' : 'text-text-secondary'"
+                          :disabled="syncingMailIds.has(account.id) || mailProgressById[account.id]?.mail_sync_status === 'running'"
+                          :aria-label="`同步 ${f.display_name || f.folder_id}`"
+                          @mouseenter="showFolderTooltip($event, folderSyncTooltip(f))"
+                          @mouseleave="folderTooltip = null"
+                          @focus="showFolderTooltip($event, folderSyncTooltip(f))"
+                          @blur="folderTooltip = null"
+                          @click="folderTooltip = null; triggerMail(account.id, f.folder_id)"
+                        >
+                          <svg
+                            class="size-4"
+                            :class="{ 'motion-safe:animate-spin': syncingFolderByAccount[account.id] === f.folder_id }"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M20 7v5h-5M4 17v-5h5M5.5 8a7 7 0 0 1 11.6-2L20 9M4 15l2.9 3A7 7 0 0 0 18.5 16" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          class="inline-grid size-10 shrink-0 cursor-pointer place-items-center rounded-full text-text-secondary hover:bg-surface-elevated focus-visible:bg-surface-elevated"
                           :aria-label="`${f.display_name || f.folder_id} 的更多设置`"
+                          title="更多设置"
                           @click="openJunkDialog(account.id, f)"
                         >
-                          更多设置
-                        </Button>
+                          <svg class="size-4" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5" />
+                            <circle cx="8" cy="12" r="1.15" fill="currentColor" />
+                            <circle cx="12" cy="12" r="1.15" fill="currentColor" />
+                            <circle cx="16" cy="12" r="1.15" fill="currentColor" />
+                          </svg>
+                        </button>
                       </li>
                     </ul>
                   </div>
@@ -564,7 +612,7 @@ async function confirmJunkDialog(): Promise<void> {
     >
       <p class="m-0 mb-3" v-no-i18n>{{ junkDialog?.displayName }}</p>
       <fieldset
-        class="m-0 flex items-center gap-4 border-0 p-0 text-[14px]"
+        class="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 border-0 p-0 text-[14px]"
         :disabled="junkDialogBusy"
         aria-labelledby="folder-junk-role-label"
       >
@@ -589,20 +637,27 @@ async function confirmJunkDialog(): Promise<void> {
           />
           否
         </label>
+        <span
+          v-if="junkDialog?.choice && currentJunkFolder && currentJunkFolder.folder_id !== junkDialog.folderId"
+          class="text-[13px] text-danger"
+          role="status"
+        >
+          保存后将替换「{{ currentJunkFolder.display_name || currentJunkFolder.folder_id }}」，不移动邮件。
+        </span>
       </fieldset>
-      <p class="mt-2 mb-0 text-[13px] text-text-secondary">
-        当前垃圾文件夹：{{ currentJunkFolder?.display_name || currentJunkFolder?.folder_id || '未设置' }}
-      </p>
-      <p
-        v-if="junkDialog?.choice && currentJunkFolder && currentJunkFolder.folder_id !== junkDialog.folderId"
-        class="mt-2 mb-0 text-[13px] text-danger"
-      >
-        保存后将切换到「{{ junkDialog.displayName }}」，已有邮件不会移动。
-      </p>
       <p v-if="junkDialogError" class="mt-2 mb-0 text-[13px] text-danger">
         {{ junkDialogError }}
       </p>
     </Dialog>
+
+    <Teleport to="body">
+      <span
+        v-if="folderTooltip"
+        aria-hidden="true"
+        class="pointer-events-none fixed z-[100] whitespace-nowrap rounded border border-border-subtle bg-surface-elevated px-3 py-2 text-xs text-text-primary shadow-md"
+        :style="{ left: `${folderTooltip.left}px`, top: `${folderTooltip.top}px`, transform: `translate(-100%, ${folderTooltip.above ? '-100%' : '0'})` }"
+      >{{ folderTooltip.text }}</span>
+    </Teleport>
 
     <AddAccountDialog
       :open="addAccountOpen"

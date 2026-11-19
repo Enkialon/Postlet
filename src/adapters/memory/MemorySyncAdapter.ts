@@ -33,13 +33,16 @@ export class MemorySyncAdapter implements SyncPort {
       setTimeout(() => {
         const current = this.store.accounts.get(cmd.account_id);
         if (!current) return;
-        this.injectSyncedMail(cmd.account_id);
         current.mail_sync_status = 'idle';
         current.mail_sync_error = null;
         current.updated_at = Date.now();
         this.store.accounts.set(current.id, current);
         const folders = this.store.folderStates.get(cmd.account_id) ?? [];
-        for (const f of folders) {
+        const selected = cmd.folder_ids?.length
+          ? folders.filter((f) => cmd.folder_ids!.includes(f.folder_id))
+          : folders.filter((f) => f.sync_enabled);
+        if (selected[0]) this.injectSyncedMail(cmd.account_id, selected[0]);
+        for (const f of selected) {
           f.sync_status = 'idle';
           f.synced_at = Date.now();
           f.last_error = null;
@@ -52,7 +55,7 @@ export class MemorySyncAdapter implements SyncPort {
   }
 
   /** 假同步注入一封新邮件，方便验收列表刷新 */
-  private injectSyncedMail(accountId: AccountId): void {
+  private injectSyncedMail(accountId: AccountId, folder: MailFolderSyncState): void {
     const account = this.store.accounts.get(accountId);
     if (!account) return;
 
@@ -101,8 +104,8 @@ export class MemorySyncAdapter implements SyncPort {
       is_outbound: false,
       has_attachments: false,
       importance: 'normal',
-      folder_id: 'inbox',
-      parent_folder_name: '收件箱',
+      folder_id: folder.folder_id,
+      parent_folder_name: folder.display_name,
       local_updated_at: t,
       remote_updated_at: t,
     };

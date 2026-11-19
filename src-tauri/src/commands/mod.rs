@@ -319,6 +319,10 @@ pub async fn trigger_mail_sync(
     let paths = state.paths.clone();
     let changes = state.changes.clone();
     let gate = state.mail_sync_gate.clone();
+    if cmd.folder_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        crate::runtime::mail_sync::trigger_mail_sync(&db, &paths, &changes, &gate, cmd).await?;
+        return Ok(());
+    }
     tauri::async_runtime::spawn(async move {
         let _ = crate::runtime::mail_sync::trigger_mail_sync(&db, &paths, &changes, &gate, cmd).await;
     });

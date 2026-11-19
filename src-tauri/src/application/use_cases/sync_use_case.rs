@@ -1079,11 +1079,50 @@ fn imap_folder_display_name(
         let prefix = format!("{}{}", parent, d);
         if let Some(leaf) = full_name.strip_prefix(&prefix) {
             if !leaf.is_empty() {
-                return leaf.to_string();
+                return decode_imap_display_name(leaf);
             }
         }
     }
-    full_name.to_string()
+    decode_imap_display_name(full_name)
+}
+
+fn decode_imap_display_name(name: &str) -> String {
+    use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+
+    let mut rest = name;
+    let mut decoded = String::with_capacity(name.len());
+    while let Some((prefix, shift)) = rest.split_once('&') {
+        decoded.push_str(prefix);
+        let Some((encoded, tail)) = shift.split_once('-') else {
+            return name.to_owned();
+        };
+        if encoded.is_empty() {
+            decoded.push('&');
+        } else {
+            let Ok(bytes) = STANDARD_NO_PAD.decode(encoded.replace(',', "/")) else {
+                return name.to_owned();
+            };
+            let mut pairs = bytes.chunks_exact(2);
+            if !pairs.remainder().is_empty() {
+                return name.to_owned();
+            }
+            let units: Vec<_> = pairs.by_ref().map(|b| u16::from_be_bytes([b[0], b[1]])).collect();
+            let Ok(text) = String::from_utf16(&units) else {
+                return name.to_owned();
+            };
+            decoded.push_str(&text);
+        }
+        rest = tail;
+    }
+    decoded.push_str(rest);
+    decoded
+}
+
+#[test]
+fn imap_folder_display_name_decodes_only_the_leaf() {
+    assert_eq!(imap_folder_display_name("&UXZO1mWHTvZZOQ-", None, None), "其他文件夹");
+    assert_eq!(imap_folder_display_name("Parent/A&-B", Some("Parent"), Some("/")), "A&B");
+    assert_eq!(imap_folder_display_name("&broken", None, None), "&broken");
 }
 
 /// 设置文件夹垃圾邮件三态覆盖；不触发网络同步。
