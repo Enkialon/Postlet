@@ -24,8 +24,32 @@ impl std::fmt::Display for InfraError {
 
 impl std::error::Error for InfraError {}
 
+#[cfg(debug_assertions)]
+pub(crate) static SQLITE_DIAGNOSTIC_PATH: std::sync::OnceLock<std::path::PathBuf> =
+    std::sync::OnceLock::new();
+
 impl From<sqlx::Error> for InfraError {
-    fn from(_: sqlx::Error) -> Self {
+    #[track_caller]
+    fn from(error: sqlx::Error) -> Self {
+        #[cfg(debug_assertions)]
+        {
+            use std::io::Write;
+            let code = error.as_database_error().and_then(|e| e.code());
+            let line = format!(
+                "SQLite error at {} (code {}): {}",
+                std::panic::Location::caller(),
+                code.as_deref().unwrap_or("unknown"),
+                error,
+            );
+            eprintln!("{line}");
+            if let Some(path) = SQLITE_DIAGNOSTIC_PATH.get() {
+                if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = writeln!(log, "{line}");
+                }
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = error;
         Self::Storage {
             message: "本地数据库操作失败".into(),
         }

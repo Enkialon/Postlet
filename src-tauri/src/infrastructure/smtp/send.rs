@@ -3,7 +3,8 @@
 use crate::domain::mail::{SendOutcome, SendResult, SendStage};
 use crate::domain::value_objects::MailTlsMode;
 use crate::infrastructure::error::InfraError;
-use lettre::message::{header, Attachment, Body, Mailbox, MessageBuilder, MultiPart, SinglePart};
+use crate::infrastructure::mail::outbound_content::parse_mailbox;
+use lettre::message::{header, Attachment, Body, MessageBuilder, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -46,18 +47,6 @@ pub struct SmtpOutgoing {
 
 /// 发送结论：阶段 + 业务语义（禁止统一 retryable=true）
 pub type SmtpSendResult = SendResult;
-
-fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, InfraError> {
-    let parsed = if name.trim().is_empty() {
-        addr.parse()
-    } else {
-        format!("{name} <{addr}>").parse()
-    };
-    parsed.map_err(|e| InfraError::Remote {
-        message: format!("无效邮箱地址: {e}"),
-        retryable: false,
-    })
-}
 
 pub async fn send_message(
     endpoint: &SmtpEndpoint,

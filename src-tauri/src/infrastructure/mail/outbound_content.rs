@@ -79,16 +79,39 @@ pub struct BuiltSnapshot {
     pub attachments: Vec<SnapshotAttachmentRef>,
 }
 
-fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, InfraError> {
-    let candidate = if name.trim().is_empty() {
-        addr.to_string()
-    } else {
-        format!("{name} <{addr}>")
-    };
-    candidate.parse().map_err(|e| InfraError::Remote {
+pub(crate) fn parse_mailbox(addr: &str, name: &str) -> Result<Mailbox, InfraError> {
+    let address = addr.trim().parse::<lettre::Address>().map_err(|e| InfraError::Remote {
         message: format!("无效邮箱地址: {e}"),
         retryable: false,
+    })?;
+    let name = name.trim();
+    if name.chars().any(char::is_control) {
+        return Err(InfraError::Remote {
+            message: "邮箱显示名称包含无效控制字符".into(),
+            retryable: false,
+        });
+    }
+    Ok(Mailbox::new((!name.is_empty()).then(|| name.to_owned()), address))
+}
+
+fn snapshot_mailbox(addr: &str, name: &str, field: &str) -> Result<Mailbox, InfraError> {
+    parse_mailbox(addr, name).map_err(|error| match error {
+        InfraError::Remote { message, retryable } => InfraError::Remote {
+            message: format!("{field}：{message}"),
+            retryable,
+        },
+        other => other,
     })
+}
+
+#[test]
+fn mailbox_keeps_display_name_separate_from_address() {
+    let name = "张三, \"产品组\" (Postlet)";
+    let mailbox = parse_mailbox(" sender@example.com ", name).unwrap();
+    assert_eq!(mailbox.name.as_deref(), Some(name));
+    assert_eq!(mailbox.email.to_string(), "sender@example.com");
+    assert!(parse_mailbox("not-an-address", name).is_err());
+    assert!(parse_mailbox("sender@example.com", "Name\r\nBcc: x@example.com").is_err());
 }
 
 /// 生成新的 Message-ID：`<uuid@local-domain>`
@@ -127,17 +150,20 @@ pub fn build_snapshot(
     internet_message_id: &str,
 ) -> Result<BuiltSnapshot, InfraError> {
     let mut builder = Message::builder()
-        .from(parse_mailbox(&input.from, &input.from_name)?)
+        .from(snapshot_mailbox(&input.from, &input.from_name, "发件人")?)
         .subject(input.subject.clone())
         .message_id(Some(internet_message_id.to_string()));
 
-    for r in &input.to {
-        builder = builder.to(parse_mailbox(&r.address, &r.name)?);
+    for (index, r) in input.to.iter().enumerate() {
+        builder = builder.to(snapshot_mailbox(&r.address, &r.name, &format!("第 {} 个收件人", index + 1))?);
     }
-    for r in &input.cc {
-        builder = builder.cc(parse_mailbox(&r.address, &r.name)?);
+    for (index, r) in input.cc.iter().enumerate() {
+        builder = builder.cc(snapshot_mailbox(&r.address, &r.name, &format!("第 {} 个抄送人", index + 1))?);
     }
-    // Bcc 只进 envelope，不写入 MIME 头
+    // Bcc 只进 envelope，不写入 MIME 头；入队前也校验地址。
+    for (index, r) in input.bcc.iter().enumerate() {
+        snapshot_mailbox(&r.address, &r.name, &format!("第 {} 个密送人", index + 1))?;
+    }
     if let Some(irt) = input.in_reply_to.as_deref() {
         builder = builder.header(header::InReplyTo::from(irt.to_string()));
     }

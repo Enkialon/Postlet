@@ -103,7 +103,7 @@ pub async fn list_contents(
     Ok(rows.into_iter().map(map_content_row).collect())
 }
 
-/// 无任何草稿/消息引用的内容行（发送/归档引用表由后续任务接入）。
+/// 无任何草稿、消息或外发快照引用的内容行。
 pub async fn collect_unreferenced(
     conn: &mut SqliteConnection,
     account_id: &AccountId,
@@ -119,6 +119,14 @@ pub async fn collect_unreferenced(
            AND NOT EXISTS (
              SELECT 1 FROM message_attachments m
              WHERE m.account_id = c.account_id AND m.content_id = c.content_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM outbound_snapshots s
+             WHERE s.account_id = c.account_id AND s.mime_content_id = c.content_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM snapshot_attachments s
+             WHERE s.account_id = c.account_id AND s.content_id = c.content_id
            )",
     )
     .bind(account_id.as_str())

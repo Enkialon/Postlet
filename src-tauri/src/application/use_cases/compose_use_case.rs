@@ -204,7 +204,8 @@ pub async fn save_draft_with_refs(
         updated_at: now,
     };
 
-    let mut tx = db.begin().await?;
+    // 草稿保存也先读后写，避免后台同步提交后无法升级 SQLite 写事务。
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
     let existing =
         attachments::get_draft_by_session(&mut tx, &draft.account_id, &draft.session_id).await?;
     let draft_id = existing
@@ -428,7 +429,8 @@ pub async fn send(
         },
     )?;
 
-    let mut tx = db.begin().await?;
+    // WAL 下先取得写锁，避免读完快照后被后台同步写入抢先，导致事务无法升级为写事务。
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
 
     let account = accounts::get(&mut tx, &cmd.account_id)
         .await?

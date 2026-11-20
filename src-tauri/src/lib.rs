@@ -29,6 +29,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let paths = AppPaths::resolve(app.handle())?;
+            #[cfg(debug_assertions)]
+            let _ = infrastructure::error::SQLITE_DIAGNOSTIC_PATH
+                .set(paths.database_path.with_file_name("sqlite-errors.log"));
             let db =
                 tauri::async_runtime::block_on(infrastructure::db::open_sqlite(&paths.database_path))
                     .map_err(|e| format!("打开数据库失败: {e}"))?;
