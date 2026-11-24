@@ -30,6 +30,7 @@ commands.allow = [
   "trigger_mail_sync",
   "refresh_mail_folders",
   "set_folder_sync_enabled",
+  "set_folder_watch_enabled",
   "set_folder_junk_override",
   "trigger_contact_sync",
   "get_contact_sync_progress",

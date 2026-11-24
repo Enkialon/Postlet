@@ -250,6 +250,17 @@ export class MemorySyncAdapter implements SyncPort {
     return updated;
   }
 
+  async setFolderWatchEnabled(accountId: AccountId, folderId: string, enabled: boolean): Promise<MailFolderSyncState> {
+    const folders = this.store.folderStates.get(accountId) ?? [];
+    const index = folders.findIndex((folder) => folder.folder_id === folderId && folder.protocol === 'imap');
+    const folder = folders[index];
+    if (!folder) throw new Error('只能设置有效的 IMAP 文件夹监听');
+    const updated = { ...folder, watch_enabled: enabled };
+    folders[index] = updated;
+    this.store.folderStates.set(accountId, folders);
+    return updated;
+  }
+
   async setFolderJunkOverride(
     cmd: SetFolderJunkOverrideCommand,
   ): Promise<MailFolderSyncState> {

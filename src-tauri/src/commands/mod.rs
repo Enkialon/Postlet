@@ -352,6 +352,20 @@ pub async fn set_folder_sync_enabled(
 }
 
 #[tauri::command]
+pub async fn set_folder_watch_enabled(
+    state: State<'_, AppState>,
+    account_id: String,
+    folder_id: String,
+    enabled: bool,
+) -> Result<MailFolderSyncState, AppError> {
+    let account_id = AccountId::new(account_id);
+    let folder_id = crate::domain::value_objects::FolderId::new(folder_id);
+    let updated = sync_use_case::set_folder_watch_enabled(&state.db, &account_id, &folder_id, enabled).await?;
+    state.mail_watchers.changed(&account_id);
+    Ok(updated)
+}
+
+#[tauri::command]
 pub async fn set_folder_junk_override(
     state: State<'_, AppState>,
     cmd: SetFolderJunkOverrideCommand,

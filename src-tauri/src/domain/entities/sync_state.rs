@@ -25,6 +25,7 @@ pub struct MailFolderSyncState {
     pub effective_role: FolderRole,
     /// 是否纳入账户全局同步
     pub sync_enabled: bool,
+    pub watch_enabled: bool,
     /// Adapter 提供的不透明远端代次；与同步进度分开。
     pub generation: Option<String>,
     /// 最近完成轮次的增量游标

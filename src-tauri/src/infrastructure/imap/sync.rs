@@ -121,7 +121,8 @@ pub fn sync_folder(
         .unwrap_or(0);
     let low_uid = imap_pending_boundary(&remote_uids, &downloaded);
     eprintln!(
-        "IMAP 同步 {folder}: 远端={}，本批下载={}，待下载={}",
+        "[{}] IMAP 同步 {folder:?}: 远端={}，本批下载={}，待下载={}（尚未入库）",
+        chrono::Local::now().format("%F %T%.3f"),
         remote_uids.len(),
         page.iter().filter(|uid| downloaded.contains(uid)).count(),
         remote_uids.difference(&downloaded).count(),

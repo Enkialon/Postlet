@@ -34,6 +34,7 @@ const {
   refreshMailFolders,
   setFolderSyncEnabled,
   setFolderJunkOverride,
+  setFolderWatchEnabled,
   folderToggleKey,
   updateAccountSettings,
   updateAccountAliases,
@@ -151,14 +152,17 @@ const junkDialog = ref<{
   displayName: string;
   initialChoice: boolean;
   choice: boolean;
+  watch: boolean | null;
+  initialWatch: boolean | null;
 } | null>(null);
 const junkDialogError = ref<string | null>(null);
+const folderSaving = ref(false);
 
 const junkDialogBusy = computed(
   () =>
-    junkDialog.value != null &&
+    folderSaving.value || (junkDialog.value != null &&
     junkOverrideSavingKey.value ===
-      folderToggleKey(junkDialog.value.accountId, junkDialog.value.folderId),
+      folderToggleKey(junkDialog.value.accountId, junkDialog.value.folderId)),
 );
 
 const currentJunkFolder = computed(() => {
@@ -180,6 +184,8 @@ function openJunkDialog(
     displayName: folder.display_name || folder.folder_id,
     initialChoice: folder.effective_role === 'junk',
     choice: folder.effective_role === 'junk',
+    watch: folder.protocol === 'imap' ? (folder.watch_enabled ?? folder.role === 'inbox') : null,
+    initialWatch: folder.protocol === 'imap' ? (folder.watch_enabled ?? folder.role === 'inbox') : null,
   };
 }
 
@@ -196,19 +202,20 @@ function setJunkChoice(choice: boolean): void {
 async function confirmJunkDialog(): Promise<void> {
   const dialog = junkDialog.value;
   if (!dialog || junkDialogBusy.value) return;
-  if (dialog.choice === dialog.initialChoice) {
-    closeJunkDialog();
-    return;
-  }
+  folderSaving.value = true;
   try {
-    await setFolderJunkOverride(
-      dialog.accountId,
-      dialog.folderId,
-      dialog.choice,
-    );
+    if (dialog.choice !== dialog.initialChoice) {
+      await setFolderJunkOverride(dialog.accountId, dialog.folderId, dialog.choice);
+      dialog.initialChoice = dialog.choice;
+    }
+    if (dialog.watch !== null && dialog.watch !== dialog.initialWatch) {
+      await setFolderWatchEnabled(dialog.accountId, dialog.folderId, dialog.watch);
+    }
     closeJunkDialog();
   } catch (e) {
     junkDialogError.value = asAppError(e).message;
+  } finally {
+    folderSaving.value = false;
   }
 }
 </script>
@@ -644,6 +651,11 @@ async function confirmJunkDialog(): Promise<void> {
         >
           保存后将替换「{{ currentJunkFolder.display_name || currentJunkFolder.folder_id }}」，不移动邮件。
         </span>
+      </fieldset>
+      <fieldset v-if="junkDialog && junkDialog.watch !== null" class="mt-3 flex items-center gap-4 border-0 p-0 text-[14px]" :disabled="junkDialogBusy" aria-labelledby="folder-watch-label">
+        <span id="folder-watch-label" class="font-medium">是否监听：</span>
+        <label class="flex items-center gap-2"><input v-model="junkDialog.watch" type="radio" name="folder-watch" :value="true" /> 是</label>
+        <label class="flex items-center gap-2"><input v-model="junkDialog.watch" type="radio" name="folder-watch" :value="false" /> 否</label>
       </fieldset>
       <p v-if="junkDialogError" class="mt-2 mb-0 text-[13px] text-danger">
         {{ junkDialogError }}

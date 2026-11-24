@@ -233,6 +233,7 @@ pub(super) fn mailfoldersyncstate(row: &SqliteRow) -> Result<MailFolderSyncState
         junk_override,
         effective_role: crate::domain::services::effective_role(role, junk_override),
         sync_enabled: sync_enabled != 0,
+        watch_enabled: row.try_get::<Option<bool>, _>("watch_override")?.unwrap_or(role == FolderRole::Inbox),
         generation: row.try_get("generation")?,
         sync_cursor: row.try_get("sync_cursor")?,
         page_cursor: row.try_get("page_cursor")?,

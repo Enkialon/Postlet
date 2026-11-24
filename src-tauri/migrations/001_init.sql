@@ -58,6 +58,7 @@ CREATE TABLE mail_folder_sync_state (
         CHECK(role_source IN ('server','manual','guess','unknown')),
     -- 三态覆盖：NULL=自动识别，1=是垃圾文件夹，0=不是垃圾文件夹
     junk_override   INTEGER CHECK(junk_override IS NULL OR junk_override IN (0, 1)),
+    watch_override  INTEGER CHECK(watch_override IS NULL OR watch_override IN (0, 1)),
     protocol        TEXT NOT NULL CHECK(protocol IN ('graph', 'imap')),
     remote_binding  TEXT NOT NULL,
     binding_revision INTEGER NOT NULL DEFAULT 1 CHECK(binding_revision >= 1),

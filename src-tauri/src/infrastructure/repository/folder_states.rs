@@ -158,6 +158,7 @@ pub async fn reconcile_discovered(
                     protocol, remote_binding: folder.remote_binding.clone(), binding_revision: 1, is_retired: false,
                     parent_folder_id: None, display_name: folder.display_name.clone(), sync_enabled: false,
                     role, role_source,
+                    watch_enabled: role == crate::domain::services::FolderRole::Inbox,
                     junk_override: None,
                     effective_role: crate::domain::services::effective_role(role, None),
                     generation: None, sync_cursor: None, page_cursor: None, synced_at: None,
@@ -246,6 +247,24 @@ pub async fn set_junk_override(
         return Err(InfraError::Conflict {
             message: format!("文件夹不存在或已退役: {folder_id}"),
         });
+    }
+    Ok(())
+}
+
+pub async fn set_watch_enabled(
+    conn: &mut SqliteConnection,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    enabled: bool,
+) -> Result<(), InfraError> {
+    let result = sqlx::query("UPDATE mail_folder_sync_state SET watch_override = ? WHERE account_id = ? AND folder_id = ? AND is_retired = 0 AND protocol = 'imap'")
+        .bind(enabled)
+        .bind(account_id.as_str())
+        .bind(folder_id.as_str())
+        .execute(conn)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(InfraError::Conflict { message: "只能设置有效的 IMAP 文件夹监听".into() });
     }
     Ok(())
 }

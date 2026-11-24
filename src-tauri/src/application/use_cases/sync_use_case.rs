@@ -439,6 +439,9 @@ async fn apply_imap_folder_batch(
     }
 
     let mut changes = ChangeSet::empty(account_id.clone(), ChangeOrigin::IncrementalSync);
+    let db_started = std::time::Instant::now();
+    let mut written_messages = 0;
+    let mut new_messages = 0;
     let mut tx = db.begin().await?;
     let current = folder_states::get(&mut tx, account_id, &result.folder_id)
         .await?
@@ -491,6 +494,10 @@ async fn apply_imap_folder_batch(
                 )
                 .await
                 .map_err(AppError::from)?;
+                written_messages += 1;
+                if is_new {
+                    new_messages += 1;
+                }
                 changes.message_ids.push(mid.clone());
                 if let Some(sid) = cid {
                     changes.session_ids.push(sid);
@@ -537,6 +544,16 @@ async fn apply_imap_folder_batch(
         changes.account_version = Some(accounts::bump_change_version(&mut tx, account_id).await?);
     }
     tx.commit().await?;
+    if written_messages > 0 {
+        eprintln!(
+            "[{}] IMAP 入库 [{account_id}] {:?}: SQLite 已提交，新增={}，更新={}，入库耗时 {} ms",
+            chrono::Local::now().format("%F %T%.3f"),
+            state.remote_binding,
+            new_messages,
+            written_messages - new_messages,
+            db_started.elapsed().as_millis(),
+        );
+    }
     Ok(changes)
 }
 
@@ -1183,6 +1200,19 @@ pub async fn set_folder_junk_override(
         origin: ChangeOrigin::Rebuild,
     };
     Ok((updated, (!changes.session_ids.is_empty()).then_some(changes)))
+}
+
+/// 保存本地 IMAP 监听偏好，不修改同步开关。
+pub async fn set_folder_watch_enabled(
+    db: &SqlitePool,
+    account_id: &AccountId,
+    folder_id: &FolderId,
+    enabled: bool,
+) -> Result<MailFolderSyncState, AppError> {
+    let mut conn = db.acquire().await?;
+    folder_states::set_watch_enabled(&mut conn, account_id, folder_id, enabled).await?;
+    folder_states::get(&mut conn, account_id, folder_id).await?
+        .ok_or_else(|| AppError::not_found("文件夹不存在"))
 }
 
 /// 勾选/取消文件夹纳入账户全局同步。

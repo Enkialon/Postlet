@@ -27,7 +27,7 @@ pub(crate) struct WatcherControl {
 }
 
 impl WatcherControl {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let (stop, _) = watch::channel(false);
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),

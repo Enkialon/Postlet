@@ -97,6 +97,8 @@ export function createTauriPorts(): AppPorts {
         invoke<MailFolderSyncState[]>('refresh_mail_folders', { accountId }),
       setFolderSyncEnabled: (cmd: SetFolderSyncEnabledCommand) =>
         invoke<MailFolderSyncState>('set_folder_sync_enabled', { cmd }),
+      setFolderWatchEnabled: (accountId, folderId, enabled) =>
+        invoke<MailFolderSyncState>('set_folder_watch_enabled', { accountId, folderId, enabled }),
       setFolderJunkOverride: (cmd: SetFolderJunkOverrideCommand) =>
         invoke<MailFolderSyncState>('set_folder_junk_override', { cmd }),
     },

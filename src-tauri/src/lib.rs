@@ -134,6 +134,7 @@ pub fn run() {
             commands::refresh_mail_folders,
             commands::set_folder_sync_enabled,
             commands::set_folder_junk_override,
+            commands::set_folder_watch_enabled,
             commands::trigger_contact_sync,
             commands::get_contact_sync_progress,
             commands::ensure_private_session,

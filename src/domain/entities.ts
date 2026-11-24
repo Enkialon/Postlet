@@ -65,6 +65,7 @@ export interface MailFolderSyncState {
   display_name: string;
   /** 是否纳入账户全局同步 */
   sync_enabled: boolean;
+  watch_enabled?: boolean;
   generation: string | null;
   /** 最近完成轮次的增量游标 */
   sync_cursor: string | null;

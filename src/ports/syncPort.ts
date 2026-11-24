@@ -21,6 +21,7 @@ export interface SyncPort {
   setFolderSyncEnabled(
     cmd: SetFolderSyncEnabledCommand,
   ): Promise<MailFolderSyncState>;
+  setFolderWatchEnabled(accountId: AccountId, folderId: string, enabled: boolean): Promise<MailFolderSyncState>;
   /** 保存文件夹垃圾邮件三态覆盖；不触发网络同步 */
   setFolderJunkOverride(
     cmd: SetFolderJunkOverrideCommand,

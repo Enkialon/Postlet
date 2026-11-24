@@ -349,6 +349,13 @@ export function useSettings() {
     }
   }
 
+  async function setFolderWatchEnabled(accountId: AccountId, folderId: FolderId, enabled: boolean): Promise<void> {
+    const updated = await ports.sync.setFolderWatchEnabled(accountId, folderId, enabled);
+    patchFolders(accountId, (mailProgressById.value[accountId]?.folders ?? []).map((folder) =>
+      folder.folder_id === folderId ? updated : folder,
+    ));
+  }
+
   async function setFolderJunkOverride(
     accountId: AccountId,
     folderId: FolderId,
@@ -457,6 +464,7 @@ export function useSettings() {
     refreshMailFolders,
     setFolderSyncEnabled,
     setFolderJunkOverride,
+    setFolderWatchEnabled,
     folderToggleKey,
     updateAccountSettings,
     updateAccountAliases,
